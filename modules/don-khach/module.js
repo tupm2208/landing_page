@@ -255,6 +255,47 @@ async function doiTrangThai(ctx, { maDon, trangThai, ghiChu = "", boi = "he-thon
   return { ok: true };
 }
 
+/** Doc don bang ma don + ma tra cuu cua khach — dung cho duong cong khai. */
+async function docTheoMaTra(ctx, { maDon = "", maTra = "" } = {}) {
+  if (!maDon || !maTra) return null;
+  const dong = await ctx.cong.kho.bang(BANG_DON).mot({
+    id: String(maDon), order_lookup_token_hash: bamMaTra(maTra)
+  });
+  if (!dong) return null;
+  return docDon(ctx, dong.id);
+}
+
+/**
+ * Ghi cac truong TIEN len don. Chi module Don hang duoc ghi vao so don — moi manh khac
+ * (ke ca Tien & doi soat) di qua cua nay, nen khong bao gio co hai noi cung sua mot don.
+ * Moi lan ghi deu them mot dong nhat ky, de sau con truy duoc ai doi gi.
+ */
+async function ghiTien(ctx, { maDon = "", phuongThuc = null, trangThaiTien = null, soTien = null, maChuyenKhoan = null, ghiChu = "" } = {}) {
+  const ma = String(maDon || "");
+  if (!ma) return { ok: false, viSao: "thieu_ma_don" };
+
+  const doi = {};
+  if (phuongThuc !== null) doi.payment_method = String(phuongThuc);
+  if (trangThaiTien !== null) doi.payment_status = String(trangThaiTien);
+  if (soTien !== null) doi.payment_amount = Math.max(0, Math.round(Number(soTien) || 0));
+  if (maChuyenKhoan !== null) doi.payment_reference = String(maChuyenKhoan);
+  if (Object.keys(doi).length === 0) return { ok: false, viSao: "khong_co_gi_de_ghi" };
+
+  const luc = ctx.cong.gio.bayGio();
+  doi.updated_at = gioMySQL(luc);
+
+  const so = await ctx.cong.kho.giaoDich(async (trong) => {
+    const n = await trong.bang(BANG_DON).thay({ id: ma }, doi);
+    if (n === 0) return 0;
+    await trong.bang(BANG_NHAT_KY).them({
+      order_id: ma, status: String(trangThaiTien || phuongThuc || "tien"),
+      actor_type: "tien", note: String(ghiChu || ""), created_at: gioMySQL(luc)
+    });
+    return n;
+  });
+  return so > 0 ? { ok: true } : { ok: false, viSao: "khong_co_don" };
+}
+
 module.exports = {
   id: "don-khach",
   ten: "Đơn hàng & khách",
@@ -276,7 +317,9 @@ module.exports = {
     "don-khach.doc": docDon,
     "don-khach.tim": timDon,
     "don-khach.datDon": datDon,
-    "don-khach.doiTrangThai": doiTrangThai
+    "don-khach.doiTrangThai": doiTrangThai,
+    "don-khach.docTheoMaTra": docTheoMaTra,
+    "don-khach.ghiTien": ghiTien
   },
 
   duong: [
