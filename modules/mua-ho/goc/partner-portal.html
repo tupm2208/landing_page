@@ -1,0 +1,222 @@
+<!doctype html>
+<html lang="vi">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="robots" content="noindex,nofollow,noarchive">
+  <title>TopRun Partner Portal</title>
+  <link rel="stylesheet" href="/partner-portal.css?v=20260902-scan-6">
+</head>
+<body data-page="portal" class="auth-pending">
+  <div class="partner-app" hidden>
+    <aside class="partner-sidebar">
+      <div class="brand-block">
+        <span>TopRun Partner</span>
+        <div class="partner-title-row">
+          <strong id="partner-name">Đối tác mua hàng</strong>
+          <button id="logout-button" class="logout-button" type="button">Đăng xuất</button>
+        </div>
+      </div>
+      <nav class="side-nav" aria-label="Partner navigation">
+        <button class="active" data-view-button="overview" type="button">Tổng quan</button>
+        <button data-view-button="needs" type="button">Sản phẩm cần mua</button>
+        <button data-view-button="orders" type="button">Mã đơn cần đóng</button>
+        <button data-view-button="shipments" type="button">Vận đơn</button>
+        <button data-view-button="history" type="button">Lịch sử sản phẩm</button>
+        <button data-view-button="purchases" type="button">Phiên mua</button>
+        <button data-view-button="fees" type="button">Công nợ</button>
+      </nav>
+      <button id="refresh-button" class="refresh-button" type="button">Tải lại dữ liệu</button>
+      <p id="message" class="message"></p>
+    </aside>
+
+    <main class="partner-main">
+      <section class="view is-active" data-view="overview">
+        <header class="page-head">
+          <div>
+            <p>Trang đối tác</p>
+            <h1>Tổng quan mua hàng</h1>
+          </div>
+        </header>
+        <section class="summary-grid overview-grid">
+          <article><span>Mã/size cần mua</span><strong id="need-count">0</strong></article>
+          <article><span>Đơn mới</span><strong id="new-missing-count">0</strong></article>
+          <article><span>Còn thiếu mua bù</span><strong id="backlog-missing-count">0</strong></article>
+          <article><span>Số lượng còn thiếu</span><strong id="missing-count">0</strong></article>
+        </section>
+        <section class="panel" id="overview-buying-panel" hidden>
+          <div class="panel-head">
+            <h2>Đang mua — phiên hiện tại</h2>
+            <p>Sản phẩm vừa xác nhận mua — đối chiếu giá thực tế với giá hệ thống, Hoàn tác nếu nhầm. Bấm "Mua xong" hoặc ngừng 15 phút là phiên tự đóng.</p>
+          </div>
+          <div id="overview-buying-list" class="order-list"></div>
+        </section>
+        <section class="panel">
+          <div class="panel-head">
+            <h2>Danh sách sản phẩm cần mua</h2>
+            <p>Gồm mã sản phẩm, giá sale cuối trong file, số lượng cần, số lượng mua được và nút xác nhận.</p>
+          </div>
+          <div id="overview-need-list" class="need-list"></div>
+        </section>
+        <section class="panel">
+          <div class="panel-head">
+            <h2>Danh sách đơn hàng cần đóng hàng</h2>
+            <p>Đơn đã mua đủ, đang chờ đóng hàng — kèm vận đơn liên kết khi đã có mã. Đơn rời danh sách khi bàn giao đơn vị vận chuyển.</p>
+          </div>
+          <div class="table-head order-summary-head">
+            <span>Mã đơn hàng</span>
+            <span>Tên khách hàng</span>
+            <span>List sản phẩm</span>
+            <span>Trạng thái</span>
+          </div>
+          <div id="overview-order-list" class="order-summary-list"></div>
+        </section>
+      </section>
+
+      <section class="view" data-view="needs" hidden>
+        <header class="page-head">
+          <div>
+            <p>Mua hàng</p>
+            <h1>Danh sách sản phẩm cần mua</h1>
+          </div>
+        </header>
+        <section class="panel" id="need-buying-panel" hidden>
+          <div class="panel-head">
+            <h2>Đang mua — phiên hiện tại</h2>
+            <p>Sản phẩm vừa xác nhận mua — đối chiếu giá thực tế với giá hệ thống, Hoàn tác nếu nhầm. Bấm "Mua xong" hoặc ngừng 15 phút là phiên tự đóng.</p>
+          </div>
+          <div id="need-buying-list" class="order-list"></div>
+        </section>
+        <section class="panel">
+          <div class="panel-head">
+            <h2>Sản phẩm đang cần mua</h2>
+            <p>Cột số lượng thực tế dùng để xác nhận số lượng mua được theo từng mã và size.</p>
+          </div>
+          <div id="need-list" class="need-list"></div>
+          <!-- v73b (anh chinh): bieu tuong camera NOI o man Mua hang, bam moi mo — khong mo mac dinh.
+               Dat trong section nay nen chi hien khi dang o view "needs". -->
+          <button id="scan-open-button" class="scan-fab" type="button" aria-label="Quét tem bằng camera" title="Quét tem bằng camera">📷</button>
+        </section>
+      </section>
+
+      <section class="view" data-view="orders" hidden>
+        <header class="page-head">
+          <div>
+            <p>Đóng hàng</p>
+            <h1>Danh sách mã đơn cần đóng</h1>
+          </div>
+        </header>
+        <section class="panel">
+          <div class="panel-head">
+            <h2>Đơn đã mua đủ, cần đóng hàng</h2>
+            <p>Hiển thị mã đơn/kiện, sản phẩm và vận đơn liên kết. Đơn rời danh sách khi đã bàn giao đơn vị vận chuyển.</p>
+          </div>
+          <div id="order-list" class="order-list"></div>
+        </section>
+      </section>
+
+      <section class="view" data-view="shipments" hidden>
+        <header class="page-head">
+          <div>
+            <p>Giao hàng</p>
+            <h1>Vận đơn SPX / Viettel Post</h1>
+          </div>
+        </header>
+        <section class="panel">
+          <div class="panel-head">
+            <h2>Đơn đã mua đủ, cần tạo vận đơn</h2>
+            <p>Bấm tạo vận đơn sau khi đã mua đủ và đóng hàng. Hệ thống dùng hãng đã chọn trên đơn; mã vận đơn sẽ hiện ngay cạnh mã đơn khi tạo xong.</p>
+          </div>
+          <div id="shipment-list" class="order-list"></div>
+        </section>
+      </section>
+
+      <section class="view" data-view="history" hidden>
+        <header class="page-head">
+          <div>
+            <p>Theo dõi</p>
+            <h1>Lịch sử sản phẩm admin đã đẩy sang</h1>
+          </div>
+        </header>
+        <section class="panel">
+          <div class="panel-head">
+            <h2>Tổng hợp theo mã và size</h2>
+            <p>Đối tác xem lại tổng số đã được giao, đã mua và còn thiếu.</p>
+          </div>
+          <div id="product-history-list" class="history-list"></div>
+        </section>
+      </section>
+
+      <section class="view" data-view="purchases" hidden>
+        <header class="page-head">
+          <div>
+            <p>Lịch sử</p>
+            <h1>Phiên mua đã xác nhận</h1>
+          </div>
+        </header>
+        <section class="panel">
+          <div class="panel-head">
+            <h2>Phiên mua gần đây</h2>
+            <p>Mỗi phiên hiển thị tổng tiền mua; bấm mở để xem danh sách hàng và phân bổ đơn.</p>
+          </div>
+          <div id="purchase-list" class="purchase-list"></div>
+        </section>
+      </section>
+
+      <section class="view" data-view="fees" hidden>
+        <header class="page-head">
+          <div>
+            <p>Tài chính</p>
+            <h1>Tính công và công nợ</h1>
+          </div>
+        </header>
+        <section class="summary-grid">
+          <article><span>Công theo sản phẩm/đơn</span><strong id="fee-total-2">0</strong></article>
+          <article><span>Chi phí phát sinh</span><strong id="adjustment-total">0</strong></article>
+          <article><span>Đã CK thanh toán</span><strong id="paid-total">0</strong></article>
+          <article><span>Công nợ còn thiếu</span><strong id="debt-total-2">0</strong></article>
+        </section>
+        <section class="panel">
+          <div class="panel-head">
+            <h2>Lịch sử CK thanh toán</h2>
+            <p>Đối tác theo dõi các khoản admin đã chuyển khoản thực tế.</p>
+          </div>
+          <div id="payment-list" class="payment-list"></div>
+        </section>
+        <section class="panel">
+          <div class="panel-head">
+            <h2>Chi phí phát sinh</h2>
+            <p>Các khoản chi phí admin ghi nhận thêm cho kho của bạn.</p>
+          </div>
+          <div id="adjustment-list" class="payment-list"></div>
+        </section>
+      </section>
+    </main>
+  </div>
+  <!-- v73: modal quet tem bang camera -->
+  <div id="scan-modal" class="scan-modal" hidden>
+    <div class="scan-panel">
+      <div class="scan-head">
+        <strong>Quét tem sản phẩm</strong>
+        <button id="scan-close-button" class="small-button" type="button">Đóng</button>
+      </div>
+      <div class="scan-video-wrap">
+        <video id="scan-video" playsinline muted autoplay></video>
+        <div class="scan-frame" aria-hidden="true"></div>
+      </div>
+      <button id="scan-now-button" class="primary-button scan-now-button" type="button">📸 Quét ngay</button>
+      <p id="scan-status" class="scan-status">Đưa camera vào tem — quét liên tục, tem khớp tự vào giỏ.</p>
+      <!-- v75: gio quet don ca lo + doi soat -->
+      <div id="scan-cart" class="scan-cart" hidden></div>
+      <div id="scan-cart-bar" class="scan-cart-bar" hidden>
+        <span id="scan-cart-summary"></span>
+        <button id="scan-done-button" class="primary-button" type="button">ĐỌC XONG ➜</button>
+      </div>
+      <div id="scan-review" class="scan-review" hidden></div>
+      <div id="scan-result" class="scan-results" hidden></div>
+    </div>
+  </div>
+  <script src="/partner-portal.js?v=20260902-scan-1"></script>
+  <script src="/partner-scan.js?v=20260902-scan-6" charset="utf-8"></script>
+</body>
+</html>

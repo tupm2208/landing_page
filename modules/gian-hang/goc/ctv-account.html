@@ -1,0 +1,89 @@
+<!doctype html>
+<html lang="vi">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <meta name="robots" content="noindex,nofollow">
+  <title>Tài khoản CTV TopRun</title>
+  <link rel="stylesheet" href="/ctv.css?v=20260810-ctv-guide-1">
+  <style>
+    /* Khối hoa hồng CTV (đợt 2026-08-14) — style riêng, không đụng ctv.css/styles.css */
+    .ctv-account-card.ctv-account-wide { max-width: 860px; }
+    .ctv-account-topline { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+    .ctv-session-pill { display: inline-flex; align-items: center; gap: 6px; background: #e7f7ee; color: #157347; border-radius: 999px; padding: 3px 12px; font-size: 13px; font-weight: 600; }
+    .ctv-session-pill::before { content: ""; width: 8px; height: 8px; border-radius: 50%; background: #22a55e; }
+    .ctv-metric-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(160px, 1fr)); gap: 10px; margin: 14px 0; }
+    .ctv-metric { border: 1px solid #e3e6ea; border-radius: 12px; padding: 12px 14px; background: #fafbfc; }
+    .ctv-metric span { display: block; font-size: 12px; color: #667085; }
+    .ctv-metric strong { display: block; font-size: 18px; margin-top: 4px; }
+    .ctv-metric small { display: block; font-size: 11px; color: #98a2b3; margin-top: 2px; }
+    .ctv-ref-note { font-size: 13px; color: #475467; background: #f4f7fb; border-radius: 10px; padding: 8px 12px; margin-top: 8px; }
+    .ctv-data-section { margin-top: 18px; }
+    .ctv-data-section h2 { font-size: 16px; margin: 0 0 8px; }
+    .ctv-table-wrap { overflow-x: auto; border: 1px solid #e3e6ea; border-radius: 10px; }
+    .ctv-table-wrap table { width: 100%; border-collapse: collapse; font-size: 13px; min-width: 520px; }
+    .ctv-table-wrap th, .ctv-table-wrap td { padding: 8px 10px; text-align: left; border-bottom: 1px solid #eef1f4; white-space: nowrap; }
+    .ctv-table-wrap tr:last-child td { border-bottom: none; }
+    .ctv-table-wrap th { background: #f8f9fb; font-weight: 600; color: #475467; }
+    .ctv-pill { display: inline-block; border-radius: 999px; padding: 2px 10px; font-size: 11px; font-weight: 600; background: #eef1f4; color: #475467; }
+    .ctv-pill.ok { background: #e7f7ee; color: #157347; }
+    .ctv-pill.wait { background: #fff4e0; color: #b25e09; }
+    .ctv-pill.void { background: #fdecec; color: #b42318; }
+    /* Hướng dẫn dạng thu gọn/mở (đợt 2026-08-16) */
+    .ctv-guide-fold summary { cursor: pointer; font-size: 16px; font-weight: 700; margin: 0 0 8px; }
+    .ctv-guide-fold summary:hover { opacity: .8; }
+  </style>
+</head>
+<body class="ctv-login-page">
+  <main class="ctv-login-card ctv-account-card ctv-account-wide" id="ctv-account" hidden>
+    <div class="ctv-login-brand"><img src="/assets/ctv-logo.png" alt="TopRun"><span>Cộng tác viên</span></div>
+    <div class="ctv-account-topline">
+      <h1 id="ctv-account-name" style="margin:0"></h1>
+      <span class="ctv-session-pill">Đang đăng nhập</span>
+    </div>
+    <p>Mã giới thiệu: <strong id="ctv-account-code"></strong></p>
+
+    <div class="ctv-metric-grid" id="ctv-metrics" hidden>
+      <div class="ctv-metric"><span>Tạm tính</span><strong id="ctv-metric-pending">0đ</strong><small>Chờ đơn giao thành công, chưa vào thu nhập</small></div>
+      <div class="ctv-metric"><span>Chính thức · chờ trả</span><strong id="ctv-metric-approved">0đ</strong><small id="ctv-metric-approved-note">Đơn giao thành công</small></div>
+      <div class="ctv-metric"><span>Đã nhận</span><strong id="ctv-metric-paid">0đ</strong><small id="ctv-metric-paid-note">Chưa nhận lần nào</small></div>
+      <div class="ctv-metric"><span>Đơn tháng này</span><strong id="ctv-metric-orders">0</strong><small id="ctv-metric-orders-note">Tổng 0 đơn ghi nhận</small></div>
+    </div>
+
+    <section class="ctv-data-section">
+      <h2>Link giới thiệu của bạn</h2>
+      <label>Link giới thiệu<input id="ctv-ref-link" readonly></label>
+      <button id="ctv-copy-link" type="button">Sao chép link</button>
+      <p class="ctv-ref-note" id="ctv-ref-note">Mọi link sản phẩm bạn copy khi lướt web đều tự gắn mã của bạn · đơn bạn tự đặt hộ khách cũng tính hoa hồng cho bạn.</p>
+    </section>
+
+    <section class="ctv-data-section">
+      <h2>Đơn bạn giới thiệu</h2>
+      <div class="ctv-table-wrap"><table><thead><tr><th>Đơn</th><th>Ngày</th><th>Khách</th><th>Tổng đơn</th><th>Trạng thái</th><th>Tạm tính</th><th>Chính thức</th></tr></thead><tbody id="ctv-orders-body"><tr><td colspan="7">Chưa có đơn ghi nhận.</td></tr></tbody></table></div>
+    </section>
+
+    <section class="ctv-data-section">
+      <h2>Lịch sử nhận tiền công</h2>
+      <div class="ctv-table-wrap"><table><thead><tr><th>Thời gian</th><th>Số tiền</th><th>Ghi chú</th></tr></thead><tbody id="ctv-payments-body"><tr><td colspan="3">Chưa có lần nhận tiền công nào.</td></tr></tbody></table></div>
+    </section>
+
+    <section class="ctv-guide" aria-labelledby="ctv-guide-title">
+      <details class="ctv-guide-fold">
+      <summary id="ctv-guide-title">Hướng dẫn sử dụng</summary>
+      <ol>
+        <li><strong>Giới thiệu khách:</strong> sao chép link phía trên và gửi cho khách. Khách cần mở đúng link này trước khi đặt hàng để hệ thống ghi nhận nguồn CTV.</li>
+        <li><strong>Đăng bài bán hàng:</strong> mở một sản phẩm, bấm “Tải ảnh”, chọn ảnh cần dùng. Ảnh được dựng ngay lúc tải nên giá và size luôn lấy theo dữ liệu hiện tại.</li>
+        <li><strong>Đặt hàng:</strong> CTV vẫn có thể vào trang chủ, xem sản phẩm và đặt hàng bình thường như khách mua hàng.</li>
+        <li><strong>Thiết bị mới:</strong> lần đầu đăng nhập trên điện thoại hoặc máy tính mới có thể phải chờ admin duyệt thiết bị.</li>
+        <li><strong>Quên mật khẩu:</strong> tại trang đăng nhập, chọn “Quên mật khẩu” và nhập email đã đăng ký để nhận liên kết đặt lại.</li>
+      </ol>
+      <p class="ctv-guide-note">Không chia sẻ mật khẩu cho người khác. Quyền tải ảnh không logo chỉ xuất hiện khi admin đã bật riêng cho tài khoản.</p>
+      </details>
+    </section>
+
+    <div class="ctv-account-actions"><a href="/">Vào trang chủ đặt hàng</a><button class="ctv-text-button" id="ctv-logout" type="button">Đăng xuất</button></div>
+    <p id="ctv-login-message" class="ctv-login-message" hidden></p>
+  </main>
+  <script src="/ctv-account.js?v=20260816-ctv-money-1"></script>
+</body>
+</html>

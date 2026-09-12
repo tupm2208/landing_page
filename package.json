@@ -1,0 +1,11 @@
+{
+  "name": "toprun-server-khach",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Server backend cua tung nha ban hang: giu du lieu, mo API cho OMI va Bo nao, nhan tin Fanpage",
+  "main": "chay.js",
+  "scripts": {
+    "chay": "node chay.js",
+    "test": "node --test \"test/*.test.js\""
+  }
+}

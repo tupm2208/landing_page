@@ -1,0 +1,37 @@
+<!doctype html>
+<html lang="vi">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="robots" content="noindex,nofollow,noarchive">
+  <title>Dang nhap CTV</title>
+  <link rel="stylesheet" href="/ctv.css?v=20260805-ctv-2">
+</head>
+<body class="ctv-login-page">
+  <main class="ctv-login-card">
+    <div class="ctv-login-brand"><img src="/assets/ctv-logo.png" alt=""><span>Cong tac vien</span></div>
+    <section id="ctv-login-section">
+      <h1>Dang nhap CTV</h1>
+      <p>Dang nhap de lay link gioi thieu va tai anh dang bai.</p>
+      <form id="ctv-login-form">
+        <label>Số điện thoại hoặc Email<input name="login" autocomplete="username" placeholder="Nhập SĐT hoặc email" required></label>
+        <label>Mật khẩu đăng nhập<input name="password" type="password" autocomplete="current-password" placeholder="Nhập mật khẩu ban đầu" minlength="8" required></label>
+        <button type="submit">Dang nhap</button>
+      </form>
+      <button class="ctv-text-button" id="ctv-forgot-open" type="button">Quen mat khau?</button>
+    </section>
+    <section id="ctv-forgot-section" hidden>
+      <h1>Cap lai mat khau</h1>
+      <p>Nhap email da duoc admin dang ky cho tai khoan CTV.</p>
+      <form id="ctv-forgot-form"><label>Email<input name="email" type="email" autocomplete="email" required></label><button type="submit">Gui lien ket</button></form>
+      <button class="ctv-text-button" id="ctv-login-open" type="button">Quay lai dang nhap</button>
+    </section>
+    <section id="ctv-reset-section" hidden>
+      <h1>Dat mat khau moi</h1>
+      <form id="ctv-reset-form"><label>Mat khau moi<input name="password" type="password" autocomplete="new-password" minlength="8" required></label><button type="submit">Luu mat khau</button></form>
+    </section>
+    <p id="ctv-login-message" class="ctv-login-message" hidden></p>
+  </main>
+  <script src="/ctv-login.js?v=20260816-ctv-browse-1"></script>
+</body>
+</html>

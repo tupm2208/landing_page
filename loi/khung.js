@@ -1,0 +1,146 @@
+// KHUNG — nap module, phat cong cho tung module, dinh tuyen, tra loi.
+//
+// Khung KHONG biet gi ve hang hoa, don hang hay van chuyen. No chi biet: mot module trong
+// nhu the nao (giao keo), no duoc xin nhung cong nao, va duong cua no di dau.
+//
+// Mot module nhan duoc gi:
+//   tay(ctx, yc) -> tra ve mot trong:
+//     { ma, than, tieuDe }                JSON
+//     { ma, tep: { duLieu, kieu } }       tep nhi phan (anh, csv...)
+//     { chuyenHuong, ma }                 302
+//   ctx = { id, cong (chi nhung cong da khai), bus, cauHinh }
+//   yc  = { method, duong, tham, truyVan, tieuDe, doc(), tho(), ip }
+//
+// Module KHONG nhan `request`/`response` cua Node. Nho vay bai kiem tra goi thang duoc
+// `tay(ctx, yc)` ma khong can dung may chu — va sau nay doi sang khung khac (Express,
+// serverless) thi module khong sua mot dong.
+
+"use strict";
+
+const { kiemToKhai, LOI } = require("../../hop-dong");
+const { taoBoDinhTuyen } = require("./dinh-tuyen");
+const { taoBus } = require("./bus");
+
+function taoKhung({ cong, toKhais, nhatKy, cauHinh = {} }) {
+  if (!Array.isArray(toKhais)) throw new Error("taoKhung can `toKhais` la mang to khai module");
+  const ky = nhatKy ?? cong?.nhatKy ?? { tin: () => {}, canhBao: () => {} };
+  const bus = taoBus({ nhatKy: ky });
+  const boDinhTuyen = taoBoDinhTuyen();
+  const daNap = [];
+  /** @type {Map<string, { moduleId: string, ham: Function }>} so dich vu: ten -> nguoi cap */
+  const soDichVu = new Map();
+  /** Cho noi sau khi da nap het: module xin dich vu cua module nap sau no. */
+  const chuaNoi = [];
+
+  for (const tk of toKhais) {
+    const toKhai = kiemToKhai(tk, tk?.id ?? "khong ro");
+    if (toKhai.chay !== "server-khach") {
+      throw new Error(`Module "${toKhai.id}" khai chay o "${toKhai.chay}" — server khach khong nap no.`);
+    }
+
+    // CHI phat nhung cong module da xin. Xin thieu thi no gay ngay o dong dung no,
+    // chu khong lang le dung nho cong cua module khac.
+    const congChoModule = {};
+    for (const ten of toKhai.canCong ?? []) {
+      if (ten === "bus" || ten === "cauHinh") continue;
+      if (!cong || cong[ten] === undefined) {
+        throw new Error(`Module "${toKhai.id}" xin cong "${ten}" nhung khung khong co cong do.`);
+      }
+      congChoModule[ten] = cong[ten];
+    }
+
+    const suKienPhat = new Set(toKhai.suKien?.phat ?? []);
+    const busChoModule = {
+      phat(ten, duLieu) {
+        if (!suKienPhat.has(ten)) {
+          throw new Error(`Module "${toKhai.id}" phat su kien "${ten}" ma khong khai trong suKien.phat.`);
+        }
+        return bus.phat(ten, duLieu);
+      },
+      soDoNghe: () => bus.soDoNghe()
+    };
+
+    // Dich vu module nay XIN. Noi sau khi nap het, vi nguoi cap co the nap sau.
+    const dichVuChoModule = {};
+    chuaNoi.push({ toKhai, dichVuChoModule });
+
+    const ctx = {
+      id: toKhai.id,
+      cong: congChoModule,
+      bus: busChoModule,
+      dichVu: dichVuChoModule,
+      cauHinh: cauHinh[toKhai.id] ?? {}
+    };
+
+    // Dich vu module nay CAP cho nguoi khac. Buoc san `ctx` CUA NGUOI CAP vao — nguoi goi
+    // chi truyen doi so nghiep vu, va khong bao gio cham duoc cong cua module khac.
+    for (const [ten, ham] of Object.entries(toKhai.capDichVu ?? {})) {
+      if (soDichVu.has(ten)) {
+        throw new Error(`Dich vu "${ten}" bi cap hai lan: module "${soDichVu.get(ten).moduleId}" va "${toKhai.id}".`);
+      }
+      soDichVu.set(ten, { moduleId: toKhai.id, ham: (...ds) => ham(ctx, ...ds) });
+    }
+
+    for (const d of toKhai.duong ?? []) {
+      boDinhTuyen.them({ method: d.method, path: d.path, moduleId: toKhai.id, tay: (yc) => d.tay(ctx, yc) });
+    }
+    for (const [ten, ham] of Object.entries(toKhai.suKien?.nghe ?? {})) {
+      bus.nghe(ten, toKhai.id, (duLieu) => ham(ctx, duLieu));
+    }
+
+    daNap.push({ toKhai, ctx });
+    ky.tin(`[khung] nap module "${toKhai.id}" (${toKhai.ten}) — ${(toKhai.duong ?? []).length} duong`);
+  }
+
+  // Noi dich vu sau khi da nap het module. Thieu mot dich vu la NEM ngay — de nguoi dung
+  // biet ho vua tat mot module ma module khac dang dua vao, chu khong de bot tra loi thieu.
+  for (const { toKhai, dichVuChoModule } of chuaNoi) {
+    for (const ten of toKhai.canDichVu ?? []) {
+      const nguoiCap = soDichVu.get(ten);
+      if (!nguoiCap) {
+        throw new Error(
+          `Module "${toKhai.id}" xin dich vu "${ten}" nhung khong module nao dang bat cap no ` +
+          `(module "${ten.split(".")[0]}" chua nap hoac da tat).`
+        );
+      }
+      const [nhom, viec] = [ten.split(".")[0], ten.split(".")[1]];
+      if (!dichVuChoModule[nhom]) dichVuChoModule[nhom] = {};
+      dichVuChoModule[nhom][viec] = nguoiCap.ham;
+    }
+    Object.freeze(dichVuChoModule);
+  }
+
+  /** Xu ly mot yeu cau da chuan hoa. Khong dung den Node http — goi thang duoc trong test. */
+  async function xuLy(yc) {
+    const tim = boDinhTuyen.tim(yc.method, yc.duong);
+    if (tim === null) return { ma: 404, than: { ok: false, error: LOI.khong_thay } };
+    if (tim.saiPhuongThuc) return { ma: 405, than: { ok: false, error: LOI.sai_yeu_cau, message: "Phuong thuc khong dung cho duong nay." } };
+
+    try {
+      const ra = await tim.tay({ ...yc, tham: tim.tham ?? {} });
+      if (!ra || typeof ra !== "object") {
+        throw new Error(`Module "${tim.moduleId}" khong tra ve gi cho ${yc.method} ${yc.duong}`);
+      }
+      return ra;
+    } catch (e) {
+      ky.canhBao(`[khung] module "${tim.moduleId}" loi o ${yc.method} ${yc.duong}: ${e?.stack || e}`);
+      return { ma: 500, than: { ok: false, error: LOI.loi_he_thong } };
+    }
+  }
+
+  return {
+    xuLy,
+    bus,
+    banDuong: () => boDinhTuyen.banDuong(),
+    banDichVu: () => [...soDichVu.entries()].map(([ten, x]) => ({ ten, module: x.moduleId })),
+    danhSachModule: () => daNap.map((m) => ({
+      id: m.toKhai.id, ten: m.toKhai.ten, mang: m.toKhai.mang, phienBan: m.toKhai.phienBan,
+      duong: (m.toKhai.duong ?? []).length,
+      congCuBot: (m.toKhai.congCuBot ?? []).map((c) => c.ten)
+    })),
+    /** Moi cong cu bot cua moi module — bo nao doc danh sach nay qua API. */
+    congCuBot: () => daNap.flatMap((m) => (m.toKhai.congCuBot ?? []).map((c) => ({ ...c, module: m.toKhai.id })))
+  };
+}
+
+module.exports = { taoKhung };

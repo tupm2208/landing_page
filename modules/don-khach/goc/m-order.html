@@ -1,0 +1,63 @@
+<!DOCTYPE html>
+<html lang="vi">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="robots" content="noindex">
+<title>Đặt đơn nhanh — TopRun</title>
+<style>
+:root{--ink:#1d1c19;--muted:#6a675f;--line:#e2ded4;--bg:#f7f6f2;--card:#fff;--acc:#d9480f;--ok:#1f6b3a}
+*{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--ink);font:15px/1.5 system-ui,"Segoe UI",Roboto,sans-serif}
+.wrap{max-width:520px;margin:0 auto;padding:14px 14px 40px}
+.brand{display:flex;align-items:center;gap:8px;font-weight:700;padding:6px 0 10px}
+.brand small{color:var(--muted);font-weight:400}
+.card{background:var(--card);border:1px solid var(--line);border-radius:10px;padding:14px;margin-bottom:12px}
+.prod{display:flex;gap:12px}.prod img{width:96px;height:96px;object-fit:cover;border-radius:8px;border:1px solid var(--line)}
+.prod .n{font-weight:600}.prod .c{color:var(--muted);font-size:13px}
+.price{color:var(--acc);font-weight:700;font-size:18px;margin-top:4px}
+label{display:block;margin:10px 0 4px;font-size:13px;color:var(--muted)}
+input,select,textarea{width:100%;padding:10px 12px;border:1px solid var(--line);border-radius:8px;font:inherit;background:#fff}
+textarea{min-height:56px;resize:vertical}
+.primary-button{width:100%;margin-top:14px;padding:13px;border:0;border-radius:10px;background:var(--acc);color:#fff;font-weight:700;font-size:16px;cursor:pointer}
+.primary-button[disabled]{opacity:.6}
+.form-message{min-height:20px;font-size:13px;color:#a33a2a;margin:8px 0 0}
+.note{color:var(--muted);font-size:12.5px;margin-top:8px}
+.okbox{text-align:center;padding:26px 10px}.okbox .big{font-size:40px}.okbox h2{margin:8px 0 4px}
+.hidden{display:none}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <div class="brand">TOP RUN <small>· Đặt đơn nhanh từ Messenger</small></div>
+  <div class="card" id="product-card"><div class="prod"><div>Đang tải sản phẩm…</div></div></div>
+  <!-- v72: o chon size render dong theo TUNG san pham trong #product-card (the nhieu mon) -->
+  <form class="card" id="m-order-form" autocomplete="on">
+    <label>Họ tên</label>
+    <input name="customerName" autocomplete="name" required placeholder="Nguyễn Văn A">
+    <label>Số điện thoại</label>
+    <input name="phone" autocomplete="tel" inputmode="tel" required pattern="^(0|\+84)(3|5|7|8|9)[0-9]{8}$" placeholder="09xxxxxxxx">
+    <label>Tỉnh/TP</label>
+    <input name="province" autocomplete="address-level1" required placeholder="Tìm Tỉnh/TP">
+    <label>Huyện/Quận</label>
+    <input name="district" autocomplete="address-level2" placeholder="Chọn Tỉnh/TP trước">
+    <label>Xã/Phường</label>
+    <input name="ward" autocomplete="address-level3" required placeholder="Chọn Xã/Phường">
+    <label>Địa chỉ chi tiết</label>
+    <input name="addressDetail" autocomplete="street-address" required placeholder="Số nhà, tên đường">
+    <label>Ghi chú (nếu có)</label>
+    <textarea name="note" placeholder="Thời gian nhận hàng, dặn shipper..."></textarea>
+    <button class="primary-button" type="submit" id="submit-btn">Đặt đơn</button>
+    <p class="form-message" id="m-order-message"></p>
+    <p class="note">Đơn trong dịp lễ sẽ được TopRun kiểm tra lại trước khi gửi đi. Đặt xong bạn sẽ được chuyển tới trang đơn hàng để chọn cách thanh toán (COD/chuyển khoản).</p>
+  </form>
+  <div class="card okbox hidden" id="ok-box">
+    <div class="big">✅</div>
+    <h2>Đã nhận đơn!</h2>
+    <p id="ok-detail"></p>
+    <a class="primary-button" id="ok-link" style="display:block;text-decoration:none">Xem đơn & chọn cách thanh toán</a>
+  </div>
+</div>
+<script src="/address-kit.js?v=20260808-addrkit-3" charset="utf-8"></script>
+<script src="/m-order.js?v=20260902-multiitems-1" charset="utf-8"></script>
+</body>
+</html>

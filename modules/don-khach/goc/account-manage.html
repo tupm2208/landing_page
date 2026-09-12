@@ -1,0 +1,127 @@
+<!doctype html>
+<html lang="vi">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>TopRun - Theo dõi đơn hàng</title>
+  <link rel="stylesheet" href="/account.css?v=20260711-order-dashboard-3d">
+</head>
+<body>
+  <main class="account-shell manage-shell">
+    <section class="account-panel manage-page">
+      <div class="manage-title">
+        <div>
+          <a class="back-link" href="/">TopRun</a>
+          <p class="welcome-line" id="welcome-line">Chào mừng bạn quay lại TopRun</p>
+          <h1>Theo dõi đơn hàng</h1>
+          <p class="muted">Xem lại đơn hàng, sản phẩm đã đặt, trạng thái xử lý và thông tin giao hàng.</p>
+        </div>
+        <div class="top-actions">
+          <a class="secondary nav-button action-3d" href="/">Về trang chủ</a>
+          <button id="logout-button" class="secondary compact action-3d danger-action" type="button">Đăng xuất</button>
+        </div>
+      </div>
+
+      <div id="manage-status" class="notice">Đang tải thông tin tài khoản...</div>
+
+      <section id="manage-content" class="manage-layout" hidden>
+        <nav class="manage-nav" aria-label="Quản lý tài khoản">
+          <button class="manage-nav-button active action-3d" type="button" data-manage-view="orders">Đơn hàng</button>
+          <button class="manage-nav-button action-3d" type="button" data-manage-view="profile">Thông tin cá nhân</button>
+          <button class="manage-nav-button action-3d" type="button" data-manage-view="address">Địa chỉ</button>
+        </nav>
+
+        <div class="manage-main">
+          <section class="manage-view active" id="orders-view" data-manage-panel="orders">
+            <div class="section-head">
+              <div>
+                <h2>Đơn hàng của bạn</h2>
+                <p class="muted small"><span id="order-count">0</span> đơn hàng đang lưu trong tài khoản.</p>
+              </div>
+              <button id="refresh-orders" class="secondary compact action-3d" type="button">Làm mới</button>
+            </div>
+            <div id="orders-list" class="orders-list"></div>
+          </section>
+
+          <section class="manage-view" id="profile-view" data-manage-panel="profile" hidden>
+            <div class="section-head">
+              <div>
+                <h2>Thông tin cá nhân</h2>
+                <p class="muted small">Thông tin này được ẩn khỏi màn đơn hàng để trang gọn hơn.</p>
+              </div>
+            </div>
+            <form id="profile-form" class="profile-grid">
+              <label>Tên đăng nhập
+                <input name="username" disabled>
+              </label>
+              <label>Tên hiển thị / Họ tên
+                <input name="name" autocomplete="name" placeholder="Chưa cập nhật">
+              </label>
+              <label>Ngày sinh
+                <input name="dateOfBirth" type="date" autocomplete="bday">
+              </label>
+              <label>Giới tính
+                <select name="gender">
+                  <option value="">Chưa cập nhật</option>
+                  <option value="male">Nam</option>
+                  <option value="female">Nữ</option>
+                  <option value="other">Khác</option>
+                </select>
+              </label>
+              <label>Email
+                <input name="email" type="email" autocomplete="email" placeholder="Chưa cập nhật">
+              </label>
+              <label>Số điện thoại
+                <input name="phone" autocomplete="tel" inputmode="tel" placeholder="Chưa cập nhật">
+              </label>
+              <div class="wide info-grid compact-info">
+                <div>
+                  <span>Email xác thực</span>
+                  <strong id="email-status">-</strong>
+                </div>
+              </div>
+              <div class="wide form-actions">
+                <p class="muted small">Mọi thay đổi hồ sơ/địa chỉ cần xác thực qua email trước khi áp dụng.</p>
+                <button class="primary action-3d" type="submit">Gửi xác thực thay đổi</button>
+              </div>
+            </form>
+          </section>
+
+          <section class="manage-view" id="address-view" data-manage-panel="address" hidden>
+            <div class="section-head">
+              <div>
+                <h2>Địa chỉ nhận hàng</h2>
+                <p class="muted small">Địa chỉ mặc định được lấy từ lần đặt hàng gần nhất.</p>
+              </div>
+            </div>
+            <form id="address-form" class="profile-grid">
+              <label>Tỉnh/TP theo đơn vị hành chính cũ
+                <input name="province" autocomplete="address-level1" placeholder="Tìm Tỉnh/TP">
+              </label>
+              <label>Huyện/Quận theo đơn vị hành chính cũ
+                <input name="district" autocomplete="address-level2" placeholder="Chọn Tỉnh/TP trước">
+              </label>
+              <label>Xã/Phường theo đơn vị hành chính cũ
+                <input name="ward" autocomplete="address-level3" placeholder="Chọn Huyện/Quận trước">
+              </label>
+              <label class="wide">Địa chỉ chi tiết
+                <input name="addressDetail" autocomplete="street-address" placeholder="Số nhà, tên đường">
+              </label>
+              <label class="wide">Địa chỉ đầy đủ đang lưu
+                <input name="fullAddress" disabled>
+              </label>
+              <div class="wide form-actions">
+                <p class="muted small">Cập nhật địa chỉ sẽ tạo yêu cầu xác thực trước khi áp dụng.</p>
+                <button class="primary action-3d" type="submit">Gửi xác thực thay đổi</button>
+              </div>
+            </form>
+          </section>
+        </div>
+      </section>
+
+      <p id="manage-message" class="message"></p>
+    </section>
+  </main>
+  <script src="/account-manage.js?v=20260801-address-v2-1" charset="utf-8"></script>
+</body>
+</html>

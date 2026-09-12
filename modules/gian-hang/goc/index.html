@@ -1,0 +1,192 @@
+<!doctype html>
+<html lang="vi">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>toprunvn - Tổng hợp hàng sale order</title>
+  <link rel="stylesheet" href="styles.css?v=20260814-pay2step-1">
+</head>
+<body>
+  <header class="site-header">
+    <a class="brand" href="#top" aria-label="toprunvn">
+      <span class="brand-mark">TR</span>
+      <span>toprunvn</span>
+    </a>
+    <nav aria-label="Điều hướng">
+      <a href="#products">Sản phẩm</a>
+      <a href="#filters">Bộ lọc</a>
+      <a href="/order-status.html">Tra cứu đơn</a>
+      <a href="#contact">Liên hệ</a>
+    </nav>
+    <div class="account-actions" aria-label="Tài khoản khách hàng">
+      <a class="account-link" id="header-account-link" href="/account.html">Đăng nhập / Đăng ký</a>
+    </div>
+  </header>
+
+  <main id="top">
+    <section class="hero">
+      <div class="hero-copy">
+        <p class="eyebrow">TopRun Vietnam</p>
+        <h1>Tổng hợp hàng sale order</h1>
+        <p>Catalog cập nhật theo file sản phẩm mới, hiển thị size còn, giá niêm yết, giá sale và ảnh đại diện để khách lọc nhanh trước khi đặt hàng.</p>
+        <div class="hero-actions">
+          <a class="primary-button" href="#products">Xem sản phẩm</a>
+          <button class="secondary-button" id="show-orderable-button" type="button">Chỉ hiện hàng đang bán</button>
+        </div>
+      </div>
+      <div class="hero-card" id="featured-product"></div>
+    </section>
+
+    <section class="stats" aria-label="Thống kê catalog">
+      <div>
+        <strong id="stat-orderable">0</strong>
+        <span>Sản phẩm đang bán</span>
+      </div>
+      <div>
+        <strong id="stat-own">0</strong>
+        <span>Hàng nội bộ TopRun</span>
+      </div>
+      <div>
+        <strong id="stat-partner">0</strong>
+        <span>Hàng đối tác</span>
+      </div>
+    </section>
+
+    <section class="catalog-section" id="products">
+      <div class="section-heading">
+        <div>
+          <p class="eyebrow">Catalog</p>
+          <h2>Sản phẩm toprunvn</h2>
+        </div>
+        <span class="result-count" id="result-count">0 sản phẩm</span>
+      </div>
+
+      <div class="catalog-layout">
+        <aside class="filter-panel" id="filters" aria-label="Bộ lọc sản phẩm">
+          <div class="filter-panel-header">
+            <strong>Bộ lọc</strong>
+            <button class="text-button" id="share-filters" type="button">🔗 Chia sẻ</button>
+            <button class="text-button" id="reset-filters" type="button">Reset</button>
+          </div>
+
+          <div class="sale-filter-box" aria-label="Loc theo phan tram sale">
+            <div>
+              <strong>Loc theo % sale</strong>
+              <span>Chon nhanh muc giam gia</span>
+            </div>
+            <div class="sale-filter-buttons">
+              <button type="button" class="sale-filter-button active" data-sale-filter="all">Tat ca</button>
+              <button type="button" class="sale-filter-button" data-sale-filter="30">Sale 30%+</button>
+              <button type="button" class="sale-filter-button" data-sale-filter="50">Sale 50%+</button>
+              <button type="button" class="sale-filter-button" data-sale-filter="70">Sale 70%+</button>
+              <button type="button" class="sale-filter-button ban-filter-button" data-ban-filter="san">&#127793; H&#224;ng s&#7861;n</button>
+            </div>
+          </div>
+
+          <label>
+            Tìm mã / tên
+            <input id="query-filter" type="search" placeholder="VD: JK2314, Boston, size 42">
+          </label>
+
+          <div class="type-filter-card">
+            <div class="filter-label">Loại</div>
+            <select id="type-filter" class="visually-hidden" aria-hidden="true" tabindex="-1">
+              <option value="all">-- Tất cả --</option>
+            </select>
+            <div class="type-choice-panel" id="type-choice-panel"></div>
+          </div>
+
+          <label>
+            Môn TT
+            <select id="sport-filter" class="visually-hidden" aria-hidden="true" tabindex="-1">
+              <option value="all">-- Tất cả --</option>
+            </select>
+          </label>
+
+          <label>
+            Size
+            <select id="size-filter" class="visually-hidden" aria-hidden="true" tabindex="-1">
+              <option value="all">-- Tất cả --</option>
+            </select>
+          </label>
+
+          <label>
+            Giới tính
+            <select id="gender-filter" class="visually-hidden" aria-hidden="true" tabindex="-1">
+              <option value="all">-- Tất cả --</option>
+            </select>
+          </label>
+
+          <label>
+            Hãng
+            <select id="brand-filter" class="visually-hidden" aria-hidden="true" tabindex="-1">
+              <option value="all">-- Tất cả --</option>
+            </select>
+          </label>
+
+          <label>
+            Nguồn hàng
+          </label>
+
+          <div class="warehouse-filter-card">
+            <div class="warehouse-filter-head">
+              <span class="filter-label">Nguá»“n hÃ ng</span>
+              <small>lá»c nhanh</small>
+            </div>
+            <select id="warehouse-filter" class="visually-hidden" aria-hidden="true" tabindex="-1">
+              <option value="all">-- Táº¥t cáº£ --</option>
+            </select>
+            <div class="filter-choice-panel compact warehouse-choice-panel" id="warehouse-choice-panel"></div>
+          </div>
+
+          <label hidden>
+            <select id="source-filter" class="visually-hidden" aria-hidden="true" tabindex="-1">
+              <option value="all">-- Tất cả --</option>
+              <option value="own">Hàng nội bộ</option>
+              <option value="partner">Hàng đối tác</option>
+            </select>
+          </label>
+
+          <label>
+            Trạng thái
+            <select id="status-filter">
+              <option value="orderable">Đang bán</option>
+              <option value="all">-- Tất cả --</option>
+              <option value="hidden">Tạm ẩn</option>
+            </select>
+          </label>
+
+          <label>
+            Sắp xếp
+            <select id="sort-filter">
+              <option value="sale-desc-random" selected>Sale nhiều nhất</option>
+              <option value="price-asc">Giá thấp trước</option>
+              <option value="price-desc">Giá cao trước</option>
+            </select>
+          </label>
+        </aside>
+
+        <div class="catalog-content">
+          <div class="active-filter-row" id="active-filter-row"></div>
+          <div class="product-grid" id="product-grid"></div>
+        </div>
+      </div>
+    </section>
+
+    <section class="contact" id="contact">
+      <div>
+        <p class="eyebrow">Tư vấn nhanh</p>
+        <h2>Cần lọc theo chân, cự ly hoặc pace?</h2>
+        <p>Gửi size đang đi, chiều dài chân và mục đích tập. TopRun sẽ lọc mẫu phù hợp trước khi chốt đơn.</p>
+      </div>
+      <a class="primary-button" href="https://toprun.vn" target="_blank" rel="noreferrer">Mở toprun.vn</a>
+    </section>
+  </main>
+
+  <script src="/analytics.js?v=20260824-fb-attribution-1" charset="utf-8"></script>
+  <script src="/address-kit.js?v=20260808-addrkit-3" charset="utf-8"></script>
+  <script src="/checkout-shared.js?v=20260814-pay2step-1" charset="utf-8"></script>
+  <script src="/size-chart-kit.js?v=20260813-size-chart-1" charset="utf-8"></script>
+  <script src="app.js?v=20260824-fb-attribution-1" charset="utf-8"></script>
+</body>
+</html>

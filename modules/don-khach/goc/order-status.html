@@ -1,0 +1,80 @@
+<!doctype html>
+<html lang="vi">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>TopRun - Đơn hàng của bạn</title>
+  <link rel="stylesheet" href="/account.css?v=20260711-order-detail">
+  <style>
+    /* Khối QR thanh toán phần còn thiếu (pay2step 2026-08-14) */
+    .order-payment-transfer {
+      display: grid;
+      gap: 8px;
+      justify-items: center;
+      margin-top: 14px;
+      padding: 14px;
+      border: 1px solid rgba(22, 116, 79, 0.25);
+      border-radius: 10px;
+      background: #f7fbf8;
+      text-align: center;
+    }
+    .order-payment-transfer .muted {
+      margin: 0;
+      font-size: 13px;
+    }
+    .order-payment-qr {
+      width: min(240px, 80vw);
+      height: auto;
+      border: 1px solid #dfe7e0;
+      border-radius: 8px;
+      background: #fff;
+    }
+    .order-payment-reference {
+      display: flex;
+      flex-wrap: wrap;
+      align-items: center;
+      justify-content: center;
+      gap: 8px;
+      margin: 0;
+      font-size: 15px;
+    }
+    .order-payment-reference b {
+      color: #a20a6c;
+    }
+    .order-payment-reference button {
+      min-height: 32px;
+      border: 1px solid #dfe7e0;
+      border-radius: 8px;
+      padding: 4px 12px;
+      background: #eef3ef;
+      font-weight: 700;
+      cursor: pointer;
+    }
+  </style>
+</head>
+<body>
+  <main class="account-shell">
+    <section class="account-panel auth-panel order-detail-page">
+      <a class="back-link" href="/">TopRun</a>
+      <p class="welcome-line">Đơn hàng TopRun</p>
+      <h1>Đơn hàng của bạn</h1>
+      <p class="muted">Link riêng sau khi đặt hàng cho phép xem chi tiết đơn. Sau 15 phút, thông tin người nhận sẽ được ẩn để bảo mật.</p>
+
+      <form id="lookup-form" class="account-form">
+        <label>Mã đơn hàng
+          <input name="orderId" autocomplete="off" required placeholder="ORD-...">
+        </label>
+        <label>Mã bí mật
+          <input name="lookupSecret" autocomplete="one-time-code" required placeholder="TR-XXXX-XXXX-XXXX">
+        </label>
+        <button class="primary action-3d" type="submit">Tra cứu trạng thái</button>
+        <p class="muted small">Mã bí mật hiển thị tên khách, sản phẩm và vận đơn; không hiển thị số điện thoại hoặc địa chỉ.</p>
+      </form>
+
+      <section id="order-status-result" class="profile-panel" hidden></section>
+      <p id="lookup-message" class="message"></p>
+    </section>
+  </main>
+  <script src="/order-status.js?v=20260824-secret-1" charset="utf-8"></script>
+</body>
+</html>

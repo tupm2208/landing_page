@@ -1,0 +1,70 @@
+<!doctype html>
+<html lang="vi">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>toprunvn mobile</title>
+  <link rel="stylesheet" href="mobile-v1.css?v=20260814-pay2step-1">
+</head>
+<body>
+  <header class="mobile-header">
+    <div class="brand"><span>TR</span><strong>toprunvn</strong></div>
+    <div class="mobile-header-actions">
+      <a class="account-button" href="/account.html">Tài khoản</a>
+      <button id="cart-button" type="button">Giỏ <b id="cart-count">0</b></button>
+    </div>
+  </header>
+
+  <main>
+    <section class="mobile-filters">
+      <input id="query-filter" type="search" placeholder="T&#236;m m&#227; / t&#234;n">
+      <button id="filter-toggle" class="filter-toggle open" type="button" aria-expanded="true" aria-controls="advanced-filters">
+        <span id="filter-toggle-label">&#7848;n b&#7897; l&#7885;c</span>
+        <b id="filter-count">0</b>
+      </button>
+      <div id="advanced-filters" class="advanced-filters">
+        <select id="size-filter"><option value="all">Size / k&#237;ch th&#432;&#7899;c</option></select>
+        <select id="gender-filter"><option value="all">Gi&#7899;i t&#237;nh</option></select>
+        <select id="category-filter"><option value="all">M&#244;n th&#7875; thao</option></select>
+        <select id="division-filter"><option value="all">Nh&#243;m h&#224;ng</option></select>
+        <select id="brand-filter"><option value="all">Th&#432;&#417;ng hi&#7879;u</option></select>
+        <select id="warehouse-filter"><option value="all">Kho nhanh</option></select>
+        <select id="sort-filter">
+          <option value="sale-desc-random">S&#7855;p x&#7871;p: Sale nhi&#7873;u nh&#7845;t</option>
+          <option value="price-asc">S&#7855;p x&#7871;p: Gi&#225; th&#7845;p tr&#432;&#7899;c</option>
+          <option value="price-desc">S&#7855;p x&#7871;p: Gi&#225; cao tr&#432;&#7899;c</option>
+        </select>
+        <div class="mobile-sale-filter" aria-label="L&#7885;c theo % sale">
+          <button type="button" data-sale-filter="all" class="active">T&#7845;t c&#7843;</button>
+          <button type="button" data-sale-filter="30">Sale 30%+</button>
+          <button type="button" data-sale-filter="50">Sale 50%+</button>
+          <button type="button" data-sale-filter="70">Sale 70%+</button>
+          <button type="button" data-ban-filter="san">&#127793; H&#224;ng s&#7861;n</button>
+        </div>
+        <button id="share-filters" class="reset-filters share-filters" type="button">&#128279; Chia s&#7867; b&#7897; l&#7885;c</button>
+        <button id="reset-filters" class="reset-filters" type="button">X&#243;a b&#7897; l&#7885;c</button>
+      </div>
+      <div id="result-count" class="result-count"></div>
+    </section>
+    <section class="mobile-grid" id="product-grid"></section>
+  </main>
+
+  <aside class="cart-panel" id="cart-panel">
+    <div class="cart-box">
+      <div class="cart-head">
+        <strong>Gi&#7887; h&#224;ng</strong>
+        <button id="cart-close" type="button">X</button>
+      </div>
+      <div id="cart-items"></div>
+      <div class="cart-total"><span>T&#7841;m t&#237;nh</span><strong id="cart-total">0&#273;</strong></div>
+      <button id="checkout-button" type="button">&#272;&#7863;t h&#224;ng</button>
+    </div>
+  </aside>
+
+  <script src="/analytics.js?v=20260824-fb-attribution-1" charset="utf-8"></script>
+  <script src="/address-kit.js?v=20260808-addrkit-3" charset="utf-8"></script>
+  <script src="/size-chart-kit.js?v=20260813-size-chart-1" charset="utf-8"></script>
+  <script src="checkout-shared.js?v=20260814-pay2step-1" charset="utf-8"></script>
+  <script src="mobile-v1.js?v=20260824-fb-attribution-1" charset="utf-8"></script>
+</body>
+</html>
