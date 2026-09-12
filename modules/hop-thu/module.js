@@ -61,9 +61,38 @@ async function nhanWebhook(ctx, yc) {
 
   // Chi phat len bang tin khi da xac minh that. Bo nao nghe su kien nay de tra loi khach.
   if (daXacMinh) {
-    for (const tin of bocTinNhan(goi)) ctx.bus.phat(SU_KIEN.tin_nhan_den, tin);
+    for (const tin of bocTinNhan(goi)) {
+      ctx.bus.phat(SU_KIEN.tin_nhan_den, tin);
+      daySangBoNao(ctx, tin);
+    }
   }
   return { ma: 200, than: { ok: true, daXacMinh } };
+}
+
+/**
+ * Day tin sang bo nao tren Xeon.
+ *
+ * KHONG CHO ket qua, va loi o day KHONG duoc chan cau tra loi 200 cho Meta: Meta gui lai
+ * moi phan hoi khac 2xx, nen bo nao chet la Meta gui lai vo han va hop thu day rac. Tin da
+ * nam trong so roi — bo nao song lai thi keo ve duoc.
+ */
+function daySangBoNao(ctx, tin) {
+  const { diaChi, ma, tenant } = ctx.cauHinh.boNao ?? {};
+  if (!diaChi) return;                       // chua noi bo nao: hop thu van chay binh thuong
+  const goc = String(diaChi).replace(/\/+$/, "");
+  Promise.resolve()
+    .then(() => ctx.cong.httpNgoai.goi(`${goc}/tin-den`, {
+      method: "POST",
+      hanMs: 8000,
+      headers: { "Content-Type": "application/json", Authorization: `Bearer ${ma}` },
+      body: JSON.stringify({
+        tenant: String(tenant || ""),
+        kenh: tin.kenh, nguoi: tin.nguoi, chu: tin.chu, soAnh: tin.soAnh,
+        maTin: tin.maTin, maHoiThoai: `${tin.kenh}:${tin.nguoi}`, luc: tin.luc
+      })
+    }))
+    .then((tl) => { if (!tl.ok) ctx.cong.nhatKy.canhBao(`[hop-thu] bo nao tu choi tin: HTTP ${tl.status}`); })
+    .catch((e) => ctx.cong.nhatKy.canhBao(`[hop-thu] khong day duoc tin sang bo nao: ${e?.message || e}`));
 }
 
 module.exports = {

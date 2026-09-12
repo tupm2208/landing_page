@@ -122,6 +122,16 @@ function taoKhung({ cong, toKhais, nhatKy, cauHinh = {} }) {
       if (!dichVuChoModule[nhom]) dichVuChoModule[nhom] = {};
       dichVuChoModule[nhom][viec] = nguoiCap.ham;
     }
+    for (const ten of toKhai.canDichVuNeuCo ?? []) {
+      const nguoiCap = soDichVu.get(ten);
+      if (!nguoiCap) {
+        ky.tin(`[khung] module "${toKhai.id}": dich vu "${ten}" khong co — phan dung no dang TAT.`);
+        continue;
+      }
+      const [nhom, viec] = [ten.split(".")[0], ten.split(".")[1]];
+      if (!dichVuChoModule[nhom]) dichVuChoModule[nhom] = {};
+      dichVuChoModule[nhom][viec] = nguoiCap.ham;
+    }
     Object.freeze(dichVuChoModule);
   }
 

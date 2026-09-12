@@ -208,6 +208,63 @@ test("Desk keo tin ve van phai co ma quan tri", async () => {
   assert.equal(coMa.than.events.length, 1);
 });
 
+test("co cau hinh bo nao thi tin duoc day sang Xeon, kem ma dich vu", async () => {
+  const thuMuc = fs.mkdtempSync(path.join(os.tmpdir(), "hop-thu-bn-"));
+  const nhatKy = taoNhatKyGia();
+  const daGoi = [];
+  const httpNgoai = {
+    async goi(url, tuyChon = {}) {
+      daGoi.push({ url: String(url), tuyChon });
+      return { ok: true, status: 200, json: async () => ({ ok: true }), text: async () => "" };
+    }
+  };
+  const kho = taoKhoTep({ thuMuc, nhatKy });
+  const khung = taoKhung({
+    cong: { kho, nhatKy, gio: taoGioGia(), httpNgoai, quyen: taoCongQuyen({ maQuanTri: MA_QUAN_TRI }) },
+    nhatKy, toKhais: [toKhaiHopThu],
+    cauHinh: { "hop-thu": { verifyToken: VERIFY, appSecret: APP_SECRET, tokenTrang: "tk",
+      boNao: { diaChi: "https://xeon.example.vn", ma: "ma-bo-nao", tenant: "toprun" } } }
+  });
+
+  await khung.xuLy(yeuCauWebhook(goiTin("còn size 42 không")));
+  await new Promise((r) => setImmediate(r));
+  await new Promise((r) => setImmediate(r));
+
+  const sangXeon = daGoi.find((g) => g.url.includes("/tin-den"));
+  assert.ok(sangXeon, `phai day tin sang bo nao: ${JSON.stringify(daGoi.map((g) => g.url))}`);
+  assert.equal(sangXeon.tuyChon.headers.Authorization, "Bearer ma-bo-nao");
+  const than = JSON.parse(sangXeon.tuyChon.body);
+  assert.equal(than.tenant, "toprun");
+  assert.equal(than.chu, "còn size 42 không");
+  assert.equal(than.nguoi, "khach-1");
+});
+
+test("bo nao chet thi VAN tra 200 cho Meta — khong de Meta gui lai vo han", async () => {
+  const thuMuc = fs.mkdtempSync(path.join(os.tmpdir(), "hop-thu-bn2-"));
+  const nhatKy = taoNhatKyGia();
+  const httpNgoai = { async goi() { throw new Error("Xeon chet"); } };
+  const khung = taoKhung({
+    cong: { kho: taoKhoTep({ thuMuc, nhatKy }), nhatKy, gio: taoGioGia(), httpNgoai, quyen: taoCongQuyen({ maQuanTri: MA_QUAN_TRI }) },
+    nhatKy, toKhais: [toKhaiHopThu],
+    cauHinh: { "hop-thu": { verifyToken: VERIFY, appSecret: APP_SECRET, tokenTrang: "tk",
+      boNao: { diaChi: "https://xeon.example.vn", ma: "x", tenant: "toprun" } } }
+  });
+
+  const ra = await khung.xuLy(yeuCauWebhook(goiTin()));
+  assert.equal(ra.ma, 200, "bo nao chet khong duoc lam hop thu tra loi khac 200");
+  await new Promise((r) => setImmediate(r));
+  await new Promise((r) => setImmediate(r));
+  assert.ok(nhatKy.dong.some((d) => /khong day duoc tin sang bo nao/.test(d.noiDung)), "phai ghi nhat ky");
+});
+
+test("chua noi bo nao thi hop thu van chay binh thuong", async () => {
+  const { khung, httpNgoai } = dungThu();
+  const ra = await khung.xuLy(yeuCauWebhook(goiTin()));
+  assert.equal(ra.ma, 200);
+  await new Promise((r) => setImmediate(r));
+  assert.equal(httpNgoai.daGoi.filter((g) => String(g.url).includes("/tin-den")).length, 0);
+});
+
 test("chu ky tinh tren RAW BYTE, khong phai tren JSON doc lai", () => {
   const tho = Buffer.from('{"object":"page",  "entry":[]}', "utf8");        // co hai dau cach
   const docLai = Buffer.from(JSON.stringify(JSON.parse(tho.toString())), "utf8");
