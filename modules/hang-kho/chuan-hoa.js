@@ -220,9 +220,17 @@ function sizeCongKhai(mon = {}, dong = {}) {
   const size = String(dong.size || "").trim();
   if (!size) return null;
   const conLai = Math.max(0, Number(dong.qty ?? dong.available ?? dong.stockQty ?? 0));
-  const maKho = String(dong.warehouseId || "").trim() || khoaKho(dong.warehouse || dong.warehouseName);
-  const tenKho = String(dong.warehouse || dong.warehouseName || maKho).trim();
-  const nhan = nhanKho(maKho, tenKho);
+  // CHIEN DICH DOI TAC: ra ngoai la kho cua TopRun, khong phai kho cua doi tac. Anh Dung
+  // 10/09/2026: cau gui khach cam kem ten kho / ten doi tac. Trong so van giu ten that —
+  // doi tac mua ho phai biet dat mua o dau — nhung ban nay la ban DUY NHAT ra khoi may.
+  // Theo TUNG DONG: mot mon co the vua co dong hang nha vua co dong chien dich doi tac (cung
+  // ma). Xet theo ca mon thi dong chien dich trong mon hang nha se lo ten doi tac.
+  const laChienDich = String(dong.nguon || "").trim() === "campaign" || Boolean(mon.partnerCampaign);
+  const maKho = laChienDich
+    ? "wh_toprun"
+    : (String(dong.warehouseId || "").trim() || khoaKho(dong.warehouse || dong.warehouseName));
+  const tenKho = laChienDich ? "TopRun" : String(dong.warehouse || dong.warehouseName || maKho).trim();
+  const nhan = laChienDich ? "TopRun" : nhanKho(maKho, tenKho);
   const gia = soDuongDauTien(dong.suggestedPrice, dong.salePrice, dong.sellPrice, dong.price);
   const giaNiemYet = soDuongDauTien(dong.listPrice, dong.originalPrice, mon.listPrice, mon.originalPrice);
   const uuTien = thuTuKho(mon, dong);
@@ -249,14 +257,16 @@ function sizeCongKhai(mon = {}, dong = {}) {
 function banCongKhai(mon = {}) {
   if (!mon || typeof mon !== "object") return null;
   const cacSize = (Array.isArray(mon.sizes) ? mon.sizes : []).map((d) => sizeCongKhai(mon, d)).filter(Boolean);
+  // Mon cua chien dich doi tac: khach chi thay "TopRun". Xem ghi chu trong `sizeCongKhai`.
+  const laChienDich = Boolean(mon.partnerCampaign);
   const gia = soDuongDauTien(mon.suggestedPrice, mon.salePrice, mon.sellPrice, mon.price);
   const giaNiemYet = soDuongDauTien(mon.listPrice, mon.originalPrice, mon.retailPrice, mon.marketPrice, mon.msrp);
   return {
     code: String(mon.code || "").trim(),
     originalCode: String(mon.originalCode || mon.code || "").trim(),
     name: String(mon.name || "").trim(),
-    source: mon.source === "partner" ? "partner" : "own",
-    sourceName: String(mon.sourceName || "TopRun").trim(),
+    source: (!laChienDich && mon.source === "partner") ? "partner" : "own",
+    sourceName: laChienDich ? "TopRun" : String(mon.sourceName || "TopRun").trim(),
     brand: String(mon.brand || "").trim(),
     productKind: String(mon.productKind || "").trim(),
     category: String(mon.category || "").trim(),

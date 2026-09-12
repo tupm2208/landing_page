@@ -6,7 +6,7 @@
   "main": "chay.js",
   "scripts": {
     "chay": "node chay.js",
-    "test": "node --test \"test/khai-quyen.test.js\" \"test/luat-kien-truc.test.js\" \"test/han-goi.test.js\" \"test/ve.test.js\" \"test/che-do-thu.test.js\" \"test/gian-hang.test.js\" \"test/don-cong-khai.test.js\" \"test/gio-mysql.test.js\" \"test/hop-thu.test.js\" \"test/van-chuyen.test.js\"",
+    "test": "node --test \"test/khai-quyen.test.js\" \"test/luat-kien-truc.test.js\" \"test/han-goi.test.js\" \"test/ve.test.js\" \"test/che-do-thu.test.js\" \"test/gian-hang.test.js\" \"test/don-cong-khai.test.js\" \"test/gio-mysql.test.js\" \"test/goi-that.test.js\" \"test/han-than.test.js\" \"test/hop-thu.test.js\" \"test/van-chuyen.test.js\"",
     "test:mysql": "node --test --test-concurrency=1 --test-timeout=90000 \"test/kho-mysql.test.js\" \"test/hang-kho.test.js\" \"test/don-khach.test.js\" \"test/tien-doi-soat.test.js\" \"test/mua-ho.test.js\""
   },
   "dependencies": {

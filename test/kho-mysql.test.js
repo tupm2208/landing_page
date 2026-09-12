@@ -110,6 +110,23 @@ test("MySQL thật", { ...(boQua || {}) }, async (t) => {
     );
   });
 
+  await t.test("bang KE THUA da khai thi duoc tao, du khong mang tien to", async () => {
+    // Ban dang chay co san bang `orders`; doi ten no la gay Sales Desk va Image Tool. Nen
+    // module duoc tao no — voi dieu kien da khai ro trong `bangKeThua`.
+    await kho.chayLuocDo(
+      "thu-bang",
+      [{ ten: "003-bang-ke-thua", bang: ["thu_bang_ke_thua"], sql: "CREATE TABLE IF NOT EXISTS thu_bang_ke_thua (x INT)" }],
+      { bangKeThua: ["thu_bang_ke_thua"] }
+    );
+    await kho.cauLenh("DROP TABLE IF EXISTS thu_bang_ke_thua", []);
+
+    // Va khai bang ke thua KHONG co trong danh sach thi van gay.
+    await assert.rejects(
+      () => kho.chayLuocDo("thu-bang", [{ ten: "004-la", bang: ["orders"], sql: "SELECT 1" }], { bangKeThua: ["order_items"] }),
+      /phải khai trong/
+    );
+  });
+
   await t.test("thêm, tìm, đếm, sửa, xoá", async () => {
     const bang = kho.bang(BANG);
     await bang.them({ ma: "D1", khach: "Anh A", tien: 100000, tao_luc: "2026-09-12 10:00:00" });

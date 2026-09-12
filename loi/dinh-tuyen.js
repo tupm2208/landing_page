@@ -25,13 +25,13 @@ function taoBoDinhTuyen() {
   const daKhai = new Set();
 
   return {
-    them({ method, path, moduleId, quyen, hanGoi, tay }) {
+    them({ method, path, moduleId, quyen, hanGoi, hanThan, tay }) {
       const khoa = `${method} ${path}`;
       if (daKhai.has(khoa)) {
         throw new Error(`Duong "${khoa}" bi khai hai lan — module "${moduleId}" trung voi module da khai truoc.`);
       }
       daKhai.add(khoa);
-      const r = { method, path, doan: phanDoan(path), moduleId, quyen, hanGoi, tay };
+      const r = { method, path, doan: phanDoan(path), moduleId, quyen, hanGoi, hanThan, tay };
       bang.push(r);
       // Duong co "*" (mat web bat moi thu con lai) phai xet SAU CUNG, va trong nhom do thi
       // duong sau nhieu doan cu the hon di truoc. Neu khong, mot module khai "GET /*" ma nap
@@ -49,14 +49,14 @@ function taoBoDinhTuyen() {
         const tham = khop(r.doan, doan);
         if (tham === null) continue;
         if (r.method !== method) { saiPhuongThuc = true; continue; }
-        return { tay: r.tay, moduleId: r.moduleId, quyen: r.quyen, hanGoi: r.hanGoi, tham, path: r.path };
+        return { tay: r.tay, moduleId: r.moduleId, quyen: r.quyen, hanGoi: r.hanGoi, hanThan: r.hanThan, tham, path: r.path };
       }
       return saiPhuongThuc ? { saiPhuongThuc: true } : null;
     },
 
     /** Danh sach duong da khai — bai kiem tra doc de doi chieu voi ban dang chay. */
     banDuong() {
-      return bang.map((r) => ({ method: r.method, path: r.path, moduleId: r.moduleId, quyen: r.quyen, hanGoi: r.hanGoi }));
+      return bang.map((r) => ({ method: r.method, path: r.path, moduleId: r.moduleId, quyen: r.quyen, hanGoi: r.hanGoi, hanThan: r.hanThan }));
     }
   };
 }

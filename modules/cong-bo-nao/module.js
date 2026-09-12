@@ -18,6 +18,7 @@
 "use strict";
 
 const { LOI } = require("../../../hop-dong");
+const { maKhoMu } = require("./ma-kho-mu");
 
 /** Mot mon o ban rut gon ma bo nao doi (`CatalogItemLite`). */
 function monGon(mon = {}) {
@@ -39,9 +40,9 @@ function dongTon(ma, d = {}) {
     itemId: String(ma || ""),
     variantId: String(d.maBienThe || ""),
     variantLabel: String(d.size || ""),
-    warehouseId: String(d.maKho || ""),
-    // Ten kho KHONG duoc gui sang bo nao: cau tra loi gui khach cam kem ten kho hay ten
-    // doi tac (anh Dung nhac 10/09). Bo nao chi can biet co may nguon, khong can biet ten.
+    // Ma kho bam di, ten kho de rong: cau tra loi gui khach cam kem ten kho hay ten doi tac
+    // (anh Dung nhac 10/09). Bo nao chi can biet co MAY nguon, khong can biet nguon nao.
+    warehouseId: maKhoMu(d.maKho),
     warehouseName: "",
     qty: Number(d.soLuong || 0),
     price: Number(d.gia || 0)

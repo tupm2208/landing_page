@@ -308,14 +308,20 @@ async function taoKhoMysql({ duongKetNoi, nhatKy, soKetNoiToiDa = 10, hanCauLenh
         }
       },
       /** Chay luoc do cua mot module. Da chay roi thi bo qua — chay lai bao nhieu lan cung duoc. */
-      async chayLuocDo(moduleId, cacBuoc = []) {
+      /**
+       * @param tuyChon.bangKeThua ten bang ke thua tu ban dang chay (orders, order_items...).
+       *   Nhung bang nay KHONG theo luat tien to — nhung phai duoc khai san trong to khai,
+       *   nen van chi co mot chu duy nhat. Khong khai thi luat tien to ap nhu thuong.
+       */
+      async chayLuocDo(moduleId, cacBuoc = [], { bangKeThua = [] } = {}) {
         const tienTo = `${String(moduleId).replace(/-/g, "_")}_`;
+        const duocPhep = new Set((Array.isArray(bangKeThua) ? bangKeThua : []).map((x) => String(x)));
         for (const buoc of cacBuoc) {
           const daCo = await chayRieng(`SELECT 1 FROM \`${BANG_LICH_SU}\` WHERE module = ? AND ten = ?`, [moduleId, buoc.ten]);
           if (daCo[0].length > 0) continue;
           for (const b of Array.isArray(buoc.bang) ? buoc.bang : []) {
-            if (!String(b).startsWith(tienTo)) {
-              throw new Error(`Module "${moduleId}" khai bảng "${b}" — tên bảng phải bắt đầu bằng "${tienTo}".`);
+            if (!String(b).startsWith(tienTo) && !duocPhep.has(String(b))) {
+              throw new Error(`Module "${moduleId}" khai bảng "${b}" — tên bảng phải bắt đầu bằng "${tienTo}", hoặc phải khai trong \`bangKeThua\`.`);
             }
           }
           // Mot buoc co the co nhieu cau lenh. KHONG bat `multipleStatements` cua trinh

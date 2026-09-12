@@ -16,6 +16,25 @@ const B_GIU = "hang_kho_giu_cho";
 
 const NGUON = { nha: "own", chienDich: "campaign", coSan: "ready" };
 
+/**
+ * AI DUOC TA MON KHI BA NGUON CUNG MOT MA.
+ *
+ * Mot doi giay co the vua nam trong danh muc hang nha, vua nam trong kho hang co san, vua nam
+ * trong chien dich doi tac. Bang `hang_kho_mon` giu MOT dong cho moi ma (ma la khoa chinh),
+ * nen phai chon mot nguon ta mon do: ten, anh, mo ta, duong dan.
+ *
+ * Danh muc hang nha ta ky nhat (co anh that, mo ta, SEO) nen no thang. Dong bo nguon yeu hon
+ * KHONG duoc de mo ta cua no len mo ta cua nguon manh hon — nhung bien the (size, gia, ton)
+ * thi nguon nao cung ghi phan cua minh, vi chung nam o bang khac.
+ *
+ * Truoc 12/09/2026 cho nay khong co: dong bo hang co san gap mot ma da co trong danh muc la
+ * NEM "Duplicate entry" va ca dot dong bo hong — tim ra khi day du lieu that cua anh Dung.
+ */
+const UU_TIEN_NGUON = { [NGUON.nha]: 3, [NGUON.chienDich]: 2, [NGUON.coSan]: 1 };
+
+/** Tran so mon tra ra khi doc ca danh muc. Cham tran la ghi canh bao, khong im lang. */
+const TRAN_DANH_MUC = 20000;
+
 function gioMySQL(d) {
   return new Date(d).toISOString().slice(0, 23).replace("T", " ");
 }
@@ -115,6 +134,9 @@ function dongThanhMon(dongMon, cacBienThe, dangGiu = new Map()) {
       warehouseId: d.ma_kho || "",
       warehouse: d.ma_kho || "",
       selectionRank: Number(d.thu_tu_kho ?? 2147483647),
+      // `nguon` cua CHINH DONG nay. Can no vi mot mon co the co ca dong hang nha va dong chien
+      // dich doi tac — ban cong khai phai che ten doi tac theo tung dong, khong theo ca mon.
+      nguon: d.nguon || "",
       ...(d.nguon === NGUON.coSan ? { stockMode: "ready" } : {}),
       partnerCampaignLineId: d.ma_dong_doi_tac || ""
     }))
@@ -163,9 +185,19 @@ function taoKhoHang(ctx) {
    */
   async function timMon(tuKhoa, gioiHan = 10) {
     const chu = String(tuKhoa || "").trim();
-    // Khong co tu khoa = ca danh muc (web ban hang can). Van co tran: 2.314 ma la mot goi
-    // lon, va khong co tran thi mot ngay nao do danh muc lon len va khong ai nhan ra.
-    if (!chu) return docTatCa(Number(gioiHan) || 5000);
+    // Khong co tu khoa = ca danh muc (web ban hang can). Van co tran — nhung tran phai NOI RA
+    // khi cham: 12/09/2026 danh muc that (hang nha + hang co san + chien dich) len 5.154 mon,
+    // dung tran cu 5.000 va 154 mon lang le khong len web. Do dung cai bay ma ghi chu cu noi.
+    if (!chu) {
+      const tran = Number(gioiHan) || TRAN_DANH_MUC;
+      const ds = await docTatCa(tran);
+      if (ds.length >= tran) {
+        ctx.cong.nhatKy.canhBao(
+          `[hang-kho] danh muc dung tran ${tran} mon — co mon KHONG len web. Nang tran len.`
+        );
+      }
+      return ds;
+    }
     const n = Math.min(Math.max(1, Number(gioiHan) || 10), 50);
     const [dong] = await kho.cauLenh(
       `SELECT *,
@@ -270,14 +302,54 @@ function taoKhoHang(ctx) {
       );
     }
 
+    let soMonGhi = 0;
+    let soMonNhuong = 0;
     await kho.giaoDich(async (trong) => {
+      // Bien the: nguon nao chi dung toi dong cua chinh nguon do.
       await trong.bang(B_BIEN_THE).xoa({ nguon });
-      await trong.bang(B_MON).xoa({ nguon });
-      if (dongMon.length) await trong.bang(B_MON).themNhieu(dongMon);
       if (dongBienThe.length) await trong.bang(B_BIEN_THE).themNhieu(dongBienThe);
+
+      // Mon: MOT dong cho moi ma, ba nguon dung chung.
+      const [dangCo] = await trong.cauLenh(`SELECT ma, nguon FROM \`${B_MON}\``, []);
+      const nguonCuaMa = new Map(dangCo.map((r) => [String(r.ma), String(r.nguon || "")]));
+      const maMoi = new Set(dongMon.map((d) => d.ma));
+
+      // Mon cua nguon nay ma goi moi khong con: chi xoa khi KHONG con bien the nao (cua bat ky
+      // nguon nao) tro toi. Xoa som la bo roi bien the cua nguon khac.
+      const maCanBo = [...nguonCuaMa.entries()].filter(([ma, ng]) => ng === nguon && !maMoi.has(ma)).map(([ma]) => ma);
+      if (maCanBo.length) {
+        const [conBienThe] = await trong.cauLenh(
+          `SELECT DISTINCT ma_mon FROM \`${B_BIEN_THE}\` WHERE ma_mon IN (${maCanBo.map(() => "?").join(", ")})`,
+          maCanBo
+        );
+        const conDung = new Set(conBienThe.map((r) => String(r.ma_mon)));
+        const boThat = maCanBo.filter((ma) => !conDung.has(ma));
+        if (boThat.length) await trong.bang(B_MON).xoa({ ma: boThat });
+      }
+
+      for (const d of dongMon) {
+        const nguonCu = nguonCuaMa.get(d.ma);
+        // Nguon dang ta mon manh hon thi giu nguyen mo ta cua no.
+        if (nguonCu && nguonCu !== nguon && (UU_TIEN_NGUON[nguonCu] ?? 0) > (UU_TIEN_NGUON[nguon] ?? 0)) {
+          soMonNhuong += 1;
+          continue;
+        }
+        await trong.bang(B_MON).themHoacThay(d);
+        soMonGhi += 1;
+      }
     });
 
-    return { soMon: dongMon.length, soBienThe: dongBienThe.length, biBo: (cacMonTho?.length ?? 0) - dongMon.length };
+    if (soMonNhuong > 0) {
+      ctx.cong.nhatKy.tin(
+        `[hang-kho] ${soMonNhuong} mon da co mo ta tu nguon ky hon, chi nhan them bien the (nguon "${nguon}")`
+      );
+    }
+
+    return {
+      soMon: dongMon.length, soBienThe: dongBienThe.length,
+      soMonGhi, soMonNhuong,
+      biBo: (cacMonTho?.length ?? 0) - dongMon.length
+    };
   }
 
   return {

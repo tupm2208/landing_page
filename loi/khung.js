@@ -98,7 +98,7 @@ function taoKhung({ cong, toKhais, nhatKy, cauHinh = {}, tinProxy = false }) {
     }
 
     for (const d of toKhai.duong ?? []) {
-      boDinhTuyen.them({ method: d.method, path: d.path, moduleId: toKhai.id, quyen: d.quyen, hanGoi: d.hanGoi, tay: (yc) => d.tay(ctx, yc) });
+      boDinhTuyen.them({ method: d.method, path: d.path, moduleId: toKhai.id, quyen: d.quyen, hanGoi: d.hanGoi, hanThan: d.hanThan, tay: (yc) => d.tay(ctx, yc) });
     }
     for (const [ten, ham] of Object.entries(toKhai.suKien?.nghe ?? {})) {
       bus.nghe(ten, toKhai.id, (duLieu) => ham(ctx, duLieu));
@@ -172,12 +172,23 @@ function taoKhung({ cong, toKhais, nhatKy, cauHinh = {}, tinProxy = false }) {
     }
 
     try {
+      // Cua nao khai han than rieng thi dat truoc khi module doc than.
+      if (tim.hanThan) yc.datHanThan?.(tim.hanThan);
       const ra = await tim.tay({ ...yc, tham: tim.tham ?? {} });
       if (!ra || typeof ra !== "object") {
         throw new Error(`Module "${tim.moduleId}" khong tra ve gi cho ${yc.method} ${yc.duong}`);
       }
       return ra;
     } catch (e) {
+      // Than yeu cau qua lon / khong phai JSON la LOI CUA NGUOI GOI, khong phai loi he thong.
+      // Hai loi nay nem ra tu `yc.doc()` — tuc la nem BEN TRONG tay module — nen neu khong bat
+      // o day thi ca hai ra 500 kem mot dong nhat ky bao dong, va nguoi goi khong biet minh sai gi.
+      if (e?.qualon) {
+        return { ma: 413, than: { ok: false, error: LOI.sai_yeu_cau, message: "Yêu cầu quá lớn." } };
+      }
+      if (e?.saiJson) {
+        return { ma: 400, than: { ok: false, error: LOI.sai_yeu_cau, message: "Thân yêu cầu không phải JSON." } };
+      }
       ky.canhBao(`[khung] module "${tim.moduleId}" loi o ${yc.method} ${yc.duong}: ${e?.stack || e}`);
       return { ma: 500, than: { ok: false, error: LOI.loi_he_thong } };
     }

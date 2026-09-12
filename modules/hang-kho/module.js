@@ -22,6 +22,7 @@ const { SU_KIEN } = require("../../../hop-dong");
 const { banCongKhai } = require("./chuan-hoa");
 const { LUOC_DO } = require("./luoc-do");
 const { taoKhoHang, NGUON } = require("./kho-bang");
+const { doiGoiHangCoSan, doiGoiChienDich, KHO_CO_SAN_MAC_DINH } = require("./goi-desk");
 
 const GIU_CHO_SONG_MS = 30 * 60 * 1000;   // giu 30 phut roi tra lai neu khong chot don
 const PHUT10 = 10 * 60 * 1000;
@@ -159,19 +160,64 @@ module.exports = {
       // Image Tool day ca danh muc hang nha len.
       method: "POST", path: "/api/products", quyen: "quan-tri",
       hanGoi: { soLan: 20, trongMs: PHUT10 },
+      // DO THAT 12/09/2026: ca danh muc 4.834 mon cua anh Dung nang 10,2 MB khi gui lai. Ban
+      // dang chay dat han 10 MB — tuc la no dang sat mep, danh muc lon them chut la bi chan.
+      // Ban tach de 16 MB cho co cho tho.
+      hanThan: 16 * 1024 * 1024,
       tay: async (ctx, yc) => napNguon(ctx, NGUON.nha, await yc.doc(), "danh muc")
     },
     {
       // Sales Desk day hang co san (ready-stock). CHI dung toi dong `nguon = ready`.
+      //
+      // Goi that cua Desk KHONG dung `sizes` ma dung `variants` + `branches` + `policy` +
+      // `pendingSales`, nen phai di qua lop dich `goi-desk.js`. Truoc 12/09/2026 duong nay
+      // doc thang `sizes` — ca 80 mon hang co san bi bo sach ma khong bao mot loi nao.
       method: "POST", path: "/api/ready-stock/sync", quyen: "quan-tri",
       hanGoi: { soLan: 120, trongMs: PHUT10 },
-      tay: async (ctx, yc) => napNguon(ctx, NGUON.coSan, await yc.doc(), "hang co san")
+      hanThan: 2 * 1024 * 1024,
+      tay: async (ctx, yc) => {
+        const goi = await yc.doc();
+        if (!goi || typeof goi !== "object") return { ma: 400, than: { ok: false, error: "can_mot_goi_hang_co_san" } };
+
+        // GOI CU KHONG DUOC DE LEN GOI MOI. Desk gui kem `revision` tang dan; mot lan gui lai
+        // goi cu (mang chap chon, bam lai) se xoa mat ton vua dong bo. Tu choi thang.
+        const so = ctx.cong.kho.so("hang-kho-hang-co-san");
+        const revMoi = Number(goi.revision);
+        const coRev = Number.isFinite(revMoi) && revMoi > 0;
+        if (coRev) {
+          const cu = await so.doc();
+          if (cu && Number(cu.revision || 0) > revMoi) {
+            ctx.cong.nhatKy.canhBao(`[hang-kho] tu choi goi hang co san cu: revision ${revMoi} < ${cu.revision}`);
+            return { ma: 409, than: { ok: false, error: "goi_hang_co_san_cu", revisionHienTai: Number(cu.revision || 0) } };
+          }
+        }
+
+        const khoChoPhep = Array.isArray(ctx.cauHinh.khoHangCoSan) && ctx.cauHinh.khoHangCoSan.length
+          ? ctx.cauHinh.khoHangCoSan
+          : KHO_CO_SAN_MAC_DINH;
+        const mon = doiGoiHangCoSan(Array.isArray(goi) ? { products: goi } : goi, { khoChoPhep });
+        const ra = await napNguon(ctx, NGUON.coSan, mon, "hang co san");
+        if (coRev && ra.ma === 200) {
+          await so.ghi({ revision: revMoi, luc: ctx.cong.gio.bayGio().toISOString() });
+          ra.than.revision = revMoi;
+        }
+        return ra;
+      }
     },
     {
       // Chien dich doi tac (Supersports/MaxxSport). CHI dung toi dong `nguon = campaign`.
+      //
+      // Lop dich bo chien dich da tat / da het han, va gan MA DONG cho tung size — bao het
+      // hang khoa theo ma dong, khong theo vi tri (su co 10/09).
       method: "POST", path: "/api/partner-campaigns", quyen: "quan-tri",
       hanGoi: { soLan: 20, trongMs: PHUT10 },
-      tay: async (ctx, yc) => napNguon(ctx, NGUON.chienDich, await yc.doc(), "chien dich doi tac")
+      hanThan: 5 * 1024 * 1024,
+      tay: async (ctx, yc) => {
+        const goi = await yc.doc();
+        if (!goi || typeof goi !== "object") return { ma: 400, than: { ok: false, error: "can_mot_goi_chien_dich" } };
+        const mon = doiGoiChienDich(Array.isArray(goi) ? { products: goi } : goi, { bayGio: ctx.cong.gio.bayGio() });
+        return napNguon(ctx, NGUON.chienDich, mon, "chien dich doi tac");
+      }
     },
     {
       // Ban trong nha cho man quan tri — CO ton that.

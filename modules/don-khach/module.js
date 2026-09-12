@@ -24,6 +24,7 @@ const { SU_KIEN } = require("../../../hop-dong");
 const tienKit = require("../../../chung/order-money-kit.js");
 const { gioMySQL, isoTuMySQL } = require("../../../chung/gio-mysql.js");
 const { banChiTiet, banBiMat, banChiTrangThai, suaDuoc } = require("./cong-khai");
+const { LUOC_DO } = require("./luoc-do");
 
 const BANG_DON = "orders";
 const BANG_DONG = "order_items";
@@ -470,6 +471,8 @@ module.exports = {
 
   // Ba bang co san tu ban dang chay — khong doi ten duoc vi Desk dang goc vao do.
   bangKeThua: [BANG_DON, BANG_DONG, BANG_NHAT_KY],
+  // Ba bang nay module nay TAO ra (tren may moi chua co gi), voi dung cot cua ban dang chay.
+  luocDo: LUOC_DO,
 
   // Tien tren don do module Tien tinh (LUAT 3: moi con so tien di qua order-money-kit).
   // "NEU CO" vi nha ban hang co the khong mua manh Tien — khi do trang tra don van chay,

@@ -100,7 +100,9 @@ async function dungHe({ thuMucDuLieu, env = process.env } = {}) {
   // Chay luoc do cua tung module truoc khi nhan yeu cau dau tien.
   if (typeof kho.chayLuocDo === "function") {
     for (const tk of napToKhais(thuMucModules, { bat })) {
-      if ((tk.luocDo ?? []).length > 0) await kho.chayLuocDo(tk.id, tk.luocDo);
+      if ((tk.luocDo ?? []).length > 0) {
+        await kho.chayLuocDo(tk.id, tk.luocDo, { bangKeThua: tk.bangKeThua ?? [] });
+      }
     }
   }
 

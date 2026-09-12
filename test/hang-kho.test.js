@@ -86,6 +86,9 @@ test("Hàng hoá trên MySQL thật", { ...boQua }, async (t) => {
   // bai sai). Buoc qua cung lam het han moi phieu giu cho con sot.
   const donDep = async () => {
     gio.troi(11 * 60 * 1000);
+    // Xoa ca so `revision` cua hang co san: no la trang thai giua hai lan chay, va bai
+    // "goi cu khong duoc de len goi moi" phu thuoc vao no.
+    try { await kho.cauLenh("DELETE FROM so_du_lieu WHERE ten = ?", ["hang-kho-hang-co-san"]); } catch { /* chua co bang */ }
     for (const b of ["hang_kho_giu_cho", "hang_kho_bien_the", "hang_kho_mon", "hang_kho_ma_chan"]) {
       await kho.cauLenh(`DELETE FROM \`${b}\``, []);
     }
@@ -165,17 +168,43 @@ test("Hàng hoá trên MySQL thật", { ...boQua }, async (t) => {
   await t.test("dong bo HANG CO SAN khong dung toi hang nha", async () => {
     await donDep();
     await nap();                                     // hang nha: 3 bien the
-    await nap([{ code: "RS01", name: "Hàng có sẵn A", sizes: [{ size: "41", qty: 2, price: 1000000, warehouseId: "wh_partner" }] }],
+    // Kho hang co san phai nam trong danh sach khai truoc (wh_toprun* / wh_partner_dasbui) —
+    // xem LUAT 1 trong goi-desk.js. Kho la thi dong do bi bo.
+    await nap([{ code: "RS01", name: "Hàng có sẵn A", sizes: [{ size: "41", qty: 2, price: 1000000, warehouseId: "wh_toprun_yen" }] }],
       "/api/ready-stock/sync");
     assert.equal(await kho.bang("hang_kho_bien_the").dem({ nguon: "own" }), 3, "hang nha phai con nguyen");
     assert.equal(await kho.bang("hang_kho_bien_the").dem({ nguon: "ready" }), 1);
 
     // Dong bo lai hang co san lan hai: chi thay dong cua chinh no.
-    await nap([{ code: "RS02", name: "Hàng có sẵn B", sizes: [{ size: "40", qty: 1, price: 900000, warehouseId: "wh_partner" }] }],
+    await nap([{ code: "RS02", name: "Hàng có sẵn B", sizes: [{ size: "40", qty: 1, price: 900000, warehouseId: "wh_toprun_cau_dien" }] }],
       "/api/ready-stock/sync");
     assert.equal(await kho.bang("hang_kho_bien_the").dem({ nguon: "own" }), 3, "dong bo hang co san khong duoc dung toi hang nha");
     assert.equal(await kho.bang("hang_kho_bien_the").dem({ nguon: "ready" }), 1);
     assert.equal((await kho.bang("hang_kho_mon").mot({ ma: "RS01" })), null, "hang co san cu phai bi thay");
+  });
+
+  await t.test("goi hang co san CU khong duoc de len goi moi", async () => {
+    await donDep();
+    const goi = (revision, ma, size) => ({
+      revision,
+      branches: [{ id: "wh_toprun_yen", name: "TopRun - Yến", active: true }],
+      products: [{ code: ma, name: "Hàng có sẵn " + ma, imageUrl: "a.jpg", variants: [{ size, branchId: "wh_toprun_yen", qty: 3, salePrice: 1000000 }] }]
+    });
+
+    const moi = await nap(goi(10, "RS10", "41"), "/api/ready-stock/sync");
+    assert.equal(moi.ma, 200, JSON.stringify(moi.than));
+    assert.equal(moi.than.revision, 10);
+
+    const cu = await nap(goi(9, "RS09", "42"), "/api/ready-stock/sync");
+    assert.equal(cu.ma, 409, "goi revision 9 gui sau goi revision 10 phai bi tu choi");
+    assert.equal(cu.than.error, "goi_hang_co_san_cu");
+    assert.equal(cu.than.revisionHienTai, 10);
+
+    assert.ok(await kho.bang("hang_kho_mon").mot({ ma: "RS10" }), "hang cua goi moi phai con nguyen");
+    assert.equal(await kho.bang("hang_kho_mon").mot({ ma: "RS09" }), null);
+
+    // Cung revision thi cho qua (Desk gui lai dung goi do) — khong lam mat du lieu.
+    assert.equal((await nap(goi(10, "RS10", "41"), "/api/ready-stock/sync")).ma, 200);
   });
 
   await t.test("chien dich doi tac cung la mot nguon rieng", async () => {
