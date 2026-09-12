@@ -20,6 +20,8 @@ function phanDoan(path) {
 function taoBoDinhTuyen() {
   /** @type {Array<{ method: string, path: string, doan: string[], moduleId: string, tay: Function }>} */
   const bang = [];
+  const cuThe = [];    // duong khong co "*"
+  const saoBao = [];   // duong co "*" — luon xet sau cung
   const daKhai = new Set();
 
   return {
@@ -29,7 +31,13 @@ function taoBoDinhTuyen() {
         throw new Error(`Duong "${khoa}" bi khai hai lan — module "${moduleId}" trung voi module da khai truoc.`);
       }
       daKhai.add(khoa);
-      bang.push({ method, path, doan: phanDoan(path), moduleId, quyen, hanGoi, tay });
+      const r = { method, path, doan: phanDoan(path), moduleId, quyen, hanGoi, tay };
+      bang.push(r);
+      // Duong co "*" (mat web bat moi thu con lai) phai xet SAU CUNG, va trong nhom do thi
+      // duong sau nhieu doan cu the hon di truoc. Neu khong, mot module khai "GET /*" ma nap
+      // truoc se nuot het duong API cua module nap sau — tuy thu tu nap ma ai thang.
+      (r.doan.includes("*") ? saoBao : cuThe).push(r);
+      saoBao.sort((a, b) => b.doan.length - a.doan.length);
     },
 
     /** Tim nguoi xu ly. Tra `null` neu khong ai nhan. */
@@ -37,7 +45,7 @@ function taoBoDinhTuyen() {
       const doan = phanDoan(pathname);
       let saiPhuongThuc = false;
 
-      for (const r of bang) {
+      for (const r of [...cuThe, ...saoBao]) {
         const tham = khop(r.doan, doan);
         if (tham === null) continue;
         if (r.method !== method) { saiPhuongThuc = true; continue; }

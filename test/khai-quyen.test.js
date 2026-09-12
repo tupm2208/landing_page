@@ -17,6 +17,7 @@ const { napToKhais } = require("../loi/nap-modules");
 const { taoKhoTep } = require("../loi/cong/kho-tep");
 const { taoNhatKyGia, taoGioGia, taoHttpNgoaiGia } = require("../loi/cong/co-ban");
 const { taoCongQuyen } = require("../loi/cong/quyen");
+const { taoCongTepTinhGia } = require("../loi/cong/tep-tinh");
 
 const MA_QT = "ma-quan-tri";
 const MA_DV = "ma-dich-vu";
@@ -143,7 +144,8 @@ test("bang cua: moi duong that trong repo deu noi ro ai duoc goi", () => {
   const khung = taoKhung({
     cong: {
       kho: taoKhoTep({ thuMuc: tam() }), nhatKy: taoNhatKyGia(), gio: taoGioGia(),
-      httpNgoai: taoHttpNgoaiGia(), quyen: taoCongQuyen({ maQuanTri: MA_QT })
+      httpNgoai: taoHttpNgoaiGia(), quyen: taoCongQuyen({ maQuanTri: MA_QT }),
+      tepTinh: taoCongTepTinhGia({})
     },
     toKhais: napToKhais(path.join(__dirname, "..", "modules")),
     cauHinh: { "hop-thu": { verifyToken: "v", appSecret: "s", tokenTrang: "t" }, "hang-kho": {}, "don-khach": {}, "khung-nen-tang": {}, "mua-ho": { biMatPhien: "bi-mat-phien-doi-tac-dai" } }
@@ -161,21 +163,38 @@ test("bang cua: moi duong that trong repo deu noi ro ai duoc goi", () => {
   //   - dat hang: khach tren web khong co ma nao; gia lay tu kho chu khong tu than yeu cau,
   //     va phai giu duoc cho ton moi ghi don
   //   - tra don: phai co DUNG ma don kem ma tra cuu; sai mot trong hai la khong thay gi
+  //   - ba duong don cua khach (xem / sua / huy): cung mot cach tu bao ve — dung ma don kem
+  //     ma tra cuu. Sua va huy chi mo trong 15 phut dau, va SUA CHI SUA HO SO nguoi nhan:
+  //     mon va gia lay tu don da ghi, khong nhan tu than yeu cau.
   //   - phien ban dang chay: chi tra deployId, khong doc du lieu shop; Image Tool doc sau deploy
+  //   - mat web (trang chu, ban mobile, trang san pham, link chia se, va duong "/*" bat moi
+  //     tep con lai): khach vao web thi chua co ma nao. Chung KHONG doc du lieu khach, chi tra
+  //     tep trong `goc/` cua module Gian hang — va cong tep tinh CHO QUA THEO DANH SACH duoi
+  //     tep, nen mot tep la lot vao thu muc web cung khong ra duoc. Trang san pham co doc mot
+  //     mon, nhung qua dich vu `hang-kho.doc` tra ban cong khai (da bo gia von va ton that).
   //   - nam duong cong doi tac: doi tac dang nhap bang PHIEN COOKIE chu khong cam ma Bearer,
   //     ma cong quyen hien chi hieu Bearer. Nen chung phai la "cong-khai" va TU kiem phien —
   //     chua co phien la 401 truoc khi doc bat cu gi. Khoang trong nay se dong khi them vai
   //     "doi-tac" va "nhan-vien" vao cong quyen (xem muc no trong KE-HOACH-TACH.md).
   const moCongKhai = ban.filter((d) => d.quyen === "cong-khai").map((d) => `${d.method} ${d.path}`);
   assert.deepEqual(moCongKhai.sort(), [
+    "GET /",
+    "GET /*",
     "GET /api/facebook/webhook",
+    "GET /api/orders/public",
     "GET /api/partner-portal",
     "GET /api/products",
     "GET /api/products/:khoa",
     "GET /api/runtime-version",
+    "GET /l/:token",
+    "GET /mobile",
+    "GET /product.html",
+    "GET /product/:khoa",
+    "PATCH /api/orders/public",
     "POST /api/facebook/webhook",
     "POST /api/orders",
     "POST /api/orders/lookup",
+    "POST /api/orders/public/cancel",
     "POST /api/orders/public/payment-choice",
     "POST /api/partner-portal/login",
     "POST /api/partner-portal/logout",

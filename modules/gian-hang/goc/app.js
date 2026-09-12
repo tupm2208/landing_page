@@ -1350,7 +1350,7 @@ function openCheckoutDialog() {
       renderCart();
       setTimeout(() => {
         overlay.remove();
-        showPaymentChatPrompt(result?.order || payload);
+        showPaymentChatPrompt(orderFromCreateResult(result, payload));
       }, 900);
     } else {
       formElement.dataset.submitting = "";

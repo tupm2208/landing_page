@@ -61,7 +61,21 @@ function dungYeuCau(request, url, { hanThanBytes = HAN_THAN_MAC_DINH } = {}) {
   };
 }
 
-function traLoi(response, ra) {
+function traLoi(response, ra, { chiTieuDe = false } = {}) {
+  // HEAD: tra y nguyen tieu de cua GET nhung khong tra than. Lam o day, mot cho duy nhat,
+  // de khong module nao phai biet den HEAD.
+  if (chiTieuDe) {
+    const than = ra.chuyenHuong ? "" : (ra.tep ? ra.tep.duLieu : JSON.stringify(ra.than ?? null));
+    const kieu = ra.chuyenHuong ? "text/plain; charset=utf-8" : (ra.tep ? (ra.tep.kieu || "application/octet-stream") : undefined);
+    response.writeHead(ra.ma ?? 200, {
+      ...tieuDeAnToan(kieu),
+      ...(ra.chuyenHuong ? { Location: ra.chuyenHuong, "Cache-Control": "no-store" } : {}),
+      ...(ra.tieuDe ?? {}),
+      "Content-Length": String(Buffer.byteLength(than))
+    });
+    response.end();
+    return;
+  }
   if (ra.chuyenHuong) {
     response.writeHead(ra.ma ?? 302, { ...tieuDeAnToan("text/plain; charset=utf-8"), Location: ra.chuyenHuong, "Cache-Control": "no-store" });
     response.end();
@@ -87,9 +101,11 @@ function tayNgheHttp(khung, tuyChon = {}) {
       traLoi(response, { ma: 400, than: { ok: false, error: LOI.sai_yeu_cau } });
       return;
     }
+    const laHead = request.method === "HEAD";
     try {
       const yc = dungYeuCau(request, url, tuyChon);
-      traLoi(response, await khung.xuLy(yc));
+      if (laHead) yc.method = "GET";
+      traLoi(response, await khung.xuLy(yc), { chiTieuDe: laHead });
     } catch (e) {
       if (e?.qualon) { traLoi(response, { ma: 413, than: { ok: false, error: LOI.sai_yeu_cau, message: "Yeu cau qua lon." } }); return; }
       if (e?.saiJson) { traLoi(response, { ma: 400, than: { ok: false, error: LOI.sai_yeu_cau, message: "Than yeu cau khong phai JSON." } }); return; }

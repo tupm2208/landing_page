@@ -541,7 +541,7 @@ async function submitOrder(event) {
     cartPanel.classList.remove("open");
     setTimeout(() => {
       document.querySelector(".order-overlay")?.remove();
-      showPaymentChatPrompt(result?.order || payload);
+      showPaymentChatPrompt(orderFromCreateResult(result, payload));
     }, 900);
   } else {
     message.textContent = result.message || "Chưa gửi được đơn, vui lòng thử lại.";

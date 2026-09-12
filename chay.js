@@ -17,6 +17,7 @@ const { taoNhatKy, gioThat, taoHttpNgoai } = require("./loi/cong/co-ban");
 const { taoBoDemGoi } = require("./loi/cong/han-goi");
 const { taoBoVe } = require("./loi/cong/ve");
 const { bocCheDoThu } = require("./loi/cong/che-do-thu");
+const { taoCongTepTinh } = require("./loi/cong/tep-tinh");
 
 async function dungHe({ thuMucDuLieu, env = process.env } = {}) {
   const nhatKy = taoNhatKy();
@@ -62,7 +63,9 @@ async function dungHe({ thuMucDuLieu, env = process.env } = {}) {
         : null,
       nhatKy
     }),
-    hanGoi: taoBoDemGoi({ gio: gioThat })
+    hanGoi: taoBoDemGoi({ gio: gioThat }),
+    // Mat web: module chi thay thu muc `goc/` cua chinh no, va chi nhung duoi tep da khai.
+    tepTinh: taoCongTepTinh({ thuMucGoc: path.join(__dirname, "modules"), nhatKy })
   };
 
   const thuMucModules = path.join(__dirname, "modules");
@@ -82,6 +85,14 @@ async function dungHe({ thuMucDuLieu, env = process.env } = {}) {
         verifyToken: String(env.FACEBOOK_VERIFY_TOKEN || "").trim(),
         appSecret: String(env.FACEBOOK_APP_SECRET || "").trim(),
         tokenTrang: String(env.FACEBOOK_PAGE_TOKEN || "").trim()
+      },
+      "gian-hang": {
+        // Goc site that, dung cho the OG (crawler Facebook doc the nay khi khach share link).
+        gocSite: String(env.LANDING_SITE_BASE_URL || env.SITE_URL || "https://toprun.site").trim(),
+        // 33.809 tep anh san pham (7,6 GB) KHONG duoc cop sang ban tach. Khai bien nay thi anh
+        // nao khong co o day se duoc 302 sang site that de trinh duyet tu lay — may thu khong
+        // goi ra ngoai, no chi chi duong.
+        gocAnhThat: String(env.GOC_ANH_THAT || "").trim()
       }
     }
   });
