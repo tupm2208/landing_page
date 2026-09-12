@@ -14,6 +14,8 @@ const { taoKhoTep } = require("./loi/cong/kho-tep");
 const { taoKhoMysql } = require("./loi/cong/kho-mysql");
 const { taoCongQuyen } = require("./loi/cong/quyen");
 const { taoNhatKy, gioThat, taoHttpNgoai } = require("./loi/cong/co-ban");
+const { taoBoDemGoi } = require("./loi/cong/han-goi");
+const { taoBoVe } = require("./loi/cong/ve");
 
 async function dungHe({ thuMucDuLieu, env = process.env } = {}) {
   const nhatKy = taoNhatKy();
@@ -27,16 +29,28 @@ async function dungHe({ thuMucDuLieu, env = process.env } = {}) {
     ? await taoKhoMysql({ duongKetNoi: duongMysql, nhatKy })
     : taoKhoTep({ thuMuc: thuMucDuLieu, nhatKy });
   if (!duongMysql) nhatKy.canhBao("[chay] CHUA co TOPRUN_MYSQL_URL — dang chay bang tep JSON, chi dung de thu.");
+  if (String(env.BI_MAT_VE || "").trim().length < 16) {
+    nhatKy.canhBao("[chay] CHUA co BI_MAT_VE — ve 15 phut dang TAT, moi ben van dung khoa dai han.");
+  }
   const cong = {
     kho,
     nhatKy,
     gio: gioThat,
     httpNgoai: taoHttpNgoai(),
     quyen: taoCongQuyen({
-      maQuanTri: env.LANDING_ADMIN_TOKEN,
-      maDon: env.LANDING_ORDERS_TOKEN,
-      maDichVu: env.BO_NAO_TOKEN
-    })
+      // Khoa dai han CO TEN — nho vay nhat ky ghi duoc "sales-desk vua goi".
+      cacKhoa: [
+        { ma: env.LANDING_ADMIN_TOKEN, ten: "quan-tri", vai: "quan-tri" },
+        { ma: env.LANDING_ORDERS_TOKEN, ten: "don-hang", vai: "quan-tri" },
+        { ma: env.IMAGE_TOOL_TOKEN, ten: "image-tool", vai: "quan-tri" },
+        { ma: env.BO_NAO_TOKEN, ten: "bo-nao", vai: "dich-vu" }
+      ].filter((k) => String(k.ma || "").trim() !== ""),
+      boVe: String(env.BI_MAT_VE || "").trim().length >= 16
+        ? taoBoVe({ biMat: env.BI_MAT_VE, gio: gioThat })
+        : null,
+      nhatKy
+    }),
+    hanGoi: taoBoDemGoi({ gio: gioThat })
   };
 
   const thuMucModules = path.join(__dirname, "modules");
@@ -47,6 +61,9 @@ async function dungHe({ thuMucDuLieu, env = process.env } = {}) {
   const khung = taoKhung({
     cong,
     nhatKy,
+    // Tren hosting/Cloudflare thi dia chi that nam o tieu de. BAT khi co proxy that o truoc;
+    // bat khi KHONG co proxy la de nguoi ta tu khai IP va lach han goi.
+    tinProxy: String(env.TIN_PROXY || "").trim() === "1",
     toKhais: napToKhais(thuMucModules, { bat }),
     cauHinh: {
       "hop-thu": {

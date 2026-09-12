@@ -224,6 +224,8 @@ module.exports = {
     {
       method: "GET", path: "/api/products", quyen: "cong-khai",
       viSaoCongKhai: "Danh mục để web bán hàng hiển thị. Bản trả ra đã bỏ giá vốn và tồn thật.",
+      // Rong rai: mot nguoi mo web that co the tai danh muc nhieu lan trong mot phien.
+      hanGoi: { soLan: 600, trongMs: 10 * 60 * 1000 },
       tay: async (ctx) => ({
         ma: 200,
         tieuDe: { "Cache-Control": "public, max-age=300, stale-while-revalidate=3600" },
@@ -233,6 +235,7 @@ module.exports = {
     {
       method: "GET", path: "/api/products/:khoa", quyen: "cong-khai",
       viSaoCongKhai: "Trang sản phẩm công khai. Cùng bản đã bỏ giá vốn như danh mục.",
+      hanGoi: { soLan: 600, trongMs: 10 * 60 * 1000 },
       tay: async (ctx, yc) => {
         const mon = timTheoKhoa(await danhMucCongKhai(ctx), yc.tham.khoa);
         if (!mon) return { ma: 404, than: { ok: false, error: "khong_thay" } };
@@ -242,6 +245,7 @@ module.exports = {
     {
       // Image Tool day danh muc len.
       method: "POST", path: "/api/products", quyen: "quan-tri",
+      hanGoi: { soLan: 20, trongMs: 10 * 60 * 1000 },
       tay: async (ctx, yc) => napDanhMuc(ctx, await yc.doc())
     },
     {

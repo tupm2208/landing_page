@@ -128,6 +128,7 @@ module.exports = {
     {
       method: "GET", path: "/api/facebook/webhook", quyen: "cong-khai",
       viSaoCongKhai: "Meta goi tu may cua ho, khong mang ma cua shop. Tu bao ve bang verify token: sai la 403.",
+      hanGoi: { soLan: 120, trongMs: 10 * 60 * 1000 },
       tay: (ctx, yc) => {
         const { verifyToken } = ctx.cauHinh;
         const hopLe = yc.truyVan["hub.mode"] === "subscribe" && verifyToken
@@ -143,6 +144,8 @@ module.exports = {
     {
       method: "POST", path: "/api/facebook/webhook", quyen: "cong-khai",
       viSaoCongKhai: "Meta goi tu may cua ho. Tu bao ve bang chu ky HMAC tren raw byte; khong khop la 401.",
+      // 600/10 phut — dung con so ban dang chay da chon. Meta gui don khi co nhieu tin cung luc.
+      hanGoi: { soLan: 600, trongMs: 10 * 60 * 1000 },
       tay: nhanWebhook
     },
 

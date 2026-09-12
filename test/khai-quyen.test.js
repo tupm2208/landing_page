@@ -55,6 +55,30 @@ test("GAY khi mo cong khai ma khong noi duoc vi sao", () => {
   );
 });
 
+test("GAY khi mo cong khai ma khong khai han goi", () => {
+  assert.throws(
+    () => kiemToKhai({
+      id: "thu", ten: "Thu", mang: "van-hanh", chay: "server-khach", phienBan: "0.0.1",
+      duong: [{
+        method: "GET", path: "/api/mo", quyen: "cong-khai",
+        viSaoCongKhai: "Bai kiem tra: duong gia, khong doc du lieu that.", tay: veTay
+      }]
+    }, "thu"),
+    /PHAI khai `hanGoi`/
+  );
+});
+
+test("GAY khi han goi khai sai hinh dang", () => {
+  const dung = (hanGoi) => kiemToKhai({
+    id: "thu", ten: "Thu", mang: "van-hanh", chay: "server-khach", phienBan: "0.0.1",
+    duong: [{ method: "GET", path: "/api/rieng", quyen: "quan-tri", hanGoi, tay: veTay }]
+  }, "thu");
+  assert.throws(() => dung({ soLan: 0, trongMs: 1000 }), /soLan phai la so nguyen duong/);
+  assert.throws(() => dung({ soLan: 10 }), /trongMs phai la so nguyen duong/);
+  assert.throws(() => dung({ soLan: 1.5, trongMs: 1000 }), /soLan phai la so nguyen duong/);
+  assert.doesNotThrow(() => dung({ soLan: 10, trongMs: 1000 }));
+});
+
 test("GAY khi khai mot quyen khong co trong giao keo", () => {
   assert.throws(
     () => kiemToKhai({
@@ -109,7 +133,7 @@ test("khong cau hinh ma nao thi tu choi tat ca (fail-closed)", async () => {
 
 test("duong cong-khai van vao duoc khi khong co ma", async () => {
   const k = khungThu([{
-    method: "GET", path: "/api/mo", quyen: "cong-khai",
+    method: "GET", path: "/api/mo", quyen: "cong-khai", hanGoi: { soLan: 100, trongMs: 60000 }, 
     viSaoCongKhai: "Bai kiem tra: duong nay khong doc du lieu cua shop.", tay: veTay
   }]);
   assert.equal((await k.xuLy(goi("/api/mo"))).ma, 200);
@@ -122,7 +146,7 @@ test("bang cua: moi duong that trong repo deu noi ro ai duoc goi", () => {
       httpNgoai: taoHttpNgoaiGia(), quyen: taoCongQuyen({ maQuanTri: MA_QT })
     },
     toKhais: napToKhais(path.join(__dirname, "..", "modules")),
-    cauHinh: { "hop-thu": { verifyToken: "v", appSecret: "s", tokenTrang: "t" }, "hang-kho": {}, "don-khach": {} }
+    cauHinh: { "hop-thu": { verifyToken: "v", appSecret: "s", tokenTrang: "t" }, "hang-kho": {}, "don-khach": {}, "khung-nen-tang": {} }
   });
   const ban = khung.banDuong();
   assert.ok(ban.length >= 4);
@@ -137,11 +161,13 @@ test("bang cua: moi duong that trong repo deu noi ro ai duoc goi", () => {
   //   - dat hang: khach tren web khong co ma nao; gia lay tu kho chu khong tu than yeu cau,
   //     va phai giu duoc cho ton moi ghi don
   //   - tra don: phai co DUNG ma don kem ma tra cuu; sai mot trong hai la khong thay gi
+  //   - phien ban dang chay: chi tra deployId, khong doc du lieu shop; Image Tool doc sau deploy
   const moCongKhai = ban.filter((d) => d.quyen === "cong-khai").map((d) => `${d.method} ${d.path}`);
   assert.deepEqual(moCongKhai.sort(), [
     "GET /api/facebook/webhook",
     "GET /api/products",
     "GET /api/products/:khoa",
+    "GET /api/runtime-version",
     "POST /api/facebook/webhook",
     "POST /api/orders",
     "POST /api/orders/lookup"

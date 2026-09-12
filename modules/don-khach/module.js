@@ -283,6 +283,8 @@ module.exports = {
     {
       method: "POST", path: "/api/orders", quyen: "cong-khai",
       viSaoCongKhai: "Khách đặt hàng từ web, không có mã nào. Tự bảo vệ bằng: phải có món thật trong kho, giữ chỗ tồn trước khi ghi, và không nhận giá từ client.",
+      // Dat hang GIU CHO ton that — ke goi don co the giu sach hang cua shop. Han chat.
+      hanGoi: { soLan: 20, trongMs: 10 * 60 * 1000 },
       tay: async (ctx, yc) => {
         const kq = await datDon(ctx, await yc.doc());
         if (!kq.ok) return { ma: 400, than: { ok: false, error: kq.viSao, mon: kq.mon, size: kq.size } };
@@ -292,6 +294,8 @@ module.exports = {
     {
       method: "POST", path: "/api/orders/lookup", quyen: "cong-khai",
       viSaoCongKhai: "Khách tra đơn của chính mình. Tự bảo vệ bằng: phải có ĐÚNG mã đơn kèm mã tra cứu; sai một trong hai là không thấy gì.",
+      // 30/10 phut nhu ban dang chay: du cho khach that, khong du de do ma tra cuu.
+      hanGoi: { soLan: 30, trongMs: 10 * 60 * 1000 },
       tay: async (ctx, yc) => {
         const than = await yc.doc();
         const maDon = String(than.order || than.id || "").trim();

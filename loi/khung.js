@@ -20,8 +20,9 @@
 const { kiemToKhai, LOI } = require("../../hop-dong");
 const { taoBoDinhTuyen } = require("./dinh-tuyen");
 const { taoBus } = require("./bus");
+const { diaChiNguoiGoi } = require("./cong/han-goi");
 
-function taoKhung({ cong, toKhais, nhatKy, cauHinh = {} }) {
+function taoKhung({ cong, toKhais, nhatKy, cauHinh = {}, tinProxy = false }) {
   if (!Array.isArray(toKhais)) throw new Error("taoKhung can `toKhais` la mang to khai module");
   const ky = nhatKy ?? cong?.nhatKy ?? { tin: () => {}, canhBao: () => {} };
   const bus = taoBus({ nhatKy: ky });
@@ -97,7 +98,7 @@ function taoKhung({ cong, toKhais, nhatKy, cauHinh = {} }) {
     }
 
     for (const d of toKhai.duong ?? []) {
-      boDinhTuyen.them({ method: d.method, path: d.path, moduleId: toKhai.id, quyen: d.quyen, tay: (yc) => d.tay(ctx, yc) });
+      boDinhTuyen.them({ method: d.method, path: d.path, moduleId: toKhai.id, quyen: d.quyen, hanGoi: d.hanGoi, tay: (yc) => d.tay(ctx, yc) });
     }
     for (const [ten, ham] of Object.entries(toKhai.suKien?.nghe ?? {})) {
       bus.nghe(ten, toKhai.id, (duLieu) => ham(ctx, duLieu));
@@ -141,6 +142,20 @@ function taoKhung({ cong, toKhais, nhatKy, cauHinh = {} }) {
     if (tim === null) return { ma: 404, than: { ok: false, error: LOI.khong_thay } };
     if (tim.saiPhuongThuc) return { ma: 405, than: { ok: false, error: LOI.sai_yeu_cau, message: "Phuong thuc khong dung cho duong nay." } };
 
+    // CHAN GOI DON truoc khi lam bat ky viec gi — ke goi don khong duoc bat server lam viec.
+    if (tim.hanGoi && cong?.hanGoi) {
+      const ai = diaChiNguoiGoi(yc, { tinProxy });
+      const kq = cong.hanGoi.dem(`${yc.method} ${tim.path}|${ai}`, tim.hanGoi.soLan, tim.hanGoi.trongMs);
+      if (!kq.duoc) {
+        ky.canhBao(`[khung] chan goi don: ${yc.method} ${tim.path} tu ${ai}`);
+        return {
+          ma: 429,
+          tieuDe: { "Retry-After": String(Math.ceil(kq.choLaiSauMs / 1000)) },
+          than: { ok: false, error: LOI.qua_nhieu, message: "Hệ thống đang nhận quá nhiều yêu cầu. Vui lòng thử lại sau ít phút." }
+        };
+      }
+    }
+
     // CHAN QUYEN O DAY, mot cho duy nhat. Module khong tu kiem, nen khong quen duoc.
     if (tim.quyen !== "cong-khai") {
       const congQuyen = cong?.quyen;
@@ -149,7 +164,10 @@ function taoKhung({ cong, toKhais, nhatKy, cauHinh = {} }) {
         return { ma: 500, than: { ok: false, error: LOI.loi_he_thong } };
       }
       if (!congQuyen.duoc(yc, tim.quyen)) {
-        return { ma: 401, than: { ok: false, error: LOI.chua_dang_nhap, message: "Thieu ma hoac ma khong du quyen cho duong nay." } };
+        // Ghi AI bi tu choi, khong chi "co nguoi bi tu choi" — de truy duoc khi co chuyen.
+        const n = typeof congQuyen.ai === "function" ? congQuyen.ai(yc) : { ten: "", bang: "?" };
+        ky.canhBao(`[khung] tu choi ${yc.method} ${tim.path}: can "${tim.quyen}", nguoi goi la "${n.ten || "khong ro"}" (${n.bang})`);
+        return { ma: 401, than: { ok: false, error: LOI.chua_dang_nhap, message: "Thiếu mã hoặc mã không đủ quyền cho đường này." } };
       }
     }
 
