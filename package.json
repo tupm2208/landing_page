@@ -6,6 +6,10 @@
   "main": "chay.js",
   "scripts": {
     "chay": "node chay.js",
-    "test": "node --test \"test/*.test.js\""
+    "test": "node --test \"test/*.test.js\"",
+    "test:mysql": "node --test --test-timeout=60000 \"test/kho-mysql.test.js\""
+  },
+  "dependencies": {
+    "mysql2": "^3.24.4"
   }
 }
