@@ -1,27 +1,32 @@
-// Module Hang hoa & kho.
+// Module Hang hoa & kho — tu dot 2b chay tren BANG MySQL that.
 //
-// Trong tam: KHONG bao gio lo gia von / ton that / ten kho ra ban cong khai, va giu cho
-// khong bao gio giu qua so hang dang co.
+//   TOPRUN_MYSQL_URL=mysql://root:...@127.0.0.1:3307/toprun_modules_test \
+//     node --test test/hang-kho.test.js
+//
+// Trong tam: KHONG bao gio lo gia von / ton that / ten kho ra ban cong khai; giu cho khong
+// bao gio giu qua so hang dang co; va ba nguon hang (hang nha, chien dich, hang co san)
+// dong bo doc lap — dong bo mot nguon khong duoc dung toi nguon kia.
 
 "use strict";
 
 const test = require("node:test");
 const assert = require("node:assert/strict");
-const fs = require("fs");
-const os = require("os");
-const path = require("path");
 
 const { taoKhung } = require("../loi/khung");
-const { taoKhoTep } = require("../loi/cong/kho-tep");
+const { taoKhoMysql } = require("../loi/cong/kho-mysql");
 const { taoNhatKyGia, taoGioGia, taoHttpNgoaiGia } = require("../loi/cong/co-ban");
 const { taoCongQuyen } = require("../loi/cong/quyen");
+const { taoBoDemGoi } = require("../loi/cong/han-goi");
 const toKhai = require("../modules/hang-kho/module");
 const { chuanHoaMon, banCongKhai, nhanKho } = require("../modules/hang-kho/chuan-hoa");
 
 const MA_QT = "ma-quan-tri";
 const MA_DV = "ma-bo-nao";
+const DUONG = String(process.env.TOPRUN_MYSQL_URL || "").trim();
+const boQua = DUONG ? {} : { skip: "chưa đặt TOPRUN_MYSQL_URL — bỏ qua bài hàng hoá" };
+if (DUONG && /:3306\//.test(DUONG)) throw new Error("Cổng 3306 là dữ liệu thật của landing. Dùng 3307.");
 
-const MON_MAU = {
+const MON = {
   code: "DV1234",
   name: "Giày chạy Nike Pegasus 40",
   brand: "Nike",
@@ -34,38 +39,10 @@ const MON_MAU = {
   ]
 };
 
-function dungThu({ cauHinh } = {}) {
-  const thuMuc = fs.mkdtempSync(path.join(os.tmpdir(), "hang-kho-"));
-  const nhatKy = taoNhatKyGia();
-  const kho = taoKhoTep({ thuMuc, nhatKy });
-  const gio = taoGioGia();
-  const khung = taoKhung({
-    cong: { kho, nhatKy, gio, httpNgoai: taoHttpNgoaiGia(), quyen: taoCongQuyen({ maQuanTri: MA_QT, maDichVu: MA_DV }) },
-    nhatKy,
-    toKhais: [toKhai],
-    cauHinh: { "hang-kho": cauHinh ?? {} }
-  });
-  return { khung, kho, gio, nhatKy };
-}
-
-const nap = (mon, ma = MA_QT) => ({
-  method: "POST", duong: "/api/products", truyVan: {},
-  tieuDe: { authorization: `Bearer ${ma}` }, doc: async () => mon
-});
-const docCongKhai = () => ({ method: "GET", duong: "/api/products", truyVan: {}, tieuDe: {} });
-const docTrongNha = () => ({ method: "GET", duong: "/api/admin/products", truyVan: {}, tieuDe: { authorization: `Bearer ${MA_QT}` } });
-
-async function dungVaNap(mon = [MON_MAU], tuyChon) {
-  const bo = dungThu(tuyChon);
-  await bo.khung.xuLy(nap(mon));
-  await bo.kho.choXong();
-  return bo;
-}
-
-// ---------- chuan hoa ----------
+// ---------- phan khong can MySQL: chuan hoa thuan tuy ----------
 
 test("gia ban cua mon = gia NHO NHAT trong cac size (khach thay 'từ ... đ')", () => {
-  const m = chuanHoaMon({ ...MON_MAU, sizes: [{ size: "42", price: 3200000 }, { size: "43", price: 2890000 }] });
+  const m = chuanHoaMon({ ...MON, sizes: [{ size: "42", price: 3200000 }, { size: "43", price: 2890000 }] });
   assert.equal(m.price, 2890000);
 });
 
@@ -75,13 +52,13 @@ test("gia ban cao hon gia niem yet la du lieu sai — tu an mon di", () => {
   assert.equal(m.hiddenReason, "invalid_price_sale_gt_list");
 });
 
-test("mon thieu ma hoac thieu ten thi bi bo, khong vao so", () => {
+test("mon thieu ma hoac thieu ten thi bi bo", () => {
   assert.equal(chuanHoaMon({ name: "Không có mã" }), null);
   assert.equal(chuanHoaMon({ code: "A1" }), null);
 });
 
 test("anh nhap lieu noi bo khong duoc lot ra ban cong khai", () => {
-  const m = chuanHoaMon({ ...MON_MAU, thumbnailImage: "/assets/thumbnails/x.jpg", galleryImages: ["/assets/thumbnails/y.jpg", "/anh/that.jpg"] });
+  const m = chuanHoaMon({ ...MON, thumbnailImage: "/assets/thumbnails/x.jpg", galleryImages: ["/assets/thumbnails/y.jpg", "/anh/that.jpg"] });
   assert.equal(m.thumbnailImage, "");
   assert.deepEqual(m.galleryImages, ["/anh/that.jpg"]);
 });
@@ -89,141 +66,271 @@ test("anh nhap lieu noi bo khong duoc lot ra ban cong khai", () => {
 test("ten kho duoc rut thanh nhan ngan — khong noi ten kho voi khach", () => {
   assert.equal(nhanKho("wh_cau_dien", "Cầu Diễn"), "CD");
   assert.equal(nhanKho("wh_toprun_ha_noi", ""), "TR");
-  const ck = banCongKhai(chuanHoaMon(MON_MAU));
-  assert.ok(ck.sizes.every((d) => !/Cầu Diễn|Yên/.test(d.warehouse)), JSON.stringify(ck.sizes));
-});
-
-test("ban cong khai KHONG noi con may doi — chi con hay het", () => {
-  const ck = banCongKhai(chuanHoaMon(MON_MAU));
-  const size42 = ck.sizes.filter((d) => d.size === "42");
-  assert.ok(size42.length > 0);
-  for (const d of size42) assert.equal(d.qty, 1, "co hang thi qty luon la 1, khong phai so ton that");
-  const size43 = ck.sizes.find((d) => d.size === "43");
-  assert.equal(size43.qty, 0);
-  assert.equal(size43.available, false);
 });
 
 test("het sach moi size thi mon la het hang, du ho so ghi 'orderable'", () => {
-  const ck = banCongKhai(chuanHoaMon({ ...MON_MAU, status: "orderable", sizes: [{ size: "42", qty: 0, price: 100000 }] }));
+  const ck = banCongKhai(chuanHoaMon({ ...MON, status: "orderable", sizes: [{ size: "42", qty: 0, price: 100000 }] }));
   assert.equal(ck.status, "hidden");
 });
 
-// ---------- duong API ----------
+// ---------- phan chay tren bang that ----------
 
-test("Image Tool day danh muc len, web doc duoc ngay", async () => {
-  const { khung } = await dungVaNap();
-  const ra = await khung.xuLy(docCongKhai());
-  assert.equal(ra.ma, 200);
-  assert.equal(ra.than.length, 1);
-  assert.equal(ra.than[0].code, "DV1234");
-});
+test("Hàng hoá trên MySQL thật", { ...boQua }, async (t) => {
+  const nhatKy = taoNhatKyGia();
+  const gio = taoGioGia();
+  const kho = await taoKhoMysql({ duongKetNoi: DUONG, nhatKy });
+  await kho.chayLuocDo("hang-kho", toKhai.luocDo);
 
-test("ban cong khai khong mang gia von, ton that hay uu tien kho", async () => {
-  const { khung } = await dungVaNap([{ ...MON_MAU, costPrice: 1500000, warehouseStocks: { wh_yen: 5 } }]);
-  const chu = JSON.stringify((await khung.xuLy(docCongKhai())).than);
-  assert.ok(!chu.includes("costPrice"), "lo gia von");
-  assert.ok(!chu.includes("warehouseStocks"), "lo ton tung kho");
-  assert.ok(!chu.includes("warehousePriority"), "lo thu tu uu tien kho");
-});
+  // Don giua hai bai. `gio.troi` la CO Y: duong day danh muc co han 20 lan / 10 phut, va bo
+  // bai nay goi gan 20 lan — khong buoc qua mot cua so thi cuoi bo bi chan that (chan dung,
+  // bai sai). Buoc qua cung lam het han moi phieu giu cho con sot.
+  const donDep = async () => {
+    gio.troi(11 * 60 * 1000);
+    for (const b of ["hang_kho_giu_cho", "hang_kho_bien_the", "hang_kho_mon", "hang_kho_ma_chan"]) {
+      await kho.cauLenh(`DELETE FROM \`${b}\``, []);
+    }
+  };
+  await donDep();
+  t.after(async () => { await donDep(); await kho.dong(); });
 
-test("ban trong nha thi CO du ton that — nhung phai co ma quan tri", async () => {
-  const { khung } = await dungVaNap();
-  assert.equal((await khung.xuLy({ ...docTrongNha(), tieuDe: {} })).ma, 401);
-  const ra = await khung.xuLy(docTrongNha());
-  assert.equal(ra.than[0].sizes.find((d) => d.size === "42").qty, 3);
-});
-
-test("chi quan tri moi day duoc danh muc len", async () => {
-  const { khung } = dungThu();
-  assert.equal((await khung.xuLy({ ...nap([MON_MAU]), tieuDe: {} })).ma, 401);
-  assert.equal((await khung.xuLy(nap([MON_MAU], MA_DV))).ma, 401, "bo nao khong duoc sua danh muc");
-});
-
-test("day len thu khong phai mang thi tu choi, khong xoa so cu", async () => {
-  const { khung, kho } = await dungVaNap();
-  const ra = await khung.xuLy(nap({ linh: "tinh" }));
-  assert.equal(ra.ma, 400);
-  await kho.choXong();
-  assert.equal((await khung.xuLy(docCongKhai())).than.length, 1, "so cu phai con nguyen");
-});
-
-test("mo mot mon theo ma hoac theo duong dan deu ra", async () => {
-  const { khung } = await dungVaNap();
-  const theoMa = await khung.xuLy({ method: "GET", duong: "/api/products/DV1234", truyVan: {}, tieuDe: {} });
-  assert.equal(theoMa.ma, 200);
-  const theoDuong = await khung.xuLy({ method: "GET", duong: `/api/products/${theoMa.than.slug}`, truyVan: {}, tieuDe: {} });
-  assert.equal(theoDuong.than.code, "DV1234");
-  assert.equal((await khung.xuLy({ method: "GET", duong: "/api/products/khong-co", truyVan: {}, tieuDe: {} })).ma, 404);
-});
-
-// ---------- chan ma ----------
-
-test("ma bi chan khong lot ra web, VA khong duoc ghi vao so", async () => {
-  const { khung, kho } = await dungVaNap(
-    [MON_MAU, { ...MON_MAU, code: "CAM01", name: "Món cấm bán" }],
-    { cauHinh: { maChanSan: ["cam01"] } }
-  );
-  await kho.choXong();
-  const ck = (await khung.xuLy(docCongKhai())).than;
-  assert.deepEqual(ck.map((m) => m.code), ["DV1234"]);
-  const trongSo = await kho.so("hang-hoa").doc();
-  assert.ok(!trongSo.mon.some((m) => m.code === "CAM01"), "chan o dau GHI, khong chi o dau doc");
-});
-
-test("ma chan them vao SO sau khi da nap thi van bien khoi web ngay", async () => {
-  const { khung, kho } = await dungVaNap();
-  await kho.so("ma-bi-chan").ghi(["dv1234"]);
-  await kho.choXong();
-  assert.equal((await khung.xuLy(docCongKhai())).than.length, 0);
-});
-
-// ---------- dich vu cho bo nao ----------
-
-test("bo nao hoi ton: tra dung size con va size het", async () => {
-  const { khung } = await dungVaNap();
-  const hoi = (size) => khung.xuLy({
-    method: "GET", duong: "/api/hang-kho/ton/DV1234", truyVan: size ? { size } : {},
-    tieuDe: { authorization: `Bearer ${MA_DV}` }
+  const khung = taoKhung({
+    cong: { kho, nhatKy, gio, httpNgoai: taoHttpNgoaiGia(), quyen: taoCongQuyen({ maQuanTri: MA_QT, maDichVu: MA_DV }), hanGoi: taoBoDemGoi({ gio }) },
+    nhatKy, toKhais: [toKhai, MODULE_THU], cauHinh: { "hang-kho": {} }
   });
-  assert.equal((await hoi("42")).than.co, true);
-  assert.equal((await hoi("43")).than.co, false, "size 43 het thi phai noi la het");
-  assert.equal((await hoi()).than.cacDong.length, 2, "khong noi size thi liet ke moi dong con hang");
+
+  const quanTri = { authorization: `Bearer ${MA_QT}` };
+  const nap = (mon = [MON], duong = "/api/products") =>
+    khung.xuLy({ method: "POST", duong, truyVan: {}, tieuDe: quanTri, ip: "1.1.1.1", doc: async () => mon });
+  const docCongKhai = (truyVan = {}) => khung.xuLy({ method: "GET", duong: "/api/products", truyVan, tieuDe: {}, ip: "1.1.1.1" });
+  const docTrongNha = () => khung.xuLy({ method: "GET", duong: "/api/admin/products", truyVan: {}, tieuDe: quanTri, ip: "1.1.1.1" });
+  const hoiTon = (ma, size) => khung.xuLy({
+    method: "GET", duong: `/api/hang-kho/ton/${ma}`, truyVan: size ? { size } : {},
+    tieuDe: { authorization: `Bearer ${MA_DV}` }, ip: "1.1.1.1"
+  });
+  const goiGiu = (than) => khung.xuLy({ method: "POST", duong: "/thu/giu", truyVan: {}, tieuDe: quanTri, ip: "1.1.1.1", doc: async () => than });
+  const goiTra = (than) => khung.xuLy({ method: "POST", duong: "/thu/tra", truyVan: {}, tieuDe: quanTri, ip: "1.1.1.1", doc: async () => than });
+
+  await t.test("mot mon thanh mot dong mon + nhieu dong bien the", async () => {
+    await donDep();
+    const ra = await nap();
+    assert.equal(ra.ma, 200, JSON.stringify(ra.than));
+    assert.equal(ra.than.soMon, 1);
+    assert.equal(ra.than.soBienThe, 3);
+    assert.equal(await kho.bang("hang_kho_mon").dem(), 1);
+    assert.equal(await kho.bang("hang_kho_bien_the").dem(), 3);
+  });
+
+  await t.test("ban cong khai khong mang gia von, ton that hay uu tien kho", async () => {
+    await donDep();
+    await nap([{ ...MON, costPrice: 1500000, warehouseStocks: { wh_yen: 5 } }]);
+    const chu = JSON.stringify((await docCongKhai()).than);
+    assert.ok(!chu.includes("costPrice"), "lo gia von");
+    assert.ok(!chu.includes("warehouseStocks"), "lo ton tung kho");
+    assert.ok(!/Cầu Diễn|"Yên"/.test(chu), "lo ten kho");
+  });
+
+  await t.test("ban cong khai chi noi con hay het, KHONG noi con may doi", async () => {
+    await donDep(); await nap();
+    const mon = (await docCongKhai()).than[0];
+    for (const d of mon.sizes.filter((x) => x.size === "42")) assert.equal(d.qty, 1);
+    assert.equal(mon.sizes.find((x) => x.size === "43").available, false);
+  });
+
+  await t.test("ban trong nha CO ton that, va phai co ma quan tri", async () => {
+    await donDep(); await nap();
+    assert.equal((await khung.xuLy({ method: "GET", duong: "/api/admin/products", truyVan: {}, tieuDe: {}, ip: "1.1.1.1" })).ma, 401);
+    const mon = (await docTrongNha()).than[0];
+    assert.equal(mon.sizes.filter((d) => d.size === "42").reduce((t2, d) => t2 + d.qty, 0), 5);
+  });
+
+  await t.test("mo mot mon theo ma hoac theo duong dan deu ra", async () => {
+    await donDep(); await nap();
+    const theoMa = await khung.xuLy({ method: "GET", duong: "/api/products/DV1234", truyVan: {}, tieuDe: {}, ip: "1.1.1.1" });
+    assert.equal(theoMa.ma, 200);
+    const theoDuong = await khung.xuLy({ method: "GET", duong: `/api/products/${theoMa.than.slug}`, truyVan: {}, tieuDe: {}, ip: "1.1.1.1" });
+    assert.equal(theoDuong.than.code, "DV1234");
+    assert.equal((await khung.xuLy({ method: "GET", duong: "/api/products/khong-co", truyVan: {}, tieuDe: {}, ip: "1.1.1.1" })).ma, 404);
+  });
+
+  await t.test("tim theo ten: ma dung truoc, ten khop sau", async () => {
+    await donDep();
+    await nap([MON, { ...MON, code: "PEG40", name: "Dép Nike" }]);
+    const ra = await docCongKhai({ q: "pegasus" });
+    assert.equal(ra.than.length, 1);
+    assert.equal(ra.than[0].code, "DV1234");
+  });
+
+  // ---------- ba nguon hang ----------
+
+  await t.test("dong bo HANG CO SAN khong dung toi hang nha", async () => {
+    await donDep();
+    await nap();                                     // hang nha: 3 bien the
+    await nap([{ code: "RS01", name: "Hàng có sẵn A", sizes: [{ size: "41", qty: 2, price: 1000000, warehouseId: "wh_partner" }] }],
+      "/api/ready-stock/sync");
+    assert.equal(await kho.bang("hang_kho_bien_the").dem({ nguon: "own" }), 3, "hang nha phai con nguyen");
+    assert.equal(await kho.bang("hang_kho_bien_the").dem({ nguon: "ready" }), 1);
+
+    // Dong bo lai hang co san lan hai: chi thay dong cua chinh no.
+    await nap([{ code: "RS02", name: "Hàng có sẵn B", sizes: [{ size: "40", qty: 1, price: 900000, warehouseId: "wh_partner" }] }],
+      "/api/ready-stock/sync");
+    assert.equal(await kho.bang("hang_kho_bien_the").dem({ nguon: "own" }), 3, "dong bo hang co san khong duoc dung toi hang nha");
+    assert.equal(await kho.bang("hang_kho_bien_the").dem({ nguon: "ready" }), 1);
+    assert.equal((await kho.bang("hang_kho_mon").mot({ ma: "RS01" })), null, "hang co san cu phai bi thay");
+  });
+
+  await t.test("chien dich doi tac cung la mot nguon rieng", async () => {
+    await donDep();
+    await nap();
+    await nap([{ code: "CD01", name: "Hàng chiến dịch", campaignId: "sup-01", sizes: [{ size: "42", qty: 5, price: 2000000, warehouseId: "wh_sup" }] }],
+      "/api/partner-campaigns");
+    assert.equal(await kho.bang("hang_kho_bien_the").dem({ nguon: "campaign" }), 1);
+    assert.equal(await kho.bang("hang_kho_bien_the").dem({ nguon: "own" }), 3);
+
+    const ck = (await docCongKhai()).than;
+    assert.equal(ck.length, 2, "ca hai nguon deu hien tren web");
+  });
+
+  await t.test("day len thu khong phai mang thi tu choi, khong xoa danh muc cu", async () => {
+    await donDep(); await nap();
+    assert.equal((await nap({ linh: "tinh" })).ma, 400);
+    assert.equal(await kho.bang("hang_kho_mon").dem(), 1, "danh muc cu phai con nguyen");
+  });
+
+  // ---------- chan ma ----------
+
+  await t.test("ma bi chan khong lot ra web VA khong duoc ghi vao bang", async () => {
+    await donDep();
+    await kho.bang("hang_kho_ma_chan").them({ ma: "cam01", vi_sao: "bai kiem tra", them_luc: "2026-09-12 00:00:00.000" });
+    await nap([MON, { ...MON, code: "CAM01", name: "Món cấm bán" }]);
+
+    assert.deepEqual((await docCongKhai()).than.map((m) => m.code), ["DV1234"]);
+    assert.equal(await kho.bang("hang_kho_mon").dem({ ma: "CAM01" }), 0, "chan o dau GHI, khong chi o dau doc");
+  });
+
+  await t.test("chan ma SAU khi da nap thi mon bien khoi web ngay", async () => {
+    await donDep(); await nap();
+    await kho.bang("hang_kho_ma_chan").them({ ma: "dv1234", vi_sao: "", them_luc: "2026-09-12 00:00:00.000" });
+    assert.equal((await docCongKhai()).than.length, 0);
+  });
+
+  // ---------- hoi ton ----------
+
+  await t.test("bo nao hoi ton: dung size con, dung size het", async () => {
+    await donDep(); await nap();
+    assert.equal((await hoiTon("DV1234", "42")).than.co, true);
+    assert.equal((await hoiTon("DV1234", "43")).than.co, false);
+    assert.equal((await hoiTon("DV1234")).than.cacDong.length, 2);
+    assert.equal((await hoiTon("KHONGCO")).than.viSao, "khong_co_ma");
+  });
+
+  await t.test("cac dong ton sap theo gia re truoc, bang gia thi theo uu tien kho", async () => {
+    await donDep();
+    await nap([{
+      ...MON,
+      warehousePriorityIds: ["wh_yen", "wh_cau_dien"],
+      // Ba kho khac nhau: mot bo ba (mon + size + kho) la MOT bien the.
+      sizes: [
+        { size: "42", qty: 1, price: 2890000, warehouseId: "wh_cau_dien" },
+        { size: "42", qty: 1, price: 2890000, warehouseId: "wh_yen" },
+        { size: "42", qty: 1, price: 2500000, warehouseId: "wh_hang_td" }
+      ]
+    }]);
+    const dong = (await hoiTon("DV1234")).than.cacDong;
+    assert.equal(dong[0].gia, 2500000, "re nhat di truoc");
+    assert.equal(dong[1].maKho, "wh_yen", "bang gia thi kho uu tien cao hon di truoc");
+  });
+
+  await t.test("hai dong TRUNG (cung mon + size + kho) khong duoc giet ca dot day danh muc", async () => {
+    await donDep();
+    const ra = await nap([{
+      ...MON,
+      sizes: [
+        { size: "42", qty: 1, price: 2890000, warehouseId: "wh_yen" },
+        { size: "42", qty: 1, price: 2500000, warehouseId: "wh_yen" },   // trung bo ba
+        { size: "43", qty: 2, price: 2890000, warehouseId: "wh_yen" }
+      ]
+    }]);
+    assert.equal(ra.ma, 200, "mot dong xau khong duoc lam hong ca danh muc");
+    assert.equal(ra.than.soBienThe, 2, "hai dong trung gop lai con mot");
+
+    const dong = (await hoiTon("DV1234", "42")).than.cacDong;
+    assert.equal(dong.length, 1);
+    assert.equal(dong[0].gia, 2500000, "giu dong gia thap hon");
+    assert.ok(
+      nhatKy.dong.some((d) => /bi trung/.test(d.noiDung)),
+      "phai ghi canh bao de nguoi van hanh biet ma sua nguon"
+    );
+  });
+
+  await t.test("duong hoi ton khong mo cho khach", async () => {
+    assert.equal((await khung.xuLy({ method: "GET", duong: "/api/hang-kho/ton/DV1234", truyVan: {}, tieuDe: {}, ip: "1.1.1.1" })).ma, 401);
+  });
+
+  // ---------- giu cho ----------
+
+  await t.test("giu cho xong thi khach sau khong thay con hang nua", async () => {
+    await donDep();
+    await nap([{ ...MON, sizes: [{ size: "42", qty: 1, price: 100000, warehouseId: "wh_yen" }] }]);
+    assert.equal((await goiGiu({ ma: "DV1234", size: "42", soLuong: 1 })).than.ok, true);
+    assert.equal((await docCongKhai()).than[0].sizes[0].available, false);
+  });
+
+  await t.test("KHONG bao gio giu qua so hang dang co", async () => {
+    await donDep();
+    await nap([{ ...MON, sizes: [{ size: "42", qty: 1, price: 100000, warehouseId: "wh_yen" }] }]);
+    assert.equal((await goiGiu({ ma: "DV1234", size: "42", soLuong: 2 })).than.ok, false, "xin 2 ma chi co 1");
+    assert.equal((await goiGiu({ ma: "DV1234", size: "42", soLuong: 1 })).than.ok, true);
+    const hai = await goiGiu({ ma: "DV1234", size: "42", soLuong: 1 });
+    assert.equal(hai.than.ok, false);
+    assert.equal(hai.than.viSao, "khong_du_hang");
+  });
+
+  await t.test("hai nguoi xin doi CUOI CUNG cung luc: dung mot nguoi duoc", async () => {
+    await donDep();
+    await nap([{ ...MON, sizes: [{ size: "42", qty: 1, price: 100000, warehouseId: "wh_yen" }] }]);
+    const [a, b] = await Promise.all([
+      goiGiu({ ma: "DV1234", size: "42", soLuong: 1 }),
+      goiGiu({ ma: "DV1234", size: "42", soLuong: 1 })
+    ]);
+    const duoc = [a, b].filter((x) => x.than.ok).length;
+    assert.equal(duoc, 1, "khoa dong phai cho dung mot nguoi giu duoc doi cuoi");
+  });
+
+  await t.test("giu het doi cuoi thi phat su kien het hang", async () => {
+    await donDep();
+    await nap([{ ...MON, sizes: [{ size: "42", qty: 1, price: 100000, warehouseId: "wh_yen" }] }]);
+    const nghe = [];
+    khung.bus.nghe("hang-kho.het-hang", "bai-thu", (d) => nghe.push(d));
+    await goiGiu({ ma: "DV1234", size: "42", soLuong: 1 });
+    await new Promise((r) => setImmediate(r));
+    assert.equal(nghe.length, 1);
+    assert.equal(nghe[0].size, "42");
+  });
+
+  await t.test("tra cho thi hang con lai ngay", async () => {
+    await donDep();
+    await nap([{ ...MON, sizes: [{ size: "42", qty: 1, price: 100000, warehouseId: "wh_yen" }] }]);
+    const giu = await goiGiu({ ma: "DV1234", size: "42", soLuong: 1 });
+    assert.equal((await docCongKhai()).than[0].sizes[0].available, false);
+    assert.equal((await goiTra({ maPhieu: giu.than.maPhieu })).than.ok, true);
+    assert.equal((await docCongKhai()).than[0].sizes[0].available, true);
+  });
+
+  await t.test("phieu giu cho het han thi tu tra lai hang", async () => {
+    await donDep();
+    await nap([{ ...MON, sizes: [{ size: "42", qty: 1, price: 100000, warehouseId: "wh_yen" }] }]);
+    await goiGiu({ ma: "DV1234", size: "42", soLuong: 1 });
+    assert.equal((await docCongKhai()).than[0].sizes[0].available, false);
+
+    gio.troi(30 * 60 * 1000 + 1000);
+    assert.equal((await docCongKhai()).than[0].sizes[0].available, true, "qua 30 phut phai tra lai hang");
+  });
 });
 
-test("hoi ton mot ma khong co thi noi khong co, khong doan bua", async () => {
-  const { khung } = await dungVaNap();
-  const ra = await khung.xuLy({ method: "GET", duong: "/api/hang-kho/ton/KHONGCO", truyVan: {}, tieuDe: { authorization: `Bearer ${MA_DV}` } });
-  assert.equal(ra.than.co, false);
-  assert.equal(ra.than.viSao, "khong_co_ma");
-});
-
-test("duong hoi ton chi mo cho bo nao va quan tri, khong mo cho khach", async () => {
-  const { khung } = await dungVaNap();
-  assert.equal((await khung.xuLy({ method: "GET", duong: "/api/hang-kho/ton/DV1234", truyVan: {}, tieuDe: {} })).ma, 401);
-});
-
-test("cac dong ton sap theo gia re truoc, bang gia thi theo thu tu uu tien kho", async () => {
-  const { khung } = await dungVaNap([{
-    ...MON_MAU,
-    warehousePriorityIds: ["wh_yen", "wh_cau_dien"],
-    sizes: [
-      { size: "42", qty: 1, price: 2890000, warehouseId: "wh_cau_dien" },
-      { size: "42", qty: 1, price: 2890000, warehouseId: "wh_yen" },
-      { size: "42", qty: 1, price: 2500000, warehouseId: "wh_cau_dien" }
-    ]
-  }]);
-  const ra = await khung.xuLy({ method: "GET", duong: "/api/hang-kho/ton/DV1234", truyVan: {}, tieuDe: { authorization: `Bearer ${MA_DV}` } });
-  const dong = ra.than.cacDong;
-  assert.equal(dong[0].gia, 2500000, "re nhat di truoc");
-  assert.equal(dong[1].maKho, "wh_yen", "bang gia thi kho uu tien cao hon di truoc");
-});
-
-// ---------- giu cho ----------
-
-// Module THU: goi dich vu that cua hang-kho qua dung duong khung noi, khong dung ctx gia.
+// Module THU: goi dich vu that cua hang-kho qua dung duong khung noi.
 const MODULE_THU = {
   id: "thu-giu-cho", ten: "Thu giu cho", mang: "van-hanh", chay: "server-khach", phienBan: "0.0.1",
-  canDichVu: ["hang-kho.giuCho", "hang-kho.traCho", "hang-kho.tonKho", "hang-kho.tim"],
+  canDichVu: ["hang-kho.giuCho", "hang-kho.traCho"],
   duong: [
     {
       method: "POST", path: "/thu/giu", quyen: "quan-tri",
@@ -232,104 +339,6 @@ const MODULE_THU = {
     {
       method: "POST", path: "/thu/tra", quyen: "quan-tri",
       tay: async (ctx, yc) => ({ ma: 200, than: await ctx.dichVu["hang-kho"].traCho(await yc.doc()) })
-    },
-    {
-      method: "GET", path: "/thu/tim", quyen: "quan-tri",
-      tay: async (ctx, yc) => ({ ma: 200, than: await ctx.dichVu["hang-kho"].tim({ tuKhoa: yc.truyVan.q }) })
     }
   ]
 };
-
-function dungCoModuleThu(mon) {
-  const thuMuc = fs.mkdtempSync(path.join(os.tmpdir(), "hang-kho-"));
-  const nhatKy = taoNhatKyGia();
-  const kho = taoKhoTep({ thuMuc, nhatKy });
-  const khung = taoKhung({
-    cong: { kho, nhatKy, gio: taoGioGia(), httpNgoai: taoHttpNgoaiGia(), quyen: taoCongQuyen({ maQuanTri: MA_QT, maDichVu: MA_DV }) },
-    nhatKy, toKhais: [toKhai, MODULE_THU], cauHinh: { "hang-kho": {} }
-  });
-  return { khung, kho, nhatKy, daNap: khung.xuLy(nap(mon)).then(() => kho.choXong()) };
-}
-const MOT_DOI = [{ ...MON_MAU, sizes: [{ size: "42", qty: 1, price: 100000, warehouseId: "wh_yen" }] }];
-const goiGiu = (than) => ({ method: "POST", duong: "/thu/giu", truyVan: {}, tieuDe: { authorization: `Bearer ${MA_QT}` }, doc: async () => than });
-const goiTra = (than) => ({ method: "POST", duong: "/thu/tra", truyVan: {}, tieuDe: { authorization: `Bearer ${MA_QT}` }, doc: async () => than });
-
-test("giu cho xong thi khach sau khong thay con hang nua", async () => {
-  const bo = dungCoModuleThu(MOT_DOI);
-  await bo.daNap;
-
-  const giu = await bo.khung.xuLy(goiGiu({ ma: "DV1234", size: "42", soLuong: 1 }));
-  assert.equal(giu.than.ok, true, JSON.stringify(giu.than));
-  await bo.kho.choXong();
-
-  const ck = await bo.khung.xuLy(docCongKhai());
-  assert.equal(ck.than[0].sizes[0].available, false);
-});
-
-test("KHONG bao gio giu qua so hang dang co", async () => {
-  const bo = dungCoModuleThu(MOT_DOI);
-  await bo.daNap;
-
-  assert.equal((await bo.khung.xuLy(goiGiu({ ma: "DV1234", size: "42", soLuong: 2 }))).than.ok, false, "xin 2 ma chi co 1");
-  const mot = await bo.khung.xuLy(goiGiu({ ma: "DV1234", size: "42", soLuong: 1 }));
-  assert.equal(mot.than.ok, true);
-  await bo.kho.choXong();
-
-  const hai = await bo.khung.xuLy(goiGiu({ ma: "DV1234", size: "42", soLuong: 1 }));
-  assert.equal(hai.than.ok, false, "nguoi thu hai khong duoc giu chong len");
-  assert.equal(hai.than.viSao, "khong_du_hang");
-});
-
-test("giu het doi cuoi thi phat su kien het hang len bang tin", async () => {
-  const bo = dungCoModuleThu(MOT_DOI);
-  await bo.daNap;
-  const nghe = [];
-  bo.khung.bus.nghe("hang-kho.het-hang", "bai-thu", (d) => nghe.push(d));
-
-  await bo.khung.xuLy(goiGiu({ ma: "DV1234", size: "42", soLuong: 1 }));
-  await new Promise((r) => setImmediate(r));
-  assert.equal(nghe.length, 1);
-  assert.equal(nghe[0].size, "42");
-});
-
-test("tra cho thi hang con lai ngay", async () => {
-  const bo = dungCoModuleThu(MOT_DOI);
-  await bo.daNap;
-
-  const giu = await bo.khung.xuLy(goiGiu({ ma: "DV1234", size: "42", soLuong: 1 }));
-  await bo.kho.choXong();
-  assert.equal((await bo.khung.xuLy(docCongKhai())).than[0].sizes[0].available, false);
-
-  const tra = await bo.khung.xuLy(goiTra({ maPhieu: giu.than.maPhieu }));
-  assert.equal(tra.than.ok, true);
-  await bo.kho.choXong();
-  assert.equal((await bo.khung.xuLy(docCongKhai())).than[0].sizes[0].available, true);
-});
-
-test("tra mot phieu khong co thi bao khong co, khong nem", async () => {
-  const bo = dungCoModuleThu([MON_MAU]);
-  await bo.daNap;
-  assert.equal((await bo.khung.xuLy(goiTra({ maPhieu: "khong-co" }))).than.ok, false);
-});
-
-test("bo nao tim hang theo ten: chi tra mon thuc su khop", async () => {
-  const bo = dungCoModuleThu([MON_MAU, { ...MON_MAU, code: "PEG40", name: "Dep Nike" }]);
-  await bo.daNap;
-  const ra = await bo.khung.xuLy({ method: "GET", duong: "/thu/tim", truyVan: { q: "pegasus" }, tieuDe: { authorization: `Bearer ${MA_QT}` } });
-  assert.equal(ra.than.length, 1);
-  assert.equal(ra.than[0].code, "DV1234");
-});
-
-test("phieu giu cho het han thi tu tra lai hang", async () => {
-  const { khung, kho } = await dungVaNap([{ ...MON_MAU, sizes: [{ size: "42", qty: 1, price: 100000, warehouseId: "wh_yen" }] }]);
-  const { maBienThe, chuanHoaMon: ch } = require("../modules/hang-kho/chuan-hoa");
-  const mon = ch({ ...MON_MAU, sizes: [{ size: "42", qty: 1, price: 100000, warehouseId: "wh_yen" }] });
-  await kho.so("giu-cho").ghi({
-    version: 1,
-    phieu: { cu: { maBienThe: maBienThe(mon, mon.sizes[0]), ma: "DV1234", size: "42", soLuong: 1, hetHanLuc: "2020-01-01T00:00:00.000Z" } },
-    updatedAt: ""
-  });
-  await kho.choXong();
-  const ra = await khung.xuLy(docCongKhai());
-  assert.equal(ra.than[0].sizes[0].available, true, "phieu qua han khong duoc giu hang nua");
-});

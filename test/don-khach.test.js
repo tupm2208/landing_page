@@ -16,8 +16,8 @@ const path = require("path");
 
 const { taoKhung } = require("../loi/khung");
 const { taoKhoMysql } = require("../loi/cong/kho-mysql");
-const { taoKhoTep } = require("../loi/cong/kho-tep");
 const { taoNhatKyGia, taoGioGia, taoHttpNgoaiGia } = require("../loi/cong/co-ban");
+const { taoBoDemGoi } = require("../loi/cong/han-goi");
 const { taoCongQuyen } = require("../loi/cong/quyen");
 const toKhaiDon = require("../modules/don-khach/module");
 const toKhaiKho = require("../modules/hang-kho/module");
@@ -85,40 +85,36 @@ CREATE TABLE IF NOT EXISTS order_status_logs (
 
 test("Đơn hàng trên MySQL thật", { ...boQua }, async (t) => {
   const nhatKy = taoNhatKyGia();
+  const gio = taoGioGia();
   const kho = await taoKhoMysql({ duongKetNoi: DUONG, nhatKy });
-  // Hang hoa van dung so tep o bai nay — dot 2 chua chuyen sang bang.
-  const khoTep = taoKhoTep({ thuMuc: fs.mkdtempSync(path.join(os.tmpdir(), "don-kho-")), nhatKy });
 
   for (const sql of [LUOC_DO_THU, LUOC_DO_DONG, LUOC_DO_NHAT_KY]) await kho.cauLenh(sql, []);
-  // Don giua hai bai: xoa don trong MySQL VA tra lai moi cho dang giu trong so hang hoa.
-  // Quen ve thu hai thi bai sau luon thay het hang — va do la loi cua bai, khong phai cua module.
+  // Tu dot 2b, hang hoa cung nam tren bang — bai nay chay ca hai module tren cung mot kho.
+  await kho.chayLuocDo("hang-kho", toKhaiKho.luocDo);
+  // Don giua hai bai: xoa don VA tra lai moi cho dang giu. Quen ve thu hai thi bai sau luon
+  // thay het hang — loi cua bai, khong phai cua module. `gio.troi` de khong dinh han goi
+  // (duong day danh muc 20 lan / 10 phut).
   const donDep = async () => {
-    for (const b of ["order_status_logs", "order_items", "orders"]) {
-      await kho.cauLenh(`DELETE FROM \`${b}\` WHERE 1 = 1`, []);
+    gio.troi(11 * 60 * 1000);
+    for (const b of ["order_status_logs", "order_items", "orders",
+                     "hang_kho_giu_cho", "hang_kho_bien_the", "hang_kho_mon", "hang_kho_ma_chan"]) {
+      await kho.cauLenh(`DELETE FROM \`${b}\``, []);
     }
-    await khoTep.so("giu-cho").ghi({ version: 1, phieu: {}, updatedAt: "" });
-    await khoTep.choXong();
   };
   await donDep();
   t.after(async () => { await donDep(); await kho.dong(); });
 
-  // Kho hang dung so tep, don dung bang MySQL — cong `kho` gia ghep hai duong lai.
-  const khoGhep = {
-    bang: (ten) => kho.bang(ten),
-    so: (ten) => khoTep.so(ten),
-    giaoDich: (viec) => kho.giaoDich((trong) => viec({ ...trong, so: (t2) => khoTep.so(t2) })),
-    cauLenh: (sql, ts) => kho.cauLenh(sql, ts),
-    choXong: () => khoTep.choXong()
-  };
-
   const khung = taoKhung({
-    cong: { kho: khoGhep, nhatKy, gio: taoGioGia(), httpNgoai: taoHttpNgoaiGia(), quyen: taoCongQuyen({ maQuanTri: MA_QT }) },
+    cong: {
+      kho, nhatKy, gio, httpNgoai: taoHttpNgoaiGia(),
+      quyen: taoCongQuyen({ maQuanTri: MA_QT }), hanGoi: taoBoDemGoi({ gio })
+    },
     nhatKy, toKhais: [toKhaiKho, toKhaiDon], cauHinh: { "hang-kho": {}, "don-khach": {} }
   });
 
   const quanTri = { authorization: `Bearer ${MA_QT}` };
-  const napHang = (mon = [MON]) => khung.xuLy({ method: "POST", duong: "/api/products", truyVan: {}, tieuDe: quanTri, doc: async () => mon });
-  const dat = (than) => khung.xuLy({ method: "POST", duong: "/api/orders", truyVan: {}, tieuDe: {}, doc: async () => than });
+  const napHang = (mon = [MON]) => khung.xuLy({ method: "POST", duong: "/api/products", truyVan: {}, tieuDe: quanTri, ip: "1.1.1.1", doc: async () => mon });
+  const dat = (than) => khung.xuLy({ method: "POST", duong: "/api/orders", truyVan: {}, tieuDe: {}, ip: "1.1.1.1", doc: async () => than });
   const DON_MAU = {
     customerName: "Nguyễn Văn A", phone: "0911111111", province: "Hà Nội", district: "Quận Ba Đình",
     ward: "Phường Giảng Võ", addressDetail: "12 Đội Cấn",
@@ -133,7 +129,7 @@ test("Đơn hàng trên MySQL thật", { ...boQua }, async (t) => {
   });
 
   await t.test("dat don: ghi don, dong don va nhat ky trong cung mot lan", async () => {
-    await napHang(); await khoTep.choXong();
+    await napHang(); 
     const ra = await dat(DON_MAU);
     assert.equal(ra.ma, 200, JSON.stringify(ra.than));
     assert.match(ra.than.id, /^ORD-\d+$/);
@@ -146,10 +142,10 @@ test("Đơn hàng trên MySQL thật", { ...boQua }, async (t) => {
 
   await t.test("dat don GIU CHO ton — khach sau khong mua duoc doi da ban", async () => {
     await donDep(); await napHang([{ ...MON, sizes: [{ size: "42", qty: 1, price: 2890000, warehouseId: "wh_yen" }] }]);
-    await khoTep.choXong();
+    
 
     assert.equal((await dat(DON_MAU)).ma, 200);
-    await khoTep.choXong();
+    
 
     const lanHai = await dat(DON_MAU);
     assert.equal(lanHai.ma, 400);
@@ -158,13 +154,13 @@ test("Đơn hàng trên MySQL thật", { ...boQua }, async (t) => {
 
   await t.test("het hang thi KHONG ghi don nao ca", async () => {
     await donDep(); await napHang([{ ...MON, sizes: [{ size: "42", qty: 0, price: 2890000, warehouseId: "wh_yen" }] }]);
-    await khoTep.choXong();
+    
     assert.equal((await dat(DON_MAU)).than.error, "het_hang");
     assert.equal(await kho.bang("orders").dem(), 0, "khong duoc de lai don rong");
   });
 
   await t.test("don thieu ten hay dien thoai thi tu choi", async () => {
-    await donDep(); await napHang(); await khoTep.choXong();
+    await donDep(); await napHang(); 
     assert.equal((await dat({ ...DON_MAU, customerName: "" })).than.error, "thieu_ten_khach");
     assert.equal((await dat({ ...DON_MAU, phone: "" })).than.error, "thieu_dien_thoai");
     assert.equal((await dat({ ...DON_MAU, items: [] })).than.error, "don_khong_co_mon");
@@ -172,7 +168,7 @@ test("Đơn hàng trên MySQL thật", { ...boQua }, async (t) => {
   });
 
   await t.test("dat don xong thi phat len bang tin", async () => {
-    await donDep(); await napHang(); await khoTep.choXong();
+    await donDep(); await napHang(); 
     const nghe = [];
     khung.bus.nghe("don-khach.da-tao", "bai-thu", (d) => nghe.push(d));
     const ra = await dat(DON_MAU);
@@ -182,7 +178,7 @@ test("Đơn hàng trên MySQL thật", { ...boQua }, async (t) => {
   });
 
   await t.test("khach tra don: dung ma don + ma tra thi thay, sai mot trong hai thi khong", async () => {
-    await donDep(); await napHang(); await khoTep.choXong();
+    await donDep(); await napHang(); 
     const ra = await dat(DON_MAU);
     const tra = (than) => khung.xuLy({ method: "POST", duong: "/api/orders/lookup", truyVan: {}, tieuDe: {}, doc: async () => than });
 
@@ -196,7 +192,7 @@ test("Đơn hàng trên MySQL thật", { ...boQua }, async (t) => {
   });
 
   await t.test("ma tra cuu KHONG duoc luu ban ro trong so", async () => {
-    await donDep(); await napHang(); await khoTep.choXong();
+    await donDep(); await napHang(); 
     const ra = await dat(DON_MAU);
     const dong = await kho.bang("orders").mot({ id: ra.than.id });
     assert.notEqual(dong.order_lookup_token_hash, ra.than.token);
@@ -204,7 +200,7 @@ test("Đơn hàng trên MySQL thật", { ...boQua }, async (t) => {
   });
 
   await t.test("tien tren don di qua order-money-kit, khong tu suy dien", async () => {
-    await donDep(); await napHang(); await khoTep.choXong();
+    await donDep(); await napHang(); 
     const ra = await dat(DON_MAU);
 
     const doc = async () => (await khung.xuLy({ method: "GET", duong: `/api/orders/${ra.than.id}`, truyVan: {}, tieuDe: quanTri })).than;
@@ -219,7 +215,7 @@ test("Đơn hàng trên MySQL thật", { ...boQua }, async (t) => {
   });
 
   await t.test("doi trang thai: ghi them mot dong nhat ky, phat len bang tin", async () => {
-    await donDep(); await napHang(); await khoTep.choXong();
+    await donDep(); await napHang(); 
     const ra = await dat(DON_MAU);
     const nghe = [];
     khung.bus.nghe("don-khach.doi-trang-thai", "bai-thu", (d) => nghe.push(d));
@@ -249,7 +245,7 @@ test("Đơn hàng trên MySQL thật", { ...boQua }, async (t) => {
 
   await t.test("danh sach don chi cho quan tri, loc duoc theo trang thai va dien thoai", async () => {
     await donDep(); await napHang([{ ...MON, sizes: [{ size: "42", qty: 9, price: 2890000, warehouseId: "wh_yen" }] }]);
-    await khoTep.choXong();
+    
     // Dong ho gia KHONG chay, nen hai don nay sinh cung mot moc — dung canh bat loi trung ma.
     assert.equal((await dat(DON_MAU)).ma, 200);
     assert.equal((await dat({ ...DON_MAU, phone: "0922222222" })).ma, 200, "don thu hai khong duoc mat vi trung ma");
@@ -265,7 +261,7 @@ test("Đơn hàng trên MySQL thật", { ...boQua }, async (t) => {
   });
 
   await t.test("GIA lay tu kho, KHONG lay tu khach — khach gui 1 dong van tinh dung gia", async () => {
-    await donDep(); await napHang(); await khoTep.choXong();
+    await donDep(); await napHang(); 
     const ra = await dat({ ...DON_MAU, items: [{ productCode: "DV1234", size: "42", price: 1, qty: 1 }] });
     assert.equal(ra.ma, 200, JSON.stringify(ra.than));
     assert.equal(ra.than.total, 2890000, "tong phai theo gia trong kho, khong theo gia khach gui");
@@ -276,7 +272,7 @@ test("Đơn hàng trên MySQL thật", { ...boQua }, async (t) => {
 
   await t.test("hai don trong CUNG mot mili giay van ra hai ma khac nhau", async () => {
     await donDep(); await napHang([{ ...MON, sizes: [{ size: "42", qty: 5, price: 2890000, warehouseId: "wh_yen" }] }]);
-    await khoTep.choXong();
+    
 
     const cacMa = [];
     for (let i = 0; i < 3; i += 1) {
@@ -290,7 +286,7 @@ test("Đơn hàng trên MySQL thật", { ...boQua }, async (t) => {
   });
 
   await t.test("don tra ra ngoai mang du dong hang va so tien da tinh san", async () => {
-    await donDep(); await napHang(); await khoTep.choXong();
+    await donDep(); await napHang(); 
     const ra = await dat(DON_MAU);
     const don = (await khung.xuLy({ method: "GET", duong: `/api/orders/${ra.than.id}`, truyVan: {}, tieuDe: quanTri })).than;
     assert.equal(don.items.length, 1);

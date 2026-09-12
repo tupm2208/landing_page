@@ -127,6 +127,37 @@ function taoBang(chay, ten) {
       return { id: kq.insertId ?? null, soDong: kq.affectedRows ?? 0 };
     },
 
+    /**
+     * Chen NHIEU dong trong mot cau lenh. Danh muc co hang chuc nghin bien the — chen tung
+     * dong la hang chuc nghin luot di ve, mat vai phut cho mot viec dang le vai giay.
+     * Cat thanh lo de khong vuot gioi han goi tin cua MySQL (`max_allowed_packet`).
+     */
+    async themNhieu(cacDong = [], { moiLo = 500 } = {}) {
+      const ds = Array.isArray(cacDong) ? cacDong.filter(Boolean) : [];
+      if (ds.length === 0) return { soDong: 0 };
+      const cot = Object.keys(ds[0]).map((c) => tenAnToan(c, "cột"));
+      if (cot.length === 0) throw new Error(`Them dong rong vao bang "${t}"`);
+
+      let soDong = 0;
+      for (let i = 0; i < ds.length; i += moiLo) {
+        const lo = ds.slice(i, i + moiLo);
+        const thamSo = [];
+        for (const d of lo) {
+          // Moi dong phai co DUNG bo cot cua dong dau — thieu mot cot la lech ca cau lenh.
+          const thieu = cot.filter((c) => !(c in d));
+          if (thieu.length > 0) throw new Error(`Dong thu ${i + lo.indexOf(d) + 1} thieu cot: ${thieu.join(", ")}`);
+          for (const c of cot) thamSo.push(d[c]);
+        }
+        const mauMotDong = `(${cot.map(() => "?").join(", ")})`;
+        const [kq] = await chay(
+          `INSERT INTO \`${t}\` (${cot.map((c) => `\`${c}\``).join(", ")}) VALUES ${lo.map(() => mauMotDong).join(", ")}`,
+          thamSo
+        );
+        soDong += kq.affectedRows ?? 0;
+      }
+      return { soDong };
+    },
+
     async thay(dieuKien = {}, giaTri = {}) {
       const cot = Object.keys(giaTri).map((c) => tenAnToan(c, "cột"));
       if (cot.length === 0) return 0;
@@ -137,6 +168,12 @@ function taoBang(chay, ten) {
         `UPDATE \`${t}\` SET ${cot.map((c) => `\`${c}\` = ?`).join(", ")} ${menh}`,
         [...Object.values(giaTri), ...thamSo]
       );
+      return kq.affectedRows ?? 0;
+    },
+
+    /** Xoa SACH bang. Phai goi ro rang — `xoa({})` van bi chan de khong ai lo tay. */
+    async xoaSach() {
+      const [kq] = await chay(`DELETE FROM \`${t}\``, []);
       return kq.affectedRows ?? 0;
     },
 
@@ -265,7 +302,11 @@ async function taoKhoMysql({ duongKetNoi, nhatKy, soKetNoiToiDa = 10, hanCauLenh
               throw new Error(`Module "${moduleId}" khai bảng "${b}" — tên bảng phải bắt đầu bằng "${tienTo}".`);
             }
           }
-          await chayRieng(buoc.sql, []);
+          // Mot buoc co the co nhieu cau lenh. KHONG bat `multipleStatements` cua trinh
+          // dieu khien (bat la mo duong tiem cau lenh o moi cho khac); cat tay o day.
+          for (const cau of String(buoc.sql).split(";").map((x) => x.trim()).filter(Boolean)) {
+            await chayRieng(cau, []);
+          }
           await chayRieng(`INSERT INTO \`${BANG_LICH_SU}\` (module, ten, chay_luc) VALUES (?, ?, NOW(3))`, [moduleId, buoc.ten]);
           ky.tin(`[kho] chạy lược đồ ${moduleId}/${buoc.ten}`);
         }
