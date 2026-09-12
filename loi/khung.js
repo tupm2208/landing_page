@@ -82,7 +82,7 @@ function taoKhung({ cong, toKhais, nhatKy, cauHinh = {} }) {
     }
 
     for (const d of toKhai.duong ?? []) {
-      boDinhTuyen.them({ method: d.method, path: d.path, moduleId: toKhai.id, tay: (yc) => d.tay(ctx, yc) });
+      boDinhTuyen.them({ method: d.method, path: d.path, moduleId: toKhai.id, quyen: d.quyen, tay: (yc) => d.tay(ctx, yc) });
     }
     for (const [ten, ham] of Object.entries(toKhai.suKien?.nghe ?? {})) {
       bus.nghe(ten, toKhai.id, (duLieu) => ham(ctx, duLieu));
@@ -115,6 +115,18 @@ function taoKhung({ cong, toKhais, nhatKy, cauHinh = {} }) {
     const tim = boDinhTuyen.tim(yc.method, yc.duong);
     if (tim === null) return { ma: 404, than: { ok: false, error: LOI.khong_thay } };
     if (tim.saiPhuongThuc) return { ma: 405, than: { ok: false, error: LOI.sai_yeu_cau, message: "Phuong thuc khong dung cho duong nay." } };
+
+    // CHAN QUYEN O DAY, mot cho duy nhat. Module khong tu kiem, nen khong quen duoc.
+    if (tim.quyen !== "cong-khai") {
+      const congQuyen = cong?.quyen;
+      if (!congQuyen) {
+        ky.canhBao(`[khung] duong ${yc.method} ${yc.duong} khai quyen "${tim.quyen}" nhung khung khong co cong quyen`);
+        return { ma: 500, than: { ok: false, error: LOI.loi_he_thong } };
+      }
+      if (!congQuyen.duoc(yc, tim.quyen)) {
+        return { ma: 401, than: { ok: false, error: LOI.chua_dang_nhap, message: "Thieu ma hoac ma khong du quyen cho duong nay." } };
+      }
+    }
 
     try {
       const ra = await tim.tay({ ...yc, tham: tim.tham ?? {} });

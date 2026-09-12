@@ -72,7 +72,7 @@ module.exports = {
   mang: "chatbot",
   chay: "server-khach",
   phienBan: "0.1.0",
-  canCong: ["kho", "nhatKy", "gio", "httpNgoai", "quyen", "bus", "cauHinh"],
+  canCong: ["kho", "nhatKy", "gio", "httpNgoai", "bus", "cauHinh"],
 
   suKien: {
     phat: [SU_KIEN.tin_nhan_den, SU_KIEN.tin_nhan_di],
@@ -97,7 +97,8 @@ module.exports = {
   duong: [
     // Meta goi de xac nhan dia chi webhook. Thieu verify token = tu choi (fail-closed).
     {
-      method: "GET", path: "/api/facebook/webhook",
+      method: "GET", path: "/api/facebook/webhook", quyen: "cong-khai",
+      viSaoCongKhai: "Meta goi tu may cua ho, khong mang ma cua shop. Tu bao ve bang verify token: sai la 403.",
       tay: (ctx, yc) => {
         const { verifyToken } = ctx.cauHinh;
         const hopLe = yc.truyVan["hub.mode"] === "subscribe" && verifyToken
@@ -110,13 +111,16 @@ module.exports = {
       }
     },
 
-    { method: "POST", path: "/api/facebook/webhook", tay: nhanWebhook },
+    {
+      method: "POST", path: "/api/facebook/webhook", quyen: "cong-khai",
+      viSaoCongKhai: "Meta goi tu may cua ho. Tu bao ve bang chu ky HMAC tren raw byte; khong khop la 401.",
+      tay: nhanWebhook
+    },
 
     // Desk keo tin ve (giu nguyen duong cu de ban dang chay khong gay khi chuyen sang).
     {
-      method: "GET", path: "/api/facebook/webhook-inbox",
+      method: "GET", path: "/api/facebook/webhook-inbox", quyen: "quan-tri",
       tay: async (ctx, yc) => {
-        if (!ctx.cong.quyen.laQuanTri(yc)) return { ma: 401, than: { ok: false, error: "admin_token_required" } };
         const so = (await soTin(ctx).doc(soMacDinh())) ?? soMacDinh();
         const tu = String(yc.truyVan.since ?? "");
         const gioiHan = Math.min(Number(yc.truyVan.limit ?? 100) || 100, GIU_TOI_DA);
@@ -131,9 +135,8 @@ module.exports = {
 
     // Bo nao tren Xeon goi duong nay de tra loi khach.
     {
-      method: "POST", path: "/api/hop-thu/gui",
+      method: "POST", path: "/api/hop-thu/gui", quyen: "dich-vu",
       tay: async (ctx, yc) => {
-        if (!ctx.cong.quyen.laQuanTri(yc)) return { ma: 401, than: { ok: false, error: "admin_token_required" } };
         const than = await yc.doc();
         try {
           const kq = await module.exports.capDichVu["hop-thu.guiTin"](ctx, than);

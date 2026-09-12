@@ -23,13 +23,13 @@ function taoBoDinhTuyen() {
   const daKhai = new Set();
 
   return {
-    them({ method, path, moduleId, tay }) {
+    them({ method, path, moduleId, quyen, tay }) {
       const khoa = `${method} ${path}`;
       if (daKhai.has(khoa)) {
         throw new Error(`Duong "${khoa}" bi khai hai lan — module "${moduleId}" trung voi module da khai truoc.`);
       }
       daKhai.add(khoa);
-      bang.push({ method, path, doan: phanDoan(path), moduleId, tay });
+      bang.push({ method, path, doan: phanDoan(path), moduleId, quyen, tay });
     },
 
     /** Tim nguoi xu ly. Tra `null` neu khong ai nhan. */
@@ -41,14 +41,14 @@ function taoBoDinhTuyen() {
         const tham = khop(r.doan, doan);
         if (tham === null) continue;
         if (r.method !== method) { saiPhuongThuc = true; continue; }
-        return { tay: r.tay, moduleId: r.moduleId, tham, path: r.path };
+        return { tay: r.tay, moduleId: r.moduleId, quyen: r.quyen, tham, path: r.path };
       }
       return saiPhuongThuc ? { saiPhuongThuc: true } : null;
     },
 
     /** Danh sach duong da khai — bai kiem tra doc de doi chieu voi ban dang chay. */
     banDuong() {
-      return bang.map((r) => ({ method: r.method, path: r.path, moduleId: r.moduleId }));
+      return bang.map((r) => ({ method: r.method, path: r.path, moduleId: r.moduleId, quyen: r.quyen }));
     }
   };
 }

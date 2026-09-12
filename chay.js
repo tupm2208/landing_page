@@ -21,7 +21,11 @@ function dungHe({ thuMucDuLieu, env = process.env } = {}) {
     nhatKy,
     gio: gioThat,
     httpNgoai: taoHttpNgoai(),
-    quyen: taoCongQuyen({ maQuanTri: env.LANDING_ADMIN_TOKEN, maDon: env.LANDING_ORDERS_TOKEN })
+    quyen: taoCongQuyen({
+      maQuanTri: env.LANDING_ADMIN_TOKEN,
+      maDon: env.LANDING_ORDERS_TOKEN,
+      maDichVu: env.BO_NAO_TOKEN
+    })
   };
 
   const thuMucModules = path.join(__dirname, "modules");

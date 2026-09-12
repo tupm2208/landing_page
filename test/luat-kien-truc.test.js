@@ -95,7 +95,7 @@ test("GAY khi cong cu mo cho bot mang hieu ung tien", () => {
 test("GAY khi hai module khai cung mot duong", () => {
   const tam = thuMucTam();
   const chung = { mang: "van-hanh", chay: "server-khach", phienBan: "0.0.1", canCong: [] };
-  const duong = [{ method: "GET", path: "/api/thu", tay: () => ({ ma: 200, than: {} }) }];
+  const duong = [{ method: "GET", path: "/api/thu", quyen: "cong-khai", viSaoCongKhai: "Bai kiem tra: duong gia, khong doc du lieu that.", tay: () => ({ ma: 200, than: {} }) }];
   assert.throws(
     () => taoKhung({
       cong: congGia(tam), toKhais: [
@@ -127,7 +127,7 @@ test("GAY khi module phat su kien no khong khai", () => {
       canCong: ["bus"],
       suKien: { phat: ["mot.viec-a"] },
       duong: [{
-        method: "GET", path: "/api/phat-bua",
+        method: "GET", path: "/api/phat-bua", quyen: "cong-khai", viSaoCongKhai: "Bai kiem tra: duong gia, khong doc du lieu that.",
         tay: (ctx) => { try { ctx.bus.phat("mot.viec-la", {}); } catch (e) { batDuoc = e.message; } return { ma: 200, than: {} }; }
       }]
     }]
@@ -159,7 +159,7 @@ test("dich vu noi duoc ca khi nguoi cap nap SAU nguoi xin", async () => {
       {
         id: "mot", ten: "Mot", mang: "van-hanh", chay: "server-khach", phienBan: "0.0.1",
         canDichVu: ["hai.docDon"],
-        duong: [{ method: "GET", path: "/api/hoi", tay: async (ctx) => ({ ma: 200, than: await ctx.dichVu.hai.docDon("D1") }) }]
+        duong: [{ method: "GET", path: "/api/hoi", quyen: "cong-khai", viSaoCongKhai: "Bai kiem tra: duong gia, khong doc du lieu that.", tay: async (ctx) => ({ ma: 200, than: await ctx.dichVu.hai.docDon("D1") }) }]
       },
       {
         id: "hai", ten: "Hai", mang: "van-hanh", chay: "server-khach", phienBan: "0.0.1",
@@ -177,7 +177,7 @@ test("khung tra 404 cho duong la, 405 khi sai phuong thuc", async () => {
     cong: congGia(tam),
     toKhais: [{
       id: "mot", ten: "Mot", mang: "van-hanh", chay: "server-khach", phienBan: "0.0.1",
-      duong: [{ method: "GET", path: "/api/co", tay: () => ({ ma: 200, than: { ok: true } }) }]
+      duong: [{ method: "GET", path: "/api/co", quyen: "cong-khai", viSaoCongKhai: "Bai kiem tra: duong gia, khong doc du lieu that.", tay: () => ({ ma: 200, than: { ok: true } }) }]
     }]
   });
   assert.equal((await khung.xuLy({ method: "GET", duong: "/api/khong", truyVan: {}, tieuDe: {} })).ma, 404);
@@ -191,7 +191,7 @@ test("module hong khong keo sap khung — tra 500, ghi nhat ky", async () => {
     cong: { ...congGia(tam), nhatKy }, nhatKy,
     toKhais: [{
       id: "mot", ten: "Mot", mang: "van-hanh", chay: "server-khach", phienBan: "0.0.1",
-      duong: [{ method: "GET", path: "/api/no", tay: () => { throw new Error("vo"); } }]
+      duong: [{ method: "GET", path: "/api/no", quyen: "cong-khai", viSaoCongKhai: "Bai kiem tra: duong gia, khong doc du lieu that.", tay: () => { throw new Error("vo"); } }]
     }]
   });
   const ra = await khung.xuLy({ method: "GET", duong: "/api/no", truyVan: {}, tieuDe: {} });
