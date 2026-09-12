@@ -26,12 +26,27 @@ const { PHUONG_THUC, GHI_CHU, tienPhaiTra, phiShip, maChuyenKhoan, laLuaChonHopL
 
 const PHUT10 = 10 * 60 * 1000;
 
-function cauHinhTien(ctx) {
+/**
+ * Cau hinh tien.
+ *
+ * Uu tien NOI DUNG TRANG (chu shop sua trong man quan tri) roi moi den bien moi truong: giong
+ * ban dang chay, noi ta phan tram coc / phi ship / tien to chuyen khoan doc tu landing-content.
+ * Khong co manh Khung nen tang (hay chua sua gi) thi dung bien moi truong.
+ */
+async function cauHinhTien(ctx) {
   const c = ctx.cauHinh ?? {};
+  let tuTrang = null;
+  const doc = ctx.dichVu["khung-nen-tang"]?.soCuaTien;
+  if (doc) {
+    try { tuTrang = await doc(); } catch (e) {
+      ctx.cong.nhatKy.canhBao(`[tien-doi-soat] khong doc duoc noi dung trang: ${e?.message || e}`);
+    }
+  }
   return {
-    phanTramCoc: Math.max(1, Math.min(100, Number(c.phanTramCoc || 100))),
-    phiShipMacDinh: Number.isFinite(Number(c.phiShipMacDinh)) ? Number(c.phiShipMacDinh) : 30000,
-    tienToChuyenKhoan: String(c.tienToChuyenKhoan || "TR"),
+    phanTramCoc: tuTrang?.phanTramCoc ?? Math.max(1, Math.min(100, Number(c.phanTramCoc || 100))),
+    phiShipMacDinh: tuTrang?.phiShipMacDinh
+      ?? (Number.isFinite(Number(c.phiShipMacDinh)) ? Number(c.phiShipMacDinh) : 30000),
+    tienToChuyenKhoan: tuTrang?.tienToChuyenKhoan ?? String(c.tienToChuyenKhoan || "TR"),
     telegram: {
       token: String(c.telegram?.token || "").trim(),
       nhom: String(c.telegram?.nhom || "").trim()
@@ -44,7 +59,12 @@ function cauHinhTien(ctx) {
  * hong thi khach van phai dat duoc hang.
  */
 function baoNguoiBan(ctx, chu) {
-  const { telegram } = cauHinhTien(ctx);
+  // Ma Telegram doc THANG tu cau hinh may, khong bao gio tu noi dung trang: noi dung trang la
+  // ban cong khai, ma bot nam trong do la dua khoa cho ca the gioi.
+  const telegram = {
+    token: String(ctx.cauHinh?.telegram?.token || "").trim(),
+    nhom: String(ctx.cauHinh?.telegram?.nhom || "").trim()
+  };
   if (!telegram.token || !telegram.nhom) return false;   // shop chua khai: tat, khong bao bua
   Promise.resolve()
     .then(() => ctx.cong.httpNgoai.goi(`https://api.telegram.org/bot${telegram.token}/sendMessage`, {
@@ -79,7 +99,7 @@ async function chonCachTra(ctx, { maDon = "", maTra = "", luaChon = "" } = {}) {
   const don = await ctx.dichVu["don-khach"].docTheoMaTra({ maDon, maTra });
   if (!don) return { ok: false, viSao: "khong_thay_don" };
 
-  const c = cauHinhTien(ctx);
+  const c = await cauHinhTien(ctx);
   const soPhaiTra = tienPhaiTra(luaChon, don.total, c.phanTramCoc);
   const ship = phiShip(luaChon, c.phiShipMacDinh);
 
@@ -138,6 +158,8 @@ module.exports = {
   phienBan: "0.1.0",
   canCong: ["nhatKy", "gio", "httpNgoai", "bus", "cauHinh"],
   canDichVu: ["don-khach.doc", "don-khach.docTheoMaTra", "don-khach.ghiTien"],
+  // Phan tram coc / phi ship / tien to chuyen khoan: doc tu noi dung trang neu co.
+  canDichVuNeuCo: ["khung-nen-tang.soCuaTien"],
 
   suKien: { phat: [SU_KIEN.tien_da_nhan], nghe: {} },
 

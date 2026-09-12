@@ -73,7 +73,8 @@ async function chay() {
   const viec = [
     { tep: "published-products.json", duong: "/api/products", nhan: "danh muc hang nha" },
     { tep: "ready-stock.json", duong: "/api/ready-stock/sync", nhan: "hang co san" },
-    { tep: "partner-campaigns.json", duong: "/api/partner-campaigns", nhan: "chien dich doi tac" }
+    { tep: "partner-campaigns.json", duong: "/api/partner-campaigns", nhan: "chien dich doi tac" },
+    { tep: "landing-content.json", duong: "/api/content", nhan: "noi dung trang" }
   ];
 
   let hong = 0;
@@ -86,8 +87,10 @@ async function chay() {
       hong += 1;
       continue;
     }
-    const soMon = Array.isArray(doc.duLieu) ? doc.duLieu.length : (doc.duLieu?.products?.length ?? "?");
-    console.log(`  ${v.tep.padEnd(28)} ${doDai(doc.soByte).padStart(8)}  ${soMon} mon`);
+    const soMon = Array.isArray(doc.duLieu)
+      ? `${doc.duLieu.length} mon`
+      : (doc.duLieu?.products ? `${doc.duLieu.products.length} mon` : `${Object.keys(doc.duLieu || {}).length} truong`);
+    console.log(`  ${v.tep.padEnd(28)} ${doDai(doc.soByte).padStart(8)}  ${soMon}`);
     const ra = await day(v.duong, doc.duLieu, v.nhan);
     if (!ra.ok) hong += 1;
   }

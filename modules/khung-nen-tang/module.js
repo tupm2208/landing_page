@@ -6,13 +6,29 @@
 
 "use strict";
 
+const { noiDungMacDinh, chuanHoa, soCuaTien } = require("./noi-dung");
+
+const SO_NOI_DUNG = "khung-nen-tang-noi-dung";
+
+async function docNoiDung(ctx) {
+  const co = await ctx.cong.kho.so(SO_NOI_DUNG).doc();
+  return co ? chuanHoa(co, co.updatedAt || ctx.cong.gio.bayGio()) : noiDungMacDinh();
+}
+
 module.exports = {
   id: "khung-nen-tang",
   ten: "Khung nền tảng",
   mang: "khung",
   chay: "server-khach",
-  phienBan: "0.1.0",
-  canCong: ["quyen", "nhatKy", "cauHinh"],
+  phienBan: "0.2.0",
+  canCong: ["quyen", "nhatKy", "cauHinh", "kho", "gio"],
+
+  capDichVu: {
+    // Module Tien doc phan tram coc / phi ship / tien to chuyen khoan tu day, de chu shop sua
+    // mot cho trong man quan tri la ca he doi theo.
+    "khung-nen-tang.noiDung": async (ctx) => docNoiDung(ctx),
+    "khung-nen-tang.soCuaTien": async (ctx) => soCuaTien(await docNoiDung(ctx))
+  },
 
   duong: [
     {
@@ -29,6 +45,37 @@ module.exports = {
           tieuDe: { "Cache-Control": "no-store" },
           than: { ok: true, ve: cap.ve, vai: cap.vai, ten: cap.ten, hetSauGiay: Math.round(cap.hetSauMs / 1000) }
         };
+      }
+    },
+    {
+      // Mat web doc chu trang chu, phi ship, va thong tin chuyen khoan tu day.
+      //
+      // CONG KHAI co y: khach phai doc duoc so tai khoan de chuyen tien. Vi vay ban nay chi
+      // chua nhung truong da khai trong `noi-dung.js` — khong bao gio co ma Telegram hay khoa.
+      method: "GET", path: "/api/content", quyen: "cong-khai",
+      viSaoCongKhai: "Chữ trên trang và thông tin chuyển khoản — thứ khách phải đọc được. Chỉ trả các trường đã khai, không có khoá nào.",
+      hanGoi: { soLan: 600, trongMs: 10 * 60 * 1000 },
+      tay: async (ctx) => ({
+        ma: 200,
+        tieuDe: { "Cache-Control": "public, max-age=60" },
+        than: await docNoiDung(ctx)
+      })
+    },
+    {
+      // Chu shop sua noi dung trang.
+      method: "POST", path: "/api/content", quyen: "quan-tri",
+      hanGoi: { soLan: 60, trongMs: 10 * 60 * 1000 },
+      hanThan: 256 * 1024,
+      tay: async (ctx, yc) => {
+        const than = await yc.doc();
+        if (!than || typeof than !== "object" || Array.isArray(than)) {
+          return { ma: 400, than: { ok: false, error: "can_mot_doi_tuong" } };
+        }
+        const cu = await docNoiDung(ctx);
+        const moi = chuanHoa({ ...cu, ...than }, ctx.cong.gio.bayGio());
+        await ctx.cong.kho.so(SO_NOI_DUNG).ghi(moi);
+        ctx.cong.nhatKy.tin("[khung-nen-tang] noi dung trang da doi");
+        return { ma: 200, tieuDe: { "Cache-Control": "no-store" }, than: { ok: true, noiDung: moi } };
       }
     },
     {

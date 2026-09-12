@@ -167,6 +167,9 @@ test("bang cua: moi duong that trong repo deu noi ro ai duoc goi", () => {
   //     ma tra cuu. Sua va huy chi mo trong 15 phut dau, va SUA CHI SUA HO SO nguoi nhan:
   //     mon va gia lay tu don da ghi, khong nhan tu than yeu cau.
   //   - phien ban dang chay: chi tra deployId, khong doc du lieu shop; Image Tool doc sau deploy
+  //   - noi dung trang: chu tren trang + so tai khoan de khach chuyen tien. Ban nay CHI chua
+  //     nhung truong da khai trong khung-nen-tang/noi-dung.js, nen khong the lan ma Telegram
+  //     hay khoa nao vao. Ma Telegram doc thang tu cau hinh may, khong qua duong nay.
   //   - mat web (trang chu, ban mobile, trang san pham, link chia se, va duong "/*" bat moi
   //     tep con lai): khach vao web thi chua co ma nao. Chung KHONG doc du lieu khach, chi tra
   //     tep trong `goc/` cua module Gian hang — va cong tep tinh CHO QUA THEO DANH SACH duoi
@@ -180,6 +183,7 @@ test("bang cua: moi duong that trong repo deu noi ro ai duoc goi", () => {
   assert.deepEqual(moCongKhai.sort(), [
     "GET /",
     "GET /*",
+    "GET /api/content",
     "GET /api/facebook/webhook",
     "GET /api/orders/public",
     "GET /api/partner-portal",
