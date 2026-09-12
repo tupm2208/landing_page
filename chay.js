@@ -93,9 +93,65 @@ async function dungHe({ thuMucDuLieu, env = process.env } = {}) {
         // nao khong co o day se duoc 302 sang site that de trinh duyet tu lay — may thu khong
         // goi ra ngoai, no chi chi duong.
         gocAnhThat: String(env.GOC_ANH_THAT || "").trim()
+      },
+      "tien-doi-soat": {
+        // Phan tram coc / phi ship / tien to chuyen khoan: neu co manh Khung nen tang thi
+        // module Tien doc tu NOI DUNG TRANG (chu shop sua trong man quan tri). Ba bien duoi
+        // day chi la ban lui khi chua co noi dung trang.
+        phanTramCoc: Number(env.TIEN_PHAN_TRAM_COC || 0) || undefined,
+        phiShipMacDinh: env.TIEN_PHI_SHIP === undefined ? undefined : Number(env.TIEN_PHI_SHIP),
+        tienToChuyenKhoan: String(env.TIEN_TIEN_TO_CK || "").trim() || undefined,
+        // Bao cho NGUOI BAN HANG (khong phai cho khach). Khong khai thi tat — khong bao bua.
+        telegram: {
+          token: String(env.TELEGRAM_BOT_TOKEN || "").trim(),
+          nhom: String(env.TELEGRAM_CHAT_ID || env.TELEGRAM_ALERT_CHAT_ID || "").trim()
+        }
+      },
+      "mua-ho": {
+        // Cong doi tac giu phien bang cookie tu ky (anh Dung chot: "giu phien cookie nhu hien
+        // nay"). KHONG co khoa nay thi khong ky duoc phien -> doi tac khong vao duoc cong.
+        biMatPhien: String(env.BI_MAT_PHIEN_DOI_TAC || "").trim(),
+        songGio: Number(env.PHIEN_DOI_TAC_GIO || 12),
+        https: String(env.PHIEN_HTTPS || "").trim() === "1"
+      },
+      "van-chuyen": {
+        hangMacDinh: String(env.VAN_CHUYEN_MAC_DINH || "spx").trim(),
+        spx: {
+          appId: String(env.SPX_APP_ID || "").trim(),
+          appSecret: String(env.SPX_APP_SECRET || "").trim(),
+          userId: String(env.SPX_USER_ID || "").trim(),
+          userSecret: String(env.SPX_USER_SECRET || "").trim()
+        },
+        vtp: {
+          token: String(env.VTP_TOKEN || "").trim(),
+          username: String(env.VTP_USERNAME || "").trim(),
+          password: String(env.VTP_PASSWORD || "").trim(),
+          groupAddressId: String(env.VTP_GROUP_ADDRESS_ID || "").trim()
+        }
+      },
+      "khung-nen-tang": {
+        deployId: String(env.DEPLOY_ID || "").trim() || "chua-dat"
       }
     }
   });
+
+  // NOI RO CAI GI DANG TAT. Mot manh thieu khoa thi no im lang khong lam gi — va im lang la
+  // thu kho tim nhat: chu shop tuong Telegram hong, doi tac tuong cong sap. Vi vay bao ngay
+  // luc khoi dong, mot lan, ro rang.
+  const dangTat = [];
+  if (!String(env.TELEGRAM_BOT_TOKEN || "").trim() || !String(env.TELEGRAM_CHAT_ID || env.TELEGRAM_ALERT_CHAT_ID || "").trim()) {
+    dangTat.push("bao Telegram cho nguoi ban hang (thieu TELEGRAM_BOT_TOKEN / TELEGRAM_CHAT_ID)");
+  }
+  if (String(env.BI_MAT_PHIEN_DOI_TAC || "").trim().length < 16) {
+    dangTat.push("cong doi tac mua ho (thieu BI_MAT_PHIEN_DOI_TAC dai >= 16 ky tu)");
+  }
+  if (!String(env.SPX_APP_ID || "").trim() && !String(env.VTP_TOKEN || "").trim()) {
+    dangTat.push("tao van don (thieu khoa SPX va Viettel Post)");
+  }
+  if (!String(env.FACEBOOK_VERIFY_TOKEN || "").trim()) {
+    dangTat.push("nhan tin Fanpage (thieu FACEBOOK_VERIFY_TOKEN)");
+  }
+  for (const viec of dangTat) nhatKy.canhBao(`[chay] DANG TAT: ${viec}`);
 
   // Chay luoc do cua tung module truoc khi nhan yeu cau dau tien.
   if (typeof kho.chayLuocDo === "function") {
