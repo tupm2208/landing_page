@@ -184,11 +184,138 @@ test("Đơn hàng trên MySQL thật", { ...boQua }, async (t) => {
 
     const dung = await tra({ order: ra.than.id, token: ra.than.token });
     assert.equal(dung.ma, 200);
-    assert.equal(dung.than.don.customerName, "Nguyễn Văn A");
+    // Tra ra BAN CONG KHAI cua don (view "detail"), khong phai ban trong nha.
+    assert.equal(dung.than.order.view, "detail");
+    assert.equal(dung.than.order.customer.customerName, "Nguyễn Văn A");
 
     assert.equal((await tra({ order: ra.than.id, token: "sai" })).ma, 404);
     assert.equal((await tra({ order: "ORD-khong-co", token: ra.than.token })).ma, 404);
-    assert.equal((await tra({ order: ra.than.id })).ma, 400);
+    assert.equal((await tra({ order: ra.than.id })).ma, 422);
+  });
+
+  await t.test("khach mo link: GET /api/orders/public tra ban chi tiet, sai ma thi khong thay", async () => {
+    await donDep(); await napHang();
+    const ra = await dat(DON_MAU);
+    const xem = (truyVan) => khung.xuLy({ method: "GET", duong: "/api/orders/public", truyVan, tieuDe: {}, ip: "1.1.1.1" });
+
+    const dung = await xem({ order: ra.than.id, token: ra.than.token });
+    assert.equal(dung.ma, 200, JSON.stringify(dung.than));
+    assert.equal(dung.than.order.view, "detail");
+    assert.equal(dung.than.order.canEdit, true, "vua dat xong thi con sua duoc");
+    assert.equal(dung.than.order.total, 2890000);
+    assert.equal(dung.than.order.paidAmount, 0);
+    assert.equal(dung.tieuDe["Cache-Control"], "no-store", "don cua khach khong duoc nam trong bo nho dem");
+
+    assert.equal((await xem({ order: ra.than.id, token: "sai" })).ma, 404);
+    assert.equal((await xem({ order: ra.than.id })).ma, 422);
+  });
+
+  await t.test("khach tu sua ho so nguoi nhan trong 15 phut, KHONG sua duoc mon va gia", async () => {
+    await donDep(); await napHang();
+    const ra = await dat(DON_MAU);
+    const sua = (than) => khung.xuLy({ method: "PATCH", duong: "/api/orders/public", truyVan: {}, tieuDe: {}, ip: "1.1.1.1", doc: async () => than });
+
+    const xong = await sua({
+      orderId: ra.than.id, token: ra.than.token,
+      customerName: "Nguyễn Văn B", phone: "0922222222", addressDetail: "99 Láng Hạ",
+      province: "Hà Nội", district: "Quận Đống Đa", ward: "Phường Thành Công", note: "Gọi trước",
+      // Mat web gui kem mon; server phai BO QUA han — doi mon la doi ton va doi tien.
+      items: [{ productCode: "DV1234", productName: "Hàng khác", size: "43", price: 1, qty: 5 }],
+      total: 5
+    });
+    assert.equal(xong.ma, 200, JSON.stringify(xong.than));
+    assert.equal(xong.than.order.customer.customerName, "Nguyễn Văn B");
+    assert.equal(xong.than.order.customer.phone, "0922222222");
+    assert.match(xong.than.order.customer.address, /99 Láng Hạ/);
+    assert.equal(xong.than.order.total, 2890000, "GIA KHONG DUOC DOI theo than yeu cau");
+    assert.equal(xong.than.order.items.length, 1);
+    assert.equal(xong.than.order.items[0].size, "42", "MON KHONG DUOC DOI theo than yeu cau");
+
+    const dong = await kho.bang("orders").mot({ id: ra.than.id });
+    assert.equal(Number(dong.total), 2890000);
+    const dongDon = await kho.bang("order_items").tim({ dieuKien: { order_id: ra.than.id } });
+    assert.equal(dongDon.length, 1);
+    assert.equal(dongDon[0].size, "42");
+
+    // Moi lan khach sua deu de lai mot dong nhat ky — sau con truy duoc ai doi gi.
+    const nhat = await kho.bang("order_status_logs").tim({ dieuKien: { order_id: ra.than.id } });
+    assert.ok(nhat.some((n) => n.actor_type === "khach" && /tự sửa/.test(n.note || "")));
+
+    assert.equal((await sua({ orderId: ra.than.id, token: "sai", customerName: "X" })).ma, 404);
+    assert.equal((await sua({ orderId: ra.than.id, token: ra.than.token, customerName: "" })).ma, 422);
+    assert.equal((await sua({ orderId: ra.than.id, token: ra.than.token, customerName: "C", phone: "123" })).ma, 422);
+  });
+
+  await t.test("het 15 phut thi khong sua, khong huy duoc nua", async () => {
+    await donDep(); await napHang();
+    const ra = await dat(DON_MAU);
+    gio.troi(16 * 60 * 1000);
+
+    const sua = await khung.xuLy({
+      method: "PATCH", duong: "/api/orders/public", truyVan: {}, tieuDe: {}, ip: "1.1.1.1",
+      doc: async () => ({ orderId: ra.than.id, token: ra.than.token, customerName: "Muộn rồi" })
+    });
+    assert.equal(sua.ma, 409);
+    assert.equal(sua.than.error, "het_gio_sua");
+
+    const huy = await khung.xuLy({
+      method: "POST", duong: "/api/orders/public/cancel", truyVan: {}, tieuDe: {}, ip: "1.1.1.1",
+      doc: async () => ({ orderId: ra.than.id, token: ra.than.token })
+    });
+    assert.equal(huy.ma, 409);
+    assert.equal(huy.than.error, "het_gio_huy");
+
+    const dong = await kho.bang("orders").mot({ id: ra.than.id });
+    assert.equal(dong.customer_name, "Nguyễn Văn A", "don khong duoc doi mot chu nao");
+    assert.equal(dong.status, "pending");
+  });
+
+  await t.test("khach tu huy don: doi trang thai, ghi nhat ky, phat su kien, huy lai thi 409", async () => {
+    await donDep(); await napHang();
+    const ra = await dat(DON_MAU);
+    const nghe = [];
+    khung.bus.nghe("don-khach.da-huy", "bai-kiem-tra", (d) => nghe.push(d));
+
+    const huy = (than) => khung.xuLy({ method: "POST", duong: "/api/orders/public/cancel", truyVan: {}, tieuDe: {}, ip: "1.1.1.1", doc: async () => than });
+
+    const xong = await huy({ orderId: ra.than.id, token: ra.than.token });
+    assert.equal(xong.ma, 200, JSON.stringify(xong.than));
+    assert.equal(xong.than.order.status, "cancelled");
+    assert.equal(xong.than.order.statusLabel, "Đơn đã hủy");
+    assert.equal(xong.than.order.canCancel, false, "da huy roi thi khong con nut huy");
+
+    await new Promise((r) => setImmediate(r));
+    assert.equal(nghe.length, 1, "phai phat su kien de module Hang hoa tra lai cho giu");
+    assert.equal(nghe[0].maDon, ra.than.id);
+
+    const nhat = await kho.bang("order_status_logs").tim({ dieuKien: { order_id: ra.than.id } });
+    assert.ok(nhat.some((n) => n.status === "cancelled" && n.actor_type === "khach"));
+
+    const lai = await huy({ orderId: ra.than.id, token: ra.than.token });
+    assert.equal(lai.ma, 409);
+    assert.equal(lai.than.error, "da_huy_roi");
+
+    assert.equal((await huy({ orderId: ra.than.id, token: "sai" })).ma, 404);
+  });
+
+  await t.test("tra don bang so dien thoai: chi thay don di den dau, KHONG thay dia chi", async () => {
+    await donDep(); await napHang();
+    const ra = await dat(DON_MAU);
+    const tra = (than) => khung.xuLy({ method: "POST", duong: "/api/orders/lookup", truyVan: {}, tieuDe: {}, ip: "1.1.1.1", doc: async () => than });
+
+    const dung = await tra({ orderId: ra.than.id, contact: "0911111111" });
+    assert.equal(dung.ma, 200, JSON.stringify(dung.than));
+    assert.equal(dung.than.order.view, "status");
+    const chu = JSON.stringify(dung.than.order);
+    assert.ok(!chu.includes("Đội Cấn"), "ban trang thai khong duoc lo dia chi");
+    assert.ok(!chu.includes("2890000"), "ban trang thai khong duoc lo tien");
+
+    // So khac thi khong thay gi, va cau tu choi giong het truong hop khong co don.
+    const sai = await tra({ orderId: ra.than.id, contact: "0999999999" });
+    assert.equal(sai.ma, 404);
+    assert.equal(sai.than.error, "khong_thay_don");
+    const khongCo = await tra({ orderId: "ORD-khong-co", contact: "0911111111" });
+    assert.deepEqual(sai.than, khongCo.than, "hai cau tu choi phai giong nhau, keo do duoc don nao ton tai");
   });
 
   await t.test("ma tra cuu KHONG duoc luu ban ro trong so", async () => {

@@ -22,6 +22,8 @@
 const crypto = require("crypto");
 const { SU_KIEN } = require("../../../hop-dong");
 const tienKit = require("../../../chung/order-money-kit.js");
+const { gioMySQL, isoTuMySQL } = require("../../../chung/gio-mysql.js");
+const { banChiTiet, banBiMat, banChiTrangThai, suaDuoc } = require("./cong-khai");
 
 const BANG_DON = "orders";
 const BANG_DONG = "order_items";
@@ -48,10 +50,6 @@ function chuanHoaDong(dong = {}) {
   };
 }
 
-function gioMySQL(d) {
-  return new Date(d).toISOString().slice(0, 19).replace("T", " ");
-}
-
 /** Ma tra cuu cua khach: bam ra de KHONG luu ban ro trong so. */
 function bamMaTra(ma) {
   return crypto.createHash("sha256").update(String(ma || ""), "utf8").digest("hex");
@@ -60,8 +58,8 @@ function bamMaTra(ma) {
 function donTuDong(dongDon, cacDong, nhatKy = []) {
   const don = {
     id: dongDon.id,
-    createdAt: dongDon.created_at ? new Date(dongDon.created_at).toISOString() : "",
-    updatedAt: dongDon.updated_at ? new Date(dongDon.updated_at).toISOString() : "",
+    createdAt: isoTuMySQL(dongDon.created_at),
+    updatedAt: isoTuMySQL(dongDon.updated_at),
     customerName: dongDon.customer_name || "",
     phone: dongDon.phone || "",
     email: dongDon.email || "",
@@ -79,6 +77,9 @@ function donTuDong(dongDon, cacDong, nhatKy = []) {
     paymentReference: dongDon.payment_reference || "",
     paymentAmount: Number(dongDon.payment_amount || 0),
     fulfillmentStatus: dongDon.fulfillment_status || "",
+    // Bang cua ban dang chay co cot nay; bang thu chua co thi de rong, lop cong khai se tinh
+    // tu `createdAt` + 15 phut — dung bang nhau vi ban dang chay cung ghi dung nhu vay.
+    canCancelUntil: isoTuMySQL(dongDon.can_cancel_until),
     shippingProvider: dongDon.shipping_provider || "",
     trackingCode: dongDon.tracking_code || "",
     items: cacDong.map((d) => ({
@@ -101,7 +102,7 @@ function donTuDong(dongDon, cacDong, nhatKy = []) {
       status: n.status || "",
       actorType: n.actor_type || "",
       note: n.note || "",
-      createdAt: n.created_at ? new Date(n.created_at).toISOString() : ""
+      createdAt: isoTuMySQL(n.created_at)
     }))
   };
   // LUAT 3: annotate truoc khi ra khoi day. Client chi doc field.
@@ -296,6 +297,168 @@ async function ghiTien(ctx, { maDon = "", phuongThuc = null, trangThaiTien = nul
   return so > 0 ? { ok: true } : { ok: false, viSao: "khong_co_don" };
 }
 
+// ---------- khach tu xem / tu sua / tu huy don cua chinh minh ----------
+//
+// Ba duong nay CONG KHAI (khach tren web khong co ma nao), nen tu bao ve bang dung mot thu:
+// phai co DUNG ma don kem DUNG ma tra cuu. Sai mot trong hai la khong thay gi — va khong
+// bao gio noi ro sai cai nao, keo do duoc ma tra cuu.
+
+/** Chi so, de so dien thoai khach nhap sao cung khop. */
+function chiSo(chu) {
+  return String(chu || "").replace(/[^0-9]/g, "");
+}
+
+/** Tien tren don do module Tien tinh bang order-money-kit. Khong co module Tien thi de trong. */
+async function tienCuaDon(ctx, maDon) {
+  const lay = ctx.dichVu["tien-doi-soat"]?.tienTrenDon;
+  if (!lay) return null;
+  try {
+    return await lay(String(maDon || ""));
+  } catch (e) {
+    // Hong duong tinh tien thi van cho khach xem don — chi khong hien so da tra.
+    ctx.cong.nhatKy.canhBao(`[don-khach] khong tinh duoc tien cua don ${maDon}: ${e?.message || e}`);
+    return null;
+  }
+}
+
+/** Khach mo link tu email / popup dat hang: ma don + ma tra cuu -> ban chi tiet. */
+async function xemDonBangMaTra(ctx, { maDon = "", maTra = "" } = {}) {
+  if (!maDon || !maTra) return { ma: 422, than: { ok: false, error: "thieu_ma_tra_cuu", message: "Thiếu mã đơn hoặc link không hợp lệ." } };
+  const don = await docTheoMaTra(ctx, { maDon, maTra });
+  if (!don) return { ma: 404, than: { ok: false, error: "khong_thay_don", message: "Không tìm thấy đơn hàng phù hợp." } };
+  return {
+    ma: 200, tieuDe: { "Cache-Control": "no-store" },
+    than: { ok: true, order: banChiTiet(don, { bayGio: ctx.cong.gio.bayGio(), tien: await tienCuaDon(ctx, don.id) }) }
+  };
+}
+
+/**
+ * Khach tu sua ho so nguoi nhan trong 15 phut dau.
+ *
+ * CHI sua ho so (ten, dien thoai, dia chi, ghi chu). KHONG sua duoc mon va KHONG sua duoc
+ * gia — mat web co gui kem danh sach mon nhung o day bo qua han: doi mon la doi ton va doi
+ * tien, viec do phai qua nguoi ban. Ban dang chay cho doi mon; cho nay ghi ro la khac.
+ */
+async function suaHoSoKhach(ctx, { maDon = "", maTra = "", than = {} } = {}) {
+  if (!maDon || !maTra) return { ma: 422, than: { ok: false, error: "thieu_ma_tra_cuu", message: "Thiếu mã đơn hoặc link không hợp lệ." } };
+  const don = await docTheoMaTra(ctx, { maDon, maTra });
+  if (!don) return { ma: 404, than: { ok: false, error: "khong_thay_don", message: "Không tìm thấy đơn hàng phù hợp." } };
+  if (!suaDuoc(don, ctx.cong.gio.bayGio())) {
+    return { ma: 409, than: { ok: false, error: "het_gio_sua", message: "Đơn hàng đã quá thời gian tự chỉnh sửa." } };
+  }
+
+  const ten = String(than.customerName ?? don.customerName ?? "").trim();
+  const dienThoai = String(than.phone ?? don.phone ?? "").trim();
+  if (!ten) return { ma: 422, than: { ok: false, error: "thieu_ten_khach", message: "Vui lòng nhập tên người nhận." } };
+  if (chiSo(dienThoai).length < 9) return { ma: 422, than: { ok: false, error: "sai_dien_thoai", message: "Số điện thoại chưa đúng." } };
+
+  const tinh = String(than.province ?? don.province ?? "").trim();
+  const huyen = String(than.district ?? don.district ?? "").trim();
+  const xa = String(than.ward ?? don.ward ?? "").trim();
+  const soNha = String(than.addressDetail ?? don.addressDetail ?? "").trim();
+  const diaChi = String(than.address || [soNha, xa, huyen, tinh].filter(Boolean).join(", ")).trim();
+
+  const luc = ctx.cong.gio.bayGio();
+  await ctx.cong.kho.giaoDich(async (trong) => {
+    await trong.bang(BANG_DON).thay({ id: don.id }, {
+      customer_name: ten,
+      phone: dienThoai,
+      email: String(than.email ?? don.email ?? "").trim(),
+      address: diaChi,
+      province: tinh, district: huyen, ward: xa, address_detail: soNha,
+      note: String(than.note ?? don.note ?? "").trim(),
+      updated_at: gioMySQL(luc)
+    });
+    await trong.bang(BANG_NHAT_KY).them({
+      order_id: don.id, status: don.status || "pending", actor_type: "khach",
+      note: "Khách tự sửa thông tin người nhận", created_at: gioMySQL(luc)
+    });
+  });
+
+  const moi = await docDon(ctx, don.id);
+  ctx.cong.nhatKy.tin(`[don-khach] khach tu sua ho so don ${don.id}`);
+  return {
+    ma: 200, tieuDe: { "Cache-Control": "no-store" },
+    than: { ok: true, order: banChiTiet(moi, { bayGio: luc, tien: await tienCuaDon(ctx, don.id) }) }
+  };
+}
+
+/**
+ * Khach tu huy don trong 15 phut dau.
+ *
+ * CON MOT VIEC CHUA XONG (ghi ro de khong ai tuong da xong): huy don CHUA tra lai ton kho.
+ * O ban dang chay, dat don tru ton that nen huy la cong lai. O ban tach, dat don chi GIU CHO
+ * 30 phut va so phieu giu khong duoc ghi len don — nen o day chi phat su kien
+ * `don-khach.da-huy`; module Hang hoa se nghe su kien do de tra cho khi phan giu cho duoc
+ * ghi ben vung. Xem muc "giu cho sau khi dat don" trong KIEM-KE-TINH-NANG.md.
+ */
+async function khachTuHuy(ctx, { maDon = "", maTra = "" } = {}) {
+  if (!maDon || !maTra) return { ma: 422, than: { ok: false, error: "thieu_ma_tra_cuu", message: "Thiếu mã đơn hoặc link không hợp lệ." } };
+  const don = await docTheoMaTra(ctx, { maDon, maTra });
+  if (!don) return { ma: 404, than: { ok: false, error: "khong_thay_don", message: "Không tìm thấy đơn hàng phù hợp." } };
+  if (String(don.status || "").toLowerCase() === "cancelled") {
+    return { ma: 409, than: { ok: false, error: "da_huy_roi", message: "Đơn hàng đã được hủy." } };
+  }
+  if (!suaDuoc(don, ctx.cong.gio.bayGio())) {
+    return { ma: 409, than: { ok: false, error: "het_gio_huy", message: "Đơn hàng đã quá thời gian tự hủy." } };
+  }
+
+  const doi = await doiTrangThai(ctx, { maDon: don.id, trangThai: "cancelled", ghiChu: "Khách tự hủy đơn", boi: "khach" });
+  if (!doi.ok) return { ma: 409, than: { ok: false, error: doi.viSao, message: "Chưa hủy được đơn hàng." } };
+  ctx.bus.phat(SU_KIEN.don_da_huy, { maDon: don.id, boi: "khach" });
+
+  const moi = await docDon(ctx, don.id);
+  return {
+    ma: 200, tieuDe: { "Cache-Control": "no-store" },
+    than: { ok: true, order: banChiTiet(moi, { bayGio: ctx.cong.gio.bayGio(), tien: await tienCuaDon(ctx, don.id) }) }
+  };
+}
+
+/**
+ * Tra don tu o nhap tren trang tra cuu. Ba cach khach chung minh la don cua minh:
+ *   ma don + ma tra cuu            -> ban chi tiet (nhu mo link)
+ *   ma don + ma bi mat             -> ban bi mat: thay mon va van don, khong thay dia chi
+ *   ma don + so dien thoai / email -> chi thay don di den dau
+ */
+async function traDon(ctx, than = {}) {
+  const maDon = String(than.orderId || than.order || than.id || "").trim();
+  const maTra = String(than.token || than.orderToken || "").trim();
+  const maBiMat = String(than.lookupSecret || than.secret || "").trim();
+  const lienHe = String(than.contact || than.phone || than.email || "").trim();
+  if (!maDon) return { ma: 422, than: { ok: false, error: "thieu_ma_don", message: "Vui lòng nhập mã đơn và mã bí mật." } };
+
+  if (maTra) return xemDonBangMaTra(ctx, { maDon, maTra });
+
+  if (maBiMat) {
+    // Khach hay go ma bi mat co dau gach hoac chu thuong. Thu ca ban da chuan hoa va ban tho,
+    // giong ban dang chay — khong de khach nhap dung ma van bao khong thay.
+    const chuanHoa = maBiMat.toUpperCase().replace(/[\s-]+/g, "");
+    for (const thu of new Set([maBiMat, chuanHoa])) {
+      const don = await docTheoMaTra(ctx, { maDon, maTra: thu });
+      if (don) {
+        return { ma: 200, tieuDe: { "Cache-Control": "no-store" }, than: { ok: true, order: banBiMat(don) } };
+      }
+    }
+    return { ma: 404, than: { ok: false, error: "khong_thay_don", message: "Không tìm thấy đơn hàng phù hợp." } };
+  }
+
+  if (lienHe) {
+    const dong = await ctx.cong.kho.bang(BANG_DON).mot({ id: maDon });
+    if (!dong) return { ma: 404, than: { ok: false, error: "khong_thay_don", message: "Không tìm thấy đơn hàng phù hợp." } };
+    const khopDienThoai = chiSo(lienHe).length >= 9 && chiSo(dong.phone) === chiSo(lienHe);
+    const khopEmail = lienHe.includes("@") && String(dong.email || "").trim().toLowerCase() === lienHe.toLowerCase();
+    if (!khopDienThoai && !khopEmail) {
+      return { ma: 404, than: { ok: false, error: "khong_thay_don", message: "Không tìm thấy đơn hàng phù hợp." } };
+    }
+    return {
+      ma: 200, tieuDe: { "Cache-Control": "no-store" },
+      than: { ok: true, order: banChiTrangThai(await docDon(ctx, maDon)) }
+    };
+  }
+
+  return { ma: 422, than: { ok: false, error: "thieu_ma_tra_cuu", message: "Vui lòng nhập mã đơn và mã bí mật." } };
+}
+
 module.exports = {
   id: "don-khach",
   ten: "Đơn hàng & khách",
@@ -307,6 +470,11 @@ module.exports = {
 
   // Ba bang co san tu ban dang chay — khong doi ten duoc vi Desk dang goc vao do.
   bangKeThua: [BANG_DON, BANG_DONG, BANG_NHAT_KY],
+
+  // Tien tren don do module Tien tinh (LUAT 3: moi con so tien di qua order-money-kit).
+  // "NEU CO" vi nha ban hang co the khong mua manh Tien — khi do trang tra don van chay,
+  // chi khong hien so da tra.
+  canDichVuNeuCo: ["tien-doi-soat.tienTrenDon"],
 
   suKien: {
     phat: [SU_KIEN.don_da_tao, SU_KIEN.don_doi_trang_thai, SU_KIEN.don_da_huy],
@@ -336,17 +504,46 @@ module.exports = {
     },
     {
       method: "POST", path: "/api/orders/lookup", quyen: "cong-khai",
-      viSaoCongKhai: "Khách tra đơn của chính mình. Tự bảo vệ bằng: phải có ĐÚNG mã đơn kèm mã tra cứu; sai một trong hai là không thấy gì.",
+      viSaoCongKhai: "Khách tra đơn của chính mình. Tự bảo vệ bằng: phải có ĐÚNG mã đơn kèm mã tra cứu (hoặc mã bí mật, hoặc số điện thoại của chính đơn); sai một trong hai là không thấy gì.",
       // 30/10 phut nhu ban dang chay: du cho khach that, khong du de do ma tra cuu.
+      hanGoi: { soLan: 30, trongMs: 10 * 60 * 1000 },
+      tay: async (ctx, yc) => traDon(ctx, await yc.doc())
+    },
+    {
+      // Khach mo link trong email / trong popup vua dat hang.
+      method: "GET", path: "/api/orders/public", quyen: "cong-khai",
+      viSaoCongKhai: "Khách xem đơn của chính mình qua link có mã tra cứu. Tự bảo vệ bằng: phải có ĐÚNG mã đơn kèm mã tra cứu.",
+      hanGoi: { soLan: 60, trongMs: 10 * 60 * 1000 },
+      tay: async (ctx, yc) => xemDonBangMaTra(ctx, {
+        maDon: String(yc.truyVan.order || yc.truyVan.orderId || "").trim(),
+        maTra: String(yc.truyVan.token || "").trim()
+      })
+    },
+    {
+      // Khach tu sua ho so nguoi nhan trong 15 phut dau.
+      method: "PATCH", path: "/api/orders/public", quyen: "cong-khai",
+      viSaoCongKhai: "Khách sửa thông tin người nhận trên đơn của chính mình. Tự bảo vệ bằng: đúng mã đơn kèm mã tra cứu, chỉ trong 15 phút đầu, và chỉ sửa hồ sơ chứ không sửa món hay giá.",
       hanGoi: { soLan: 30, trongMs: 10 * 60 * 1000 },
       tay: async (ctx, yc) => {
         const than = await yc.doc();
-        const maDon = String(than.order || than.id || "").trim();
-        const maTra = String(than.token || "").trim();
-        if (!maDon || !maTra) return { ma: 400, than: { ok: false, error: "thieu_ma_don_hoac_ma_tra" } };
-        const dong = await ctx.cong.kho.bang(BANG_DON).mot({ id: maDon, order_lookup_token_hash: bamMaTra(maTra) });
-        if (!dong) return { ma: 404, than: { ok: false, error: "khong_thay" } };
-        return { ma: 200, tieuDe: { "Cache-Control": "no-store" }, than: { ok: true, don: await docDon(ctx, maDon) } };
+        return suaHoSoKhach(ctx, {
+          maDon: String(than.orderId || than.id || "").trim(),
+          maTra: String(than.token || than.orderToken || "").trim(),
+          than
+        });
+      }
+    },
+    {
+      // Khach tu huy don trong 15 phut dau.
+      method: "POST", path: "/api/orders/public/cancel", quyen: "cong-khai",
+      viSaoCongKhai: "Khách tự hủy đơn của chính mình. Tự bảo vệ bằng: đúng mã đơn kèm mã tra cứu, và chỉ trong 15 phút đầu.",
+      hanGoi: { soLan: 20, trongMs: 10 * 60 * 1000 },
+      tay: async (ctx, yc) => {
+        const than = await yc.doc();
+        return khachTuHuy(ctx, {
+          maDon: String(than.orderId || than.id || "").trim(),
+          maTra: String(than.token || than.orderToken || "").trim()
+        });
       }
     },
     {
