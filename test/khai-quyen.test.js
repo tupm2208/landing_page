@@ -122,7 +122,7 @@ test("bang cua: moi duong that trong repo deu noi ro ai duoc goi", () => {
       httpNgoai: taoHttpNgoaiGia(), quyen: taoCongQuyen({ maQuanTri: MA_QT })
     },
     toKhais: napToKhais(path.join(__dirname, "..", "modules")),
-    cauHinh: { "hop-thu": { verifyToken: "v", appSecret: "s", tokenTrang: "t" }, "hang-kho": {} }
+    cauHinh: { "hop-thu": { verifyToken: "v", appSecret: "s", tokenTrang: "t" }, "hang-kho": {}, "don-khach": {} }
   });
   const ban = khung.banDuong();
   assert.ok(ban.length >= 4);
@@ -134,11 +134,16 @@ test("bang cua: moi duong that trong repo deu noi ro ai duoc goi", () => {
   // Bon cua dang mo, va vi sao:
   //   - hai duong webhook Meta: Meta goi tu may cua ho, tu bao ve bang verify token + chu ky
   //   - hai duong danh muc: web ban hang phai doc duoc; ban tra ra da bo gia von va ton that
+  //   - dat hang: khach tren web khong co ma nao; gia lay tu kho chu khong tu than yeu cau,
+  //     va phai giu duoc cho ton moi ghi don
+  //   - tra don: phai co DUNG ma don kem ma tra cuu; sai mot trong hai la khong thay gi
   const moCongKhai = ban.filter((d) => d.quyen === "cong-khai").map((d) => `${d.method} ${d.path}`);
   assert.deepEqual(moCongKhai.sort(), [
     "GET /api/facebook/webhook",
     "GET /api/products",
     "GET /api/products/:khoa",
-    "POST /api/facebook/webhook"
+    "POST /api/facebook/webhook",
+    "POST /api/orders",
+    "POST /api/orders/lookup"
   ]);
 });

@@ -29,6 +29,8 @@ function taoKhung({ cong, toKhais, nhatKy, cauHinh = {} }) {
   const daNap = [];
   /** @type {Map<string, { moduleId: string, ham: Function }>} so dich vu: ten -> nguoi cap */
   const soDichVu = new Map();
+  /** @type {Map<string, string>} bang -> module lam chu. Moi bang dung MOT chu. */
+  const chuCuaBang = new Map();
   /** Cho noi sau khi da nap het: module xin dich vu cua module nap sau no. */
   const chuaNoi = [];
 
@@ -59,6 +61,19 @@ function taoKhung({ cong, toKhais, nhatKy, cauHinh = {} }) {
       },
       soDoNghe: () => bus.soDoNghe()
     };
+
+    // Moi bang chi duoc MOT module lam chu — ke ca bang ke thua tu ban dang chay.
+    // Hai module cung ghi mot bang la hai nguoi cung sua mot so ma khong ai biet ai.
+    for (const ten of [
+      ...(toKhai.bangKeThua ?? []),
+      ...(toKhai.luocDo ?? []).flatMap((b) => b.bang ?? [])
+    ]) {
+      const chuCu = chuCuaBang.get(ten);
+      if (chuCu && chuCu !== toKhai.id) {
+        throw new Error(`Bang "${ten}" bi hai module nhan lam chu: "${chuCu}" va "${toKhai.id}".`);
+      }
+      chuCuaBang.set(ten, toKhai.id);
+    }
 
     // Dich vu module nay XIN. Noi sau khi nap het, vi nguoi cap co the nap sau.
     const dichVuChoModule = {};
@@ -145,6 +160,7 @@ function taoKhung({ cong, toKhais, nhatKy, cauHinh = {} }) {
     bus,
     banDuong: () => boDinhTuyen.banDuong(),
     banDichVu: () => [...soDichVu.entries()].map(([ten, x]) => ({ ten, module: x.moduleId })),
+    banBang: () => [...chuCuaBang.entries()].map(([bang, module]) => ({ bang, module })),
     danhSachModule: () => daNap.map((m) => ({
       id: m.toKhai.id, ten: m.toKhai.ten, mang: m.toKhai.mang, phienBan: m.toKhai.phienBan,
       duong: (m.toKhai.duong ?? []).length,
