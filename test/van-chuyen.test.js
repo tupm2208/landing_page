@@ -50,6 +50,51 @@ function mangGia(cacTraLoi) {
 const SPX_TAO_OK = { ret_code: 0, message: "success", data: { orders: [{ tracking_no: "SPXVN123456789", order_id: "ORD-1789000000001", estimated_shipping_fee: 25000 }] } };
 const SPX_TRUNG_MA = { ret_code: 1, message: "fail", data: { fail_list: [{ message: "order id has been used already" }] } };
 
+/** Mot module gia dung vai "Don hang": chi cap dich vu doc don. */
+function moduleDonGia(don) {
+  return {
+    id: "don-khach", ten: "Don hang gia", mang: "van-hanh", chay: "server-khach", phienBan: "0.0.1",
+    capDichVu: { "don-khach.doc": async (ctx, maDon) => (don && don.id === maDon ? don : null) }
+  };
+}
+
+const KHO_SHOP = {
+  ten: "Kho TopRun", dienThoai: "0900000000",
+  tinh: "Hà Nội", huyen: "Quận Ba Đình", xa: "Phường Giảng Võ", diaChiChiTiet: "Số 1 ngõ 2"
+};
+
+function dungThuVoiDon({ don, httpNgoai, nguoiGui = KHO_SHOP } = {}) {
+  const thuMuc = fs.mkdtempSync(path.join(os.tmpdir(), "van-chuyen-don-"));
+  const nhatKy = taoNhatKyGia();
+  const khung = taoKhung({
+    cong: {
+      kho: taoKhoTep({ thuMuc, nhatKy }), nhatKy, gio: taoGioGia(),
+      httpNgoai: httpNgoai ?? mangGia([SPX_TAO_OK]),
+      quyen: taoCongQuyen({ maQuanTri: MA_QT, maDichVu: MA_DV })
+    },
+    nhatKy,
+    toKhais: don === null ? [toKhai] : [toKhai, moduleDonGia(don)],
+    cauHinh: { "van-chuyen": { hangMacDinh: "spx", spx: CAU_HINH_SPX, nguoiGui } }
+  });
+  return { khung, nhatKy };
+}
+
+const goiTaoTuDon = (than, ma = MA_QT) => ({
+  method: "POST", duong: "/api/van-chuyen/tao-tu-don", truyVan: {},
+  tieuDe: { authorization: `Bearer ${ma}` }, doc: async () => than
+});
+
+const DON_MAU = {
+  id: "ORD-1789000000009",
+  customerName: "Nguyễn Văn A", phone: "0911111111",
+  province: "Hà Nội", district: "Quận Ba Đình", ward: "Phường Điện Biên",
+  addressDetail: "12 Đội Cấn", address: "12 Đội Cấn, Phường Điện Biên, Quận Ba Đình, Hà Nội",
+  total: 3000000,
+  // Da coc 1 trieu -> con phai tra 2 trieu (module Don hang annotate san bang order-money-kit).
+  paidAmount: 1000000, remainingAmount: 2000000,
+  items: [{ productCode: "A1", productName: "Giày chạy A", size: "42", qty: 1, price: 3000000 }]
+};
+
 function dungThu({ httpNgoai, cauHinh } = {}) {
   const thuMuc = fs.mkdtempSync(path.join(os.tmpdir(), "van-chuyen-"));
   const nhatKy = taoNhatKyGia();
@@ -314,4 +359,52 @@ test("ViettelPost tinh can nang bang gram, khong phai ki-lo", async () => {
   const { khung } = dungThu({ httpNgoai: mang, cauHinh: { hangMacDinh: "vtp", vtp: { token: "tk" } } });
   await khung.xuLy(goiTao(PHIEU));
   assert.equal(JSON.parse(mang.daGoi[0].tuyChon.body).PRODUCT_WEIGHT, 750);
+});
+
+// ---------- tao van don TU MOT DON (man quan tri bam mot nut) ----------
+
+test("tao van don tu don: COD la SO CON PHAI TRA, khong phai tong don", async () => {
+  // Don 3 trieu da coc 1 trieu. Thu COD 3 trieu la thu gap doi cua khach — loi nay mat tien
+  // that va mat ca khach, nen no co bai rieng.
+  const mang = mangGia([SPX_TAO_OK]);
+  const { khung } = dungThuVoiDon({ don: DON_MAU, httpNgoai: mang });
+  const ra = await khung.xuLy(goiTaoTuDon({ maDon: DON_MAU.id }));
+  assert.equal(ra.ma, 200, JSON.stringify(ra.than));
+  assert.equal(ra.than.maVanDon, "SPXVN123456789");
+
+  // Than that gui sang SPX boc ngoai: { user_id, user_secret, orders: [ ... ] }.
+  const than = JSON.parse(mang.daGoi[0].tuyChon.body);
+  const goi = than.orders[0];
+  assert.equal(goi.fulfillment_info.cod_amount, 2000000, "COD phai la so con phai tra");
+  assert.equal(goi.fulfillment_info.cod_collection, 1, "co COD thi phai bat co thu ho");
+  assert.equal(goi.deliver_info.deliver_name, "Nguyễn Văn A");
+  assert.equal(goi.sender_info.sender_name, "Kho TopRun", "nguoi gui lay tu cau hinh kho cua shop");
+});
+
+test("thieu dia chi kho cua shop: KHONG goi hang van chuyen, va noi ro thieu gi", async () => {
+  const mang = mangGia([SPX_TAO_OK]);
+  const { khung } = dungThuVoiDon({ don: DON_MAU, httpNgoai: mang, nguoiGui: { ten: "Kho TopRun" } });
+  const ra = await khung.xuLy(goiTaoTuDon({ maDon: DON_MAU.id }));
+  assert.equal(ra.ma, 400);
+  assert.equal(ra.than.error, "thieu_thong_tin");
+  assert.ok(ra.than.thieu.includes("nguoiGui.dienThoai"));
+  assert.match(ra.than.message, /thiếu/);
+  assert.equal(mang.daGoi.length, 0, "khong duoc goi hang van chuyen voi dia chi rong");
+});
+
+test("khong co don thi 404; chua bat manh Don hang thi 503 va noi ro", async () => {
+  const co = dungThuVoiDon({ don: DON_MAU });
+  assert.equal((await co.khung.xuLy(goiTaoTuDon({ maDon: "ORD-khong-co" }))).ma, 404);
+  assert.equal((await co.khung.xuLy(goiTaoTuDon({}))).ma, 400);
+
+  const khong = dungThuVoiDon({ don: null });
+  const ra = await khong.khung.xuLy(goiTaoTuDon({ maDon: DON_MAU.id }));
+  assert.equal(ra.ma, 503);
+  assert.equal(ra.than.error, "chua_bat_manh_don_hang");
+});
+
+test("duong tao van don tu don KHONG mo cho khach", async () => {
+  const { khung } = dungThuVoiDon({ don: DON_MAU });
+  const ra = await khung.xuLy({ method: "POST", duong: "/api/van-chuyen/tao-tu-don", truyVan: {}, tieuDe: {}, doc: async () => ({ maDon: DON_MAU.id }) });
+  assert.equal(ra.ma, 401);
 });

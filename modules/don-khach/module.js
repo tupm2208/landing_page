@@ -25,6 +25,7 @@ const tienKit = require("../../../chung/order-money-kit.js");
 const { gioMySQL, isoTuMySQL } = require("../../../chung/gio-mysql.js");
 const { banChiTiet, banBiMat, banChiTrangThai, suaDuoc } = require("./cong-khai");
 const { LUOC_DO } = require("./luoc-do");
+const { tongQuan, TRAN_DON } = require("./bao-cao");
 
 const BANG_DON = "orders";
 const BANG_DONG = "order_items";
@@ -298,6 +299,35 @@ async function ghiTien(ctx, { maDon = "", phuongThuc = null, trangThaiTien = nul
   return so > 0 ? { ok: true } : { ok: false, viSao: "khong_co_don" };
 }
 
+// ---------- bao cao ----------
+
+/**
+ * Doc don trong cua so ngay, kem dong hang, de dung bao cao.
+ *
+ * HAI cau lenh chu khong phai N+1: mot cau lay don, mot cau lay het dong hang cua nhung don do.
+ * Bao cao 14 ngay cua mot shop dong khach van chi la hai lan hoi kho.
+ */
+async function donChoBaoCao(ctx, tuNgay) {
+  const [cacDon] = await ctx.cong.kho.cauLenh(
+    `SELECT id, total, status, payment_status, payment_amount, created_at
+       FROM ${BANG_DON} WHERE created_at >= ? ORDER BY created_at DESC LIMIT ${TRAN_DON}`,
+    [tuNgay]
+  );
+  if (cacDon.length === 0) return [];
+  const cho = cacDon.map(() => "?").join(", ");
+  const [cacDong] = await ctx.cong.kho.cauLenh(
+    `SELECT order_id, product_code, product_name, quantity, price
+       FROM ${BANG_DONG} WHERE order_id IN (${cho})`,
+    cacDon.map((d) => d.id)
+  );
+  const theoDon = new Map();
+  for (const d of cacDong) {
+    if (!theoDon.has(d.order_id)) theoDon.set(d.order_id, []);
+    theoDon.get(d.order_id).push(d);
+  }
+  return cacDon.map((d) => ({ ...d, mon: theoDon.get(d.id) ?? [] }));
+}
+
 // ---------- khach tu xem / tu sua / tu huy don cua chinh minh ----------
 //
 // Ba duong nay CONG KHAI (khach tren web khong co ma nao), nen tu bao ve bang dung mot thu:
@@ -548,6 +578,20 @@ module.exports = {
           maTra: String(than.token || than.orderToken || "").trim()
         });
       }
+    },
+    {
+      // Chu shop mo OMI ra la thay: hom nay bao nhieu don, thu duoc bao nhieu, mon nao ban chay.
+      method: "GET", path: "/api/bao-cao/tong-quan", quyen: "quan-tri",
+      hanGoi: { soLan: 120, trongMs: 10 * 60 * 1000 },
+      tay: async (ctx, yc) => ({
+        ma: 200, tieuDe: { "Cache-Control": "no-store" },
+        than: await tongQuan({
+          docDon: (tuNgay) => donChoBaoCao(ctx, tuNgay),
+          bayGio: ctx.cong.gio.bayGio(),
+          soNgay: yc.truyVan.ngay,
+          lechPhut: Number(ctx.cauHinh.lechGioPhut ?? 7 * 60)
+        })
+      })
     },
     {
       method: "GET", path: "/api/orders", quyen: "quan-tri",

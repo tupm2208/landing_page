@@ -116,6 +116,16 @@ async function dungHe({ thuMucDuLieu, env = process.env } = {}) {
       },
       "van-chuyen": {
         hangMacDinh: String(env.VAN_CHUYEN_MAC_DINH || "spx").trim(),
+        // Dia chi KHO CUA SHOP — nguoi gui tren moi van don. Thieu thi duong "tao van don tu
+        // don" tra ve danh sach thieu gi, chu khong goi hang van chuyen voi dia chi rong.
+        nguoiGui: {
+          ten: String(env.KHO_TEN || "").trim(),
+          dienThoai: String(env.KHO_DIEN_THOAI || "").trim(),
+          tinh: String(env.KHO_TINH || "").trim(),
+          huyen: String(env.KHO_HUYEN || "").trim(),
+          xa: String(env.KHO_XA || "").trim(),
+          diaChiChiTiet: String(env.KHO_DIA_CHI || "").trim()
+        },
         spx: {
           appId: String(env.SPX_APP_ID || "").trim(),
           appSecret: String(env.SPX_APP_SECRET || "").trim(),
@@ -131,6 +141,13 @@ async function dungHe({ thuMucDuLieu, env = process.env } = {}) {
       },
       "khung-nen-tang": {
         deployId: String(env.DEPLOY_ID || "").trim() || "chua-dat"
+      },
+      "ctv": {
+        // Phien cua cong tac vien cung ky bang khoa nay. Thieu thi khong ky duoc phien ->
+        // CTV khong dang nhap duoc (va nhat ky khoi dong noi ro dieu do).
+        biMatPhien: String(env.BI_MAT_PHIEN_CTV || env.BI_MAT_PHIEN_DOI_TAC || "").trim(),
+        songGio: Number(env.PHIEN_CTV_GIO || 24 * 30),
+        https: String(env.PHIEN_HTTPS || "").trim() === "1"
       }
     }
   });
@@ -145,8 +162,14 @@ async function dungHe({ thuMucDuLieu, env = process.env } = {}) {
   if (String(env.BI_MAT_PHIEN_DOI_TAC || "").trim().length < 16) {
     dangTat.push("cong doi tac mua ho (thieu BI_MAT_PHIEN_DOI_TAC dai >= 16 ky tu)");
   }
+  if (String(env.BI_MAT_PHIEN_CTV || env.BI_MAT_PHIEN_DOI_TAC || "").trim().length < 16) {
+    dangTat.push("dang nhap cong tac vien (thieu BI_MAT_PHIEN_CTV dai >= 16 ky tu)");
+  }
   if (!String(env.SPX_APP_ID || "").trim() && !String(env.VTP_TOKEN || "").trim()) {
     dangTat.push("tao van don (thieu khoa SPX va Viettel Post)");
+  }
+  if (!String(env.KHO_TEN || "").trim() || !String(env.KHO_DIEN_THOAI || "").trim()) {
+    dangTat.push("tao van don tu don (thieu dia chi kho: KHO_TEN, KHO_DIEN_THOAI, KHO_TINH, KHO_HUYEN, KHO_XA, KHO_DIA_CHI)");
   }
   if (!String(env.FACEBOOK_VERIFY_TOKEN || "").trim()) {
     dangTat.push("nhan tin Fanpage (thieu FACEBOOK_VERIFY_TOKEN)");

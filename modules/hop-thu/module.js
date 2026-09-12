@@ -157,10 +157,21 @@ module.exports = {
         const tu = String(yc.truyVan.since ?? "");
         const gioiHan = Math.min(Number(yc.truyVan.limit ?? 100) || 100, GIU_TOI_DA);
         const events = so.events.filter((e) => !tu || e.eventId > tu).slice(0, gioiHan);
+        // TRA CA TIN DA BOC. Trong so chi giu goi THO cua Meta (base64) — de nguyen van la
+        // dung, nhung neu bat man quan tri tu doc base64 roi tu hieu hinh dang cua Meta thi
+        // hinh dang do lan ra ngoai module nay. Meta doi mot khoa la sua hai noi.
+        const tin = [];
+        for (const e of events) {
+          let goiTho = null;
+          try { goiTho = JSON.parse(Buffer.from(String(e.rawBodyBase64 || ""), "base64").toString("utf8")); } catch { goiTho = null; }
+          for (const t of goiTho === null ? [] : bocTinNhan(goiTho)) {
+            tin.push({ ...t, maSuKien: e.eventId, nhanLuc: e.receivedAt, daXacMinh: e.daXacMinh === true });
+          }
+        }
         return {
           ma: 200,
           tieuDe: { "Cache-Control": "no-store" },
-          than: { ok: true, events, cursor: events.length ? events[events.length - 1].eventId : tu, updatedAt: so.updatedAt }
+          than: { ok: true, events, tin, cursor: events.length ? events[events.length - 1].eventId : tu, updatedAt: so.updatedAt }
         };
       }
     },

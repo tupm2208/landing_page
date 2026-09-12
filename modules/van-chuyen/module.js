@@ -33,6 +33,62 @@ function hangVanChuyen(ctx, ten) {
   throw new Error(`Chua co hang van chuyen "${chon}".`);
 }
 
+/**
+ * Dung PHIEU GUI tu mot don hang.
+ *
+ * Vi sao o day chu khong o OMI: OMI la man hinh, no khong duoc biet dia chi kho cua shop, khong
+ * duoc tu tinh COD, khong duoc tu doan can nang. Man hinh chi noi "tao van don cho don nay".
+ *
+ * NGUOI GUI lay tu cau hinh cua may chu (dia chi shop) — thieu thi tra ve `thieu` de man hinh
+ * bao nguoi ta phai khai, chu khong goi hang van chuyen voi dia chi rong.
+ *
+ * COD lay tu SO CON PHAI TRA cua don (do `order-money-kit` tinh, module Don hang annotate san).
+ * Cam tu lay `total`: don da coc 20% ma thu COD ca tong la thu gap doi cua khach.
+ */
+function phieuTuDon(ctx, don, { hang = "", canNangKg = 0, danDo = "" } = {}) {
+  const g = ctx.cauHinh.nguoiGui ?? {};
+  const nguoiGui = {
+    ten: String(g.ten || "").trim(),
+    dienThoai: String(g.dienThoai || "").trim(),
+    tinh: String(g.tinh || "").trim(),
+    huyen: String(g.huyen || "").trim(),
+    xa: String(g.xa || "").trim(),
+    diaChiChiTiet: String(g.diaChiChiTiet || "").trim()
+  };
+  const thieu = Object.entries(nguoiGui).filter(([, v]) => v === "").map(([k]) => `nguoiGui.${k}`);
+
+  const mon = (Array.isArray(don.items) ? don.items : []).map((m) => ({
+    ten: String(m.productName || m.productCode || "Hàng").trim(),
+    soLuong: Math.max(1, Math.trunc(Number(m.qty ?? m.quantity ?? 1))),
+    donGia: Math.max(0, Math.round(Number(m.price || 0))),
+    canNangKg: 0
+  }));
+  if (mon.length === 0) thieu.push("don khong co mon nao");
+  if (!String(don.phone || "").trim()) thieu.push("dien thoai nguoi nhan");
+
+  const phieu = {
+    maPhieu: String(don.id || "").trim(),
+    hang: String(hang || "").trim() || undefined,
+    nguoiGui,
+    nguoiNhan: {
+      ten: String(don.customerName || "").trim(),
+      dienThoai: String(don.phone || "").trim(),
+      tinh: String(don.province || "").trim(),
+      huyen: String(don.district || "").trim(),
+      xa: String(don.ward || "").trim(),
+      diaChiChiTiet: String(don.addressDetail || "").trim(),
+      diaChiDayDu: String(don.address || "").trim()
+    },
+    mon,
+    // COD = so con phai tra, KHONG phai tong don.
+    cod: Math.max(0, Math.round(Number(don.remainingAmount ?? don.total ?? 0))),
+    giaTriHang: Math.max(0, Math.round(Number(don.total || 0))),
+    canNangKg: Number(canNangKg) > 0 ? Number(canNangKg) : undefined,
+    danDo: String(danDo || "").trim() || undefined
+  };
+  return { phieu, thieu };
+}
+
 /** Luu ma van don theo ma phieu, de tra cuu lai ma khong phai goi ra ngoai. */
 async function ghiNho(ctx, maPhieu, ban) {
   const luc = ctx.cong.gio.bayGio().toISOString();
@@ -84,6 +140,9 @@ module.exports = {
   chay: "server-khach",
   phienBan: "0.1.0",
   canCong: ["kho", "nhatKy", "gio", "httpNgoai", "bus", "cauHinh"],
+  // Tao van don TU MOT DON can doc don do. "NEU CO" vi nha ban hang co the khong mua manh Don
+  // hang — khi do van chuyen van chay, chi khong co duong "tao van don tu don".
+  canDichVuNeuCo: ["don-khach.doc"],
 
   suKien: {
     phat: [SU_KIEN.van_don_da_tao, SU_KIEN.van_don_doi_trang_thai],
@@ -107,6 +166,42 @@ module.exports = {
       tay: async (ctx, yc) => {
         const kq = await taoVanDon(ctx, await yc.doc());
         if (kq.daGoi && kq.ok) return { ma: 200, than: { ok: true, ...kq } };
+        if (!kq.daGoi) return { ma: 400, than: { ok: false, error: kq.viSao, thieu: kq.thieu ?? [] } };
+        return { ma: 502, than: { ok: false, error: "hang_tu_choi", message: kq.loiNhan } };
+      }
+    },
+    {
+      // Mot nut tren man quan tri: tao van don cho don nay. Man hinh khong phai biet dia chi kho,
+      // khong phai tu tinh COD — cho nay dung phieu gui ho.
+      method: "POST", path: "/api/van-chuyen/tao-tu-don", quyen: "quan-tri",
+      hanGoi: { soLan: 120, trongMs: 10 * 60 * 1000 },
+      tay: async (ctx, yc) => {
+        const than = await yc.doc();
+        const maDon = String(than.maDon || than.orderId || "").trim();
+        if (!maDon) return { ma: 400, than: { ok: false, error: "thieu_ma_don" } };
+
+        const docDon = ctx.dichVu["don-khach"]?.doc;
+        if (!docDon) {
+          return { ma: 503, than: { ok: false, error: "chua_bat_manh_don_hang", message: "Chưa bật mảnh Đơn hàng nên không đọc được đơn." } };
+        }
+        const don = await docDon(maDon);
+        if (!don) return { ma: 404, than: { ok: false, error: "khong_thay_don" } };
+
+        const { phieu, thieu } = phieuTuDon(ctx, don, {
+          hang: than.hang, canNangKg: than.canNangKg, danDo: than.danDo
+        });
+        if (thieu.length > 0) {
+          return {
+            ma: 400,
+            than: {
+              ok: false, error: "thieu_thong_tin", thieu,
+              message: `Chưa tạo được vận đơn: thiếu ${thieu.join(", ")}.`
+            }
+          };
+        }
+
+        const kq = await taoVanDon(ctx, phieu);
+        if (kq.daGoi && kq.ok) return { ma: 200, than: { ok: true, maDon, ...kq } };
         if (!kq.daGoi) return { ma: 400, than: { ok: false, error: kq.viSao, thieu: kq.thieu ?? [] } };
         return { ma: 502, than: { ok: false, error: "hang_tu_choi", message: kq.loiNhan } };
       }

@@ -148,7 +148,7 @@ test("bang cua: moi duong that trong repo deu noi ro ai duoc goi", () => {
       tepTinh: taoCongTepTinhGia({})
     },
     toKhais: napToKhais(path.join(__dirname, "..", "modules")),
-    cauHinh: { "hop-thu": { verifyToken: "v", appSecret: "s", tokenTrang: "t" }, "hang-kho": {}, "don-khach": {}, "khung-nen-tang": {}, "mua-ho": { biMatPhien: "bi-mat-phien-doi-tac-dai" } }
+    cauHinh: { "hop-thu": { verifyToken: "v", appSecret: "s", tokenTrang: "t" }, "hang-kho": {}, "don-khach": {}, "khung-nen-tang": {}, "mua-ho": { biMatPhien: "bi-mat-phien-doi-tac-dai" }, "ctv": { biMatPhien: "bi-mat-phien-ctv-dai" } }
   });
   const ban = khung.banDuong();
   assert.ok(ban.length >= 4);
@@ -175,6 +175,10 @@ test("bang cua: moi duong that trong repo deu noi ro ai duoc goi", () => {
   //     tep trong `goc/` cua module Gian hang — va cong tep tinh CHO QUA THEO DANH SACH duoi
   //     tep, nen mot tep la lot vao thu muc web cung khong ra duoc. Trang san pham co doc mot
   //     mon, nhung qua dich vu `hang-kho.doc` tra ban cong khai (da bo gia von va ton that).
+  //   - bon duong cong tac vien (dang nhap / dang xuat / toi la ai / tai anh): CTV la NGUOI,
+  //     ho khong co ma may. Chung tu bao ve bang phien cookie tu ky + mat khau PBKDF2 + luat
+  //     "may la phai duoc chu shop duyet". Duong tai anh CHI tra danh sach anh — khong ton kho,
+  //     khong gia von, khong ten kho.
   //   - nam duong cong doi tac: doi tac dang nhap bang PHIEN COOKIE chu khong cam ma Bearer,
   //     ma cong quyen hien chi hieu Bearer. Nen chung phai la "cong-khai" va TU kiem phien —
   //     chua co phien la 401 truoc khi doc bat cu gi. Khoang trong nay se dong khi them vai
@@ -184,6 +188,8 @@ test("bang cua: moi duong that trong repo deu noi ro ai duoc goi", () => {
     "GET /",
     "GET /*",
     "GET /api/content",
+    "GET /api/ctv/anh",
+    "GET /api/ctv/me",
     "GET /api/facebook/webhook",
     "GET /api/orders/public",
     "GET /api/partner-portal",
@@ -195,6 +201,8 @@ test("bang cua: moi duong that trong repo deu noi ro ai duoc goi", () => {
     "GET /product.html",
     "GET /product/:khoa",
     "PATCH /api/orders/public",
+    "POST /api/ctv/login",
+    "POST /api/ctv/logout",
     "POST /api/facebook/webhook",
     "POST /api/orders",
     "POST /api/orders/lookup",
