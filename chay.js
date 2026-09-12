@@ -16,6 +16,7 @@ const { taoCongQuyen } = require("./loi/cong/quyen");
 const { taoNhatKy, gioThat, taoHttpNgoai } = require("./loi/cong/co-ban");
 const { taoBoDemGoi } = require("./loi/cong/han-goi");
 const { taoBoVe } = require("./loi/cong/ve");
+const { bocCheDoThu } = require("./loi/cong/che-do-thu");
 
 async function dungHe({ thuMucDuLieu, env = process.env } = {}) {
   const nhatKy = taoNhatKy();
@@ -29,6 +30,11 @@ async function dungHe({ thuMucDuLieu, env = process.env } = {}) {
     ? await taoKhoMysql({ duongKetNoi: duongMysql, nhatKy })
     : taoKhoTep({ thuMuc: thuMucDuLieu, nhatKy });
   if (!duongMysql) nhatKy.canhBao("[chay] CHUA co TOPRUN_MYSQL_URL — dang chay bang tep JSON, chi dung de thu.");
+  if (String(env.CHE_DO_THAT || "").trim() !== "1") {
+    nhatKy.canhBao("[chay] CHE DO THU: khong gui tin cho khach, khong tao van don that, khong bao Telegram.");
+  } else {
+    nhatKy.canhBao("[chay] CHE DO THAT: moi loi goi ra ngoai la THAT. Kiem lai truoc khi chay tren du lieu that.");
+  }
   if (String(env.BI_MAT_VE || "").trim().length < 16) {
     nhatKy.canhBao("[chay] CHUA co BI_MAT_VE — ve 15 phut dang TAT, moi ben van dung khoa dai han.");
   }
@@ -36,7 +42,13 @@ async function dungHe({ thuMucDuLieu, env = process.env } = {}) {
     kho,
     nhatKy,
     gio: gioThat,
-    httpNgoai: taoHttpNgoai(),
+    // CHE DO THU BAT THEO MAC DINH. Phai khai ro `CHE_DO_THAT=1` moi cho goi that ra ngoai.
+    // Anh Dung chot 12/09: ban thu duoc doc realtime tu Graph API nhung KHONG duoc tra loi
+    // khach. Mac dinh la "an toan" chu khong phai "tien": quen dat bien thi khong ai bi
+    // nhan tin oan.
+    httpNgoai: String(env.CHE_DO_THAT || "").trim() === "1"
+      ? taoHttpNgoai()
+      : bocCheDoThu({ httpNgoaiThat: taoHttpNgoai(), nhatKy }),
     quyen: taoCongQuyen({
       // Khoa dai han CO TEN — nho vay nhat ky ghi duoc "sales-desk vua goi".
       cacKhoa: [
