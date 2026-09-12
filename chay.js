@@ -18,6 +18,7 @@ const { taoBoDemGoi } = require("./loi/cong/han-goi");
 const { taoBoVe } = require("./loi/cong/ve");
 const { bocCheDoThu } = require("./loi/cong/che-do-thu");
 const { taoCongTepTinh } = require("./loi/cong/tep-tinh");
+const { sinhMaGhep, SO_KHOA_MAY } = require("./modules/khung-nen-tang/ghep-may");
 
 async function dungHe({ thuMucDuLieu, env = process.env } = {}) {
   const nhatKy = taoNhatKy();
@@ -67,6 +68,12 @@ async function dungHe({ thuMucDuLieu, env = process.env } = {}) {
     // Mat web: module chi thay thu muc `goc/` cua chinh no, va chi nhung duoi tep da khai.
     tepTinh: taoCongTepTinh({ thuMucGoc: path.join(__dirname, "modules"), nhatKy })
   };
+
+  // MA GHEP MAY — de OMI (va may khac cua chinh shop) duoc CAP khoa rieng, khong ai phai be ma
+  // quan tri sang. In ra o duoi, song 15 phut, dung mot lan. `KHONG_GHEP_MAY=1` thi tat han.
+  const batGhepMay = String(env.KHONG_GHEP_MAY || "").trim() !== "1";
+  const maGhep = batGhepMay ? sinhMaGhep() : "";
+  const maGhepHetLuc = batGhepMay ? Date.now() + 15 * 60 * 1000 : 0;
 
   const thuMucModules = path.join(__dirname, "modules");
   const bat = String(env.MODULE_BAT || "").trim()
@@ -140,7 +147,9 @@ async function dungHe({ thuMucDuLieu, env = process.env } = {}) {
         }
       },
       "khung-nen-tang": {
-        deployId: String(env.DEPLOY_ID || "").trim() || "chua-dat"
+        deployId: String(env.DEPLOY_ID || "").trim() || "chua-dat",
+        maGhep,
+        maGhepHetLuc
       },
       "ctv": {
         // Phien cua cong tac vien cung ky bang khoa nay. Thieu thi khong ky duoc phien ->
@@ -185,17 +194,45 @@ async function dungHe({ thuMucDuLieu, env = process.env } = {}) {
     }
   }
 
+  // KHOA MAY DA GHEP tu nhung lan chay truoc: doc lai vao cong quyen. Khong co buoc nay thi
+  // moi lan bat lai server, may da ghep lai bi coi la nguoi la — va nguoi ban hang phai ghep lai.
+  if (typeof kho.so === "function") {
+    const soKhoa = await kho.so(SO_KHOA_MAY).doc();
+    const ds = Array.isArray(soKhoa?.khoa) ? soKhoa.khoa : [];
+    let daNap = 0;
+    for (const k of ds) {
+      try {
+        if (cong.quyen.themKhoa({ ma: k.ma, ten: k.ten, vai: k.vai || "quan-tri" })) daNap += 1;
+      } catch (e) {
+        nhatKy.canhBao(`[chay] khoa may "${k?.ten ?? "khong ten"}" trong so khong dung duoc: ${e.message}`);
+      }
+    }
+    if (daNap > 0) nhatKy.tin(`[chay] nap lai ${daNap} khoa may da ghep`);
+  }
+
   const chuaTach = moduleChuaTach(thuMucModules);
   if (chuaTach.length > 0) nhatKy.tin(`[chay] con ${chuaTach.length} module chua tach: ${chuaTach.join(", ")}`);
-  return { khung, cong, kho };
+  // Tra ca ma ghep ra ngoai: cho in no nam o `require.main` — khac pham vi voi cho sinh no.
+  return { khung, cong, kho, maGhep, maGhepHetLuc };
 }
 
 if (require.main === module) {
   const cong = Number(process.env.PORT || 4180);
-  dungHe({ thuMucDuLieu: process.env.THU_MUC_DU_LIEU || path.join(__dirname, "du-lieu") }).then(({ khung }) => {
+  dungHe({ thuMucDuLieu: process.env.THU_MUC_DU_LIEU || path.join(__dirname, "du-lieu") }).then(({ khung, maGhep, maGhepHetLuc }) => {
     taoMayChu(khung).listen(cong, () => {
       console.log(`[chay] server khach nghe o cong ${cong}`);
       for (const d of khung.banDuong()) console.log(`        ${d.method.padEnd(6)} ${d.path}  (${d.moduleId})`);
+      // MA GHEP in SAU CUNG, to va ro: day la thu nguoi ban hang phai doc de noi OMI vao.
+      if (maGhep) {
+        const den = new Date(maGhepHetLuc).toLocaleTimeString("vi-VN");
+        console.log("");
+        console.log("  ┌───────────────────────────────────────────────┐");
+        console.log(`  │  MA GHEP MAY:  ${maGhep}                         │`);
+        console.log(`  │  Song den ${den}, dung MOT lan.            │`);
+        console.log("  │  Mo OMI -> Cai dat -> go dia chi + ma nay.     │");
+        console.log("  └───────────────────────────────────────────────┘");
+        console.log("");
+      }
     });
   }).catch((e) => {
     console.error("[chay] khong khoi dong duoc:", e.message);

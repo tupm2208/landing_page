@@ -78,6 +78,42 @@ function taoCongQuyen({ cacKhoa = [], maQuanTri = "", maDon = "", maDichVu = "",
     ai,
     vai: (yc) => ai(yc).vai,
 
+    /**
+     * THEM MOT KHOA LUC DANG CHAY — dung khi mot may duoc GHEP vao server (xem duong
+     * `/api/ghep-may` cua Khung nen tang).
+     *
+     * Vi sao can: neu khong co cho nay thi cach duy nhat de OMI vao duoc la NGUOI BE MA QUAN TRI
+     * sang, dan bang tay. Ma quan tri la khoa cua CA server; dua no cho tung may la mot may bi lo
+     * thanh ca he bi lo, va khong ai thu hoi duoc rieng may do. Moi may mot khoa CO TEN thi nhat
+     * ky ghi duoc "omi:may-cua-anh-dung vua goi", va bo mot may la bo mot dong.
+     */
+    themKhoa({ ma, ten, vai } = {}) {
+      const sach = String(ma || "").trim();
+      const tenSach = String(ten || "").trim();
+      if (sach.length < 24) throw new Error("Khoa may phai dai it nhat 24 ky tu.");
+      if (tenSach === "") throw new Error("Khoa may phai co ten (de nhat ky ghi duoc ai goi).");
+      if (vai !== "quan-tri" && vai !== "dich-vu") throw new Error(`Vai khong hop le: ${String(vai)}`);
+      if (khoa.some((k) => bangNhau(k.ma, sach))) return false;   // da co roi, khong them hai lan
+      khoa.push({ ma: sach, ten: tenSach, vai });
+      ky.tin(`[quyen] them khoa may "${tenSach}" (${vai})`);
+      return true;
+    },
+
+    /** Bo mot khoa theo TEN — thu hoi quyen cua dung mot may. */
+    boKhoaTheoTen(ten) {
+      const tenSach = String(ten || "").trim();
+      const truoc = khoa.length;
+      for (let i = khoa.length - 1; i >= 0; i -= 1) {
+        if (khoa[i].ten === tenSach) khoa.splice(i, 1);
+      }
+      const bo = truoc - khoa.length;
+      if (bo > 0) ky.tin(`[quyen] bo ${bo} khoa mang ten "${tenSach}"`);
+      return bo;
+    },
+
+    /** Ten cac khoa dang co — KHONG bao gio tra ban ma. */
+    tenCacKhoa: () => khoa.map((k) => ({ ten: k.ten, vai: k.vai })),
+
     /** Vai nay co du de goi duong khai `can` khong. Quan tri di duoc ca duong dich vu. */
     duoc(yc, can) {
       if (can === "cong-khai") return true;

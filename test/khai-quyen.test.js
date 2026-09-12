@@ -175,6 +175,10 @@ test("bang cua: moi duong that trong repo deu noi ro ai duoc goi", () => {
   //     tep trong `goc/` cua module Gian hang — va cong tep tinh CHO QUA THEO DANH SACH duoi
   //     tep, nen mot tep la lot vao thu muc web cung khong ra duoc. Trang san pham co doc mot
   //     mon, nhung qua dich vu `hang-kho.doc` tra ban cong khai (da bo gia von va ton that).
+  //   - GHEP MAY: may chua ghep thi CHUA CO MA NAO — do la dinh nghia cua viec bat tay. Ma ghep
+  //     6 chu so chi in o CUA SO MAY CHU (ai doc duoc cua so do la chu shop), dung mot lan, song
+  //     15 phut, sai 10 lan la chet, va han goi 10 lan / 15 phut. Ghep xong may co KHOA RIENG co
+  //     ten, nen nhat ky ghi duoc "omi:<ten may> vua goi" va bo mot may la bo mot dong.
   //   - bon duong cong tac vien (dang nhap / dang xuat / toi la ai / tai anh): CTV la NGUOI,
   //     ho khong co ma may. Chung tu bao ve bang phien cookie tu ky + mat khau PBKDF2 + luat
   //     "may la phai duoc chu shop duyet". Duong tai anh CHI tra danh sach anh — khong ton kho,
@@ -204,6 +208,7 @@ test("bang cua: moi duong that trong repo deu noi ro ai duoc goi", () => {
     "POST /api/ctv/login",
     "POST /api/ctv/logout",
     "POST /api/facebook/webhook",
+    "POST /api/ghep-may",
     "POST /api/orders",
     "POST /api/orders/lookup",
     "POST /api/orders/public/cancel",
