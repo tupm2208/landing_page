@@ -10,7 +10,7 @@
 const test = require("node:test");
 const assert = require("node:assert/strict");
 
-const { taoKhoMysql, dungWhere, tenAnToan } = require("../loi/cong/kho-mysql");
+const { taoKhoMysql, dungWhere, tenAnToan, catCauLenh } = require("../loi/cong/kho-mysql");
 const { taoNhatKyGia } = require("../loi/cong/co-ban");
 
 const DUONG = String(process.env.TOPRUN_MYSQL_URL || "").trim();
@@ -27,6 +27,29 @@ test("ten bang/cot phai sach — chan tiem cau lenh", () => {
   assert.throws(() => tenAnToan("don; DROP TABLE x"), /không hợp lệ/);
   assert.throws(() => tenAnToan("`x`"), /không hợp lệ/);
   assert.throws(() => tenAnToan("Don"), /không hợp lệ/);
+});
+
+test("dau cham phay trong GHI CHU khong duoc cat doi cau lenh", () => {
+  // Da dinh that o luoc do mang Mua ho: ghi chu "vao duoc cong; doi ma la cat quyen" lam
+  // bo cat sinh ra mot manh cau lenh vo nghia.
+  const sql = `
+    CREATE TABLE a (
+      x INT,
+      -- mo link nay la vao duoc cong; doi ma la cat quyen
+      y INT
+    );
+    CREATE TABLE b (z INT);
+  `;
+  const cau = catCauLenh(sql);
+  assert.equal(cau.length, 2, `phai ra dung hai cau lenh: ${JSON.stringify(cau)}`);
+  assert.match(cau[0], /CREATE TABLE a/);
+  assert.match(cau[1], /CREATE TABLE b/);
+  assert.ok(!cau.join(" ").includes("cat quyen"), "ghi chu phai duoc bo truoc khi cat");
+});
+
+test("ghi chu nhieu dong cung duoc bo", () => {
+  const cau = catCauLenh("/* ghi chu; co cham phay */ CREATE TABLE a (x INT); CREATE TABLE b (y INT);");
+  assert.equal(cau.length, 2);
 });
 
 test("dung menh de WHERE: bang nhau, trong danh sach, so sanh, rong", () => {

@@ -146,7 +146,7 @@ test("bang cua: moi duong that trong repo deu noi ro ai duoc goi", () => {
       httpNgoai: taoHttpNgoaiGia(), quyen: taoCongQuyen({ maQuanTri: MA_QT })
     },
     toKhais: napToKhais(path.join(__dirname, "..", "modules")),
-    cauHinh: { "hop-thu": { verifyToken: "v", appSecret: "s", tokenTrang: "t" }, "hang-kho": {}, "don-khach": {}, "khung-nen-tang": {} }
+    cauHinh: { "hop-thu": { verifyToken: "v", appSecret: "s", tokenTrang: "t" }, "hang-kho": {}, "don-khach": {}, "khung-nen-tang": {}, "mua-ho": { biMatPhien: "bi-mat-phien-doi-tac-dai" } }
   });
   const ban = khung.banDuong();
   assert.ok(ban.length >= 4);
@@ -162,14 +162,24 @@ test("bang cua: moi duong that trong repo deu noi ro ai duoc goi", () => {
   //     va phai giu duoc cho ton moi ghi don
   //   - tra don: phai co DUNG ma don kem ma tra cuu; sai mot trong hai la khong thay gi
   //   - phien ban dang chay: chi tra deployId, khong doc du lieu shop; Image Tool doc sau deploy
+  //   - nam duong cong doi tac: doi tac dang nhap bang PHIEN COOKIE chu khong cam ma Bearer,
+  //     ma cong quyen hien chi hieu Bearer. Nen chung phai la "cong-khai" va TU kiem phien —
+  //     chua co phien la 401 truoc khi doc bat cu gi. Khoang trong nay se dong khi them vai
+  //     "doi-tac" va "nhan-vien" vao cong quyen (xem muc no trong KE-HOACH-TACH.md).
   const moCongKhai = ban.filter((d) => d.quyen === "cong-khai").map((d) => `${d.method} ${d.path}`);
   assert.deepEqual(moCongKhai.sort(), [
     "GET /api/facebook/webhook",
+    "GET /api/partner-portal",
     "GET /api/products",
     "GET /api/products/:khoa",
     "GET /api/runtime-version",
     "POST /api/facebook/webhook",
     "POST /api/orders",
-    "POST /api/orders/lookup"
+    "POST /api/orders/lookup",
+    "POST /api/orders/public/payment-choice",
+    "POST /api/partner-portal/login",
+    "POST /api/partner-portal/logout",
+    "POST /api/partner-portal/out-of-stock",
+    "POST /api/partner-portal/purchases"
   ]);
 });

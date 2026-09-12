@@ -26,6 +26,22 @@ const mysql = require("mysql2/promise");
 const BANG_SO = "so_du_lieu";
 const BANG_LICH_SU = "lich_su_luoc_do";
 
+/**
+ * Cat mot khoi SQL thanh tung cau lenh.
+ *
+ * Cat thang bang `split(";")` la SAI: mot dau cham phay nam trong GHI CHU se cat doi cau
+ * lenh (da dinh mot lan o luoc do mang Mua ho). Nen bo ghi chu truoc roi moi cat.
+ *
+ * GIOI HAN da biet: dau cham phay nam trong mot chuoi ('a;b') van cat nham. Luoc do cua
+ * module khong duoc chua chuoi nhu vay — neu can thi tach thanh mot buoc rieng.
+ */
+function catCauLenh(sql) {
+  const sachGhiChu = String(sql)
+    .replace(/\/\*[\s\S]*?\*\//g, " ")
+    .replace(/--.*$/gm, " ");
+  return sachGhiChu.split(";").map((x) => x.trim()).filter(Boolean);
+}
+
 /** Ten bang / cot an toan: chi chu thuong, so, gach duoi. */
 function tenAnToan(ten, loai = "bảng") {
   const t = String(ten || "");
@@ -304,9 +320,7 @@ async function taoKhoMysql({ duongKetNoi, nhatKy, soKetNoiToiDa = 10, hanCauLenh
           }
           // Mot buoc co the co nhieu cau lenh. KHONG bat `multipleStatements` cua trinh
           // dieu khien (bat la mo duong tiem cau lenh o moi cho khac); cat tay o day.
-          for (const cau of String(buoc.sql).split(";").map((x) => x.trim()).filter(Boolean)) {
-            await chayRieng(cau, []);
-          }
+          for (const cau of catCauLenh(buoc.sql)) await chayRieng(cau, []);
           await chayRieng(`INSERT INTO \`${BANG_LICH_SU}\` (module, ten, chay_luc) VALUES (?, ?, NOW(3))`, [moduleId, buoc.ten]);
           ky.tin(`[kho] chạy lược đồ ${moduleId}/${buoc.ten}`);
         }
@@ -320,4 +334,4 @@ async function taoKhoMysql({ duongKetNoi, nhatKy, soKetNoiToiDa = 10, hanCauLenh
   return boc(chay);
 }
 
-module.exports = { taoKhoMysql, dungWhere, dungSapXep, tenAnToan, BANG_SO, BANG_LICH_SU };
+module.exports = { taoKhoMysql, dungWhere, dungSapXep, tenAnToan, catCauLenh, BANG_SO, BANG_LICH_SU };
