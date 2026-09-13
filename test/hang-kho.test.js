@@ -123,6 +123,64 @@ test("Hàng hoá trên MySQL thật", { ...boQua }, async (t) => {
     assert.equal(await kho.bang("hang_kho_bien_the").dem(), 3);
   });
 
+  await t.test("OMI ghi/sua/xoa TUNG mon (PUT/DELETE /api/hang-kho/mon/:ma) — khong dung toi mon khac", async () => {
+    await donDep();
+    await nap([MON, { ...MON, code: "KHAC01", name: "Giày khác", sizes: [{ size: "40", qty: 2, price: 1000000 }] }]);
+    const ghi = (ma, than) => khung.xuLy({ method: "PUT", duong: `/api/hang-kho/mon/${ma}`, truyVan: {}, tieuDe: quanTri, ip: "1.1.1.1", doc: async () => than });
+    const xoa = (ma) => khung.xuLy({ method: "DELETE", duong: `/api/hang-kho/mon/${ma}`, truyVan: {}, tieuDe: quanTri, ip: "1.1.1.1" });
+
+    // Them mot mon moi.
+    const ra = await ghi("MOI01", { code: "MOI01", name: "Giày mới nhập tay", brand: "Asics", listPrice: 2000000, sizes: [{ size: "41", qty: 1, price: 1500000 }, { size: "42", qty: 0, price: 1500000 }] });
+    assert.equal(ra.ma, 200, JSON.stringify(ra.than));
+    assert.equal(ra.than.mon.code, "MOI01");
+    assert.equal(ra.than.soBienThe, 2);
+    assert.equal(await kho.bang("hang_kho_mon").dem(), 3, "hai mon cu con nguyen");
+
+    // Sua: doi ten, bot size -> bien the cu cua mon do bi thay, mon khac khong doi.
+    const sua = await ghi("MOI01", { name: "Giày mới (đã sửa)", sizes: [{ size: "41", qty: 4, price: 1400000 }] });
+    assert.equal(sua.ma, 200);
+    assert.equal(sua.than.mon.name, "Giày mới (đã sửa)");
+    assert.equal(sua.than.mon.sizes.length, 1);
+    assert.equal((await hoiTon("DV1234", "42")).than.co, true, "mon cu van con");
+
+    // Ma tren duong dan phai khop ma trong than; thieu ten thi bao ro.
+    assert.equal((await ghi("MOI01", { code: "KHAC", name: "x" })).ma, 400);
+    assert.equal((await ghi("MOI02", { sizes: [] })).than.error, "mon_bi_bo");
+    assert.equal((await khung.xuLy({ method: "PUT", duong: "/api/hang-kho/mon/MOI01", truyVan: {}, tieuDe: {}, ip: "1.1.1.1", doc: async () => ({}) })).ma, 401, "phai co ma quan tri");
+
+    // Xoa: mon mat, mon khac con; xoa lai thi 404.
+    assert.equal((await xoa("MOI01")).ma, 200);
+    assert.equal(await kho.bang("hang_kho_mon").dem(), 2);
+    assert.equal((await xoa("MOI01")).ma, 404);
+
+    // Xoa mon dang co bien the cua nguon khac (hang co san): chi bo phan hang nha, dong mon giu lai.
+    await kho.bang("hang_kho_bien_the").them({ ma_bien_the: "bt-ready-dv1234", ma_mon: "DV1234", size: "42", ma_kho: "wh_ready", ton: 1, gia: 2500000, gia_niem_yet: 0, thu_tu_kho: 1, nguon: "ready", ma_chien_dich: "", ma_dong_doi_tac: "", sua_luc: new Date() });
+    const x2 = await xoa("DV1234");
+    assert.equal(x2.ma, 200);
+    assert.equal(x2.than.conNguonKhac, true);
+    assert.equal(await kho.bang("hang_kho_mon").dem({ ma: "DV1234" }), 1, "dong mon giu lai vi con hang co san");
+    assert.equal(await kho.bang("hang_kho_bien_the").dem({ ma_mon: "DV1234" }), 1, "chi con dong hang co san");
+  });
+
+  await t.test("OMI nap them tu Excel (POST /api/hang-kho/nap-them): them vao, khong xoa mon dang co; cung ma thi dong sau thang", async () => {
+    await donDep();
+    await nap();
+    const ra = await khung.xuLy({ method: "POST", duong: "/api/hang-kho/nap-them", truyVan: {}, tieuDe: quanTri, ip: "1.1.1.1", doc: async () => [
+      { code: "EX01", name: "Excel 1", sizes: [{ size: "40", qty: 1, price: 900000 }] },
+      { code: "EX02", name: "Excel 2", sizes: [{ size: "40", qty: 1, price: 900000 }] },
+      { code: "EX02", name: "Excel 2 (dòng sau)", sizes: [{ size: "41", qty: 2, price: 950000 }] },
+      { code: "", name: "thiếu mã" }
+    ] });
+    assert.equal(ra.ma, 200, JSON.stringify(ra.than));
+    assert.equal(ra.than.soMon, 2);
+    assert.equal(ra.than.biBo, 1);
+    assert.equal(await kho.bang("hang_kho_mon").dem(), 3, "mon cu DV1234 con nguyen");
+    const ex2 = (await docTrongNha()).than.find((m) => m.code === "EX02");
+    assert.equal(ex2.name, "Excel 2 (dòng sau)");
+    assert.deepEqual(ex2.sizes.map((d) => d.size), ["41"]);
+    assert.equal((await khung.xuLy({ method: "POST", duong: "/api/hang-kho/nap-them", truyVan: {}, tieuDe: quanTri, ip: "1.1.1.1", doc: async () => ({ x: 1 }) })).ma, 400);
+  });
+
   await t.test("ban cong khai khong mang gia von, ton that hay uu tien kho", async () => {
     await donDep();
     await nap([{ ...MON, costPrice: 1500000, warehouseStocks: { wh_yen: 5 } }]);

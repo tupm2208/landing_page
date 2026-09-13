@@ -128,6 +128,7 @@ module.exports = {
     "hang-kho.giuCho": giuCho,
     "hang-kho.traCho": traCho,
     "hang-kho.dem": async (ctx) => taoKhoHang(ctx).demMon(),
+    "hang-kho.ghi": async (ctx, mon) => taoKhoHang(ctx).ghiMon(NGUON.nha, mon),
     "hang-kho.doc": async (ctx, ma) => {
       const mon = await taoKhoHang(ctx).docMon(ma);
       return mon ? banCongKhai(mon) : null;
@@ -219,6 +220,49 @@ module.exports = {
         if (!goi || typeof goi !== "object") return { ma: 400, than: { ok: false, error: "can_mot_goi_chien_dich" } };
         const mon = doiGoiChienDich(Array.isArray(goi) ? { products: goi } : goi, { bayGio: ctx.cong.gio.bayGio() });
         return napNguon(ctx, NGUON.chienDich, mon, "chien dich doi tac");
+      }
+    },
+    {
+      // OMI (dot L8, 14/09/2026): shop tu THEM / SUA mot mon hang nha — khong can Image Tool.
+      // Chi dung toi mon nay; danh muc con lai giu nguyen.
+      method: "PUT", path: "/api/hang-kho/mon/:ma", quyen: "quan-tri",
+      hanGoi: { soLan: 300, trongMs: PHUT10 },
+      hanThan: 512 * 1024,
+      tay: async (ctx, yc) => {
+        const than = await yc.doc();
+        if (!than || typeof than !== "object" || Array.isArray(than)) return { ma: 400, than: { ok: false, error: "can_mot_mon" } };
+        const mon = { ...than, code: String(than.code || yc.tham.ma || "").trim() };
+        if (mon.code !== String(yc.tham.ma).trim()) return { ma: 400, than: { ok: false, error: "ma_khong_khop_duong_dan" } };
+        const kq = await taoKhoHang(ctx).ghiMon(NGUON.nha, mon);
+        if (!kq.mon) return { ma: 400, than: { ok: false, error: "mon_bi_bo", viSao: "Thiếu mã hoặc tên, hoặc mã đang bị chặn." } };
+        ctx.cong.nhatKy.tin(`[hang-kho] OMI ghi mon ${mon.code}: ${kq.soBienThe} bien the`);
+        return { ma: 200, than: { ok: true, mon: kq.mon, soBienThe: kq.soBienThe } };
+      }
+    },
+    {
+      method: "DELETE", path: "/api/hang-kho/mon/:ma", quyen: "quan-tri",
+      hanGoi: { soLan: 300, trongMs: PHUT10 },
+      tay: async (ctx, yc) => {
+        const kq = await taoKhoHang(ctx).xoaMon(NGUON.nha, yc.tham.ma);
+        if (!kq.daXoa) return { ma: 404, than: { ok: false, error: kq.viSao } };
+        ctx.cong.nhatKy.tin(`[hang-kho] OMI xoa mon ${yc.tham.ma}${kq.conNguonKhac ? " (con hang cua nguon khac, giu dong mon)" : ""}`);
+        return { ma: 200, than: { ok: true, ...kq } };
+      }
+    },
+    {
+      // OMI nhap mot tep Excel/CSV: THEM VAO danh muc, khong xoa mon dang co (khac POST /api/products).
+      method: "POST", path: "/api/hang-kho/nap-them", quyen: "quan-tri",
+      hanGoi: { soLan: 60, trongMs: PHUT10 },
+      hanThan: 16 * 1024 * 1024,
+      tay: async (ctx, yc) => {
+        const than = await yc.doc();
+        const vao = Array.isArray(than) ? than : (Array.isArray(than?.products) ? than.products : (Array.isArray(than?.items) ? than.items : null));
+        if (!vao) return { ma: 400, than: { ok: false, error: "can_mot_mang_san_pham" } };
+        if (vao.length > 20000) return { ma: 400, than: { ok: false, error: "qua_nhieu_mon", tran: 20000 } };
+        const kq = await taoKhoHang(ctx).ghiNhieuMon(NGUON.nha, vao);
+        ctx.cong.nhatKy.tin(`[hang-kho] OMI nap them: ${kq.soMon} mon / ${kq.soBienThe} bien the${kq.biBo ? `, bo ${kq.biBo}` : ""}`);
+        const { ma: _ma, ...gon } = kq;
+        return { ma: 200, than: { ok: true, ...gon } };
       }
     },
     {

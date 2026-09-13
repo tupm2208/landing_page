@@ -358,9 +358,78 @@ function taoKhoHang(ctx) {
     };
   }
 
+  /**
+   * GHI THEM / SUA mot nhom mon cua mot nguon, KHONG dung toi mon khac cua nguon do.
+   * (Khac `thayNguon`: no thay ca danh muc.) Dung cho OMI: shop tu them/sua tung mon, hay nhap
+   * mot tep Excel cua hang ma khong mat nhung mon da co. Mot giao dich cho ca nhom.
+   */
+  async function ghiNhieuMon(nguon, cacMonTho) {
+    const luc = bayGio();
+    const cacMaChan = await maBiChan();
+    const tho = Array.isArray(cacMonTho) ? cacMonTho : [];
+    const mon = tho.map(chuanHoaMon).filter(Boolean)
+      .filter((m) => !cacMaChan.has(String(m.code).toLowerCase()) && !cacMaChan.has(String(m.originalCode || "").toLowerCase()));
+    // Cung ma trong mot goi: dong SAU thang (nguoi nhap sua lai o dong duoi).
+    const theoMa = new Map();
+    for (const m of mon) theoMa.set(m.code, m);
+    const ds = [...theoMa.values()];
+
+    let soBienThe = 0;
+    let soMonNhuong = 0;
+    let soMonGhi = 0;
+    await kho.giaoDich(async (trong) => {
+      for (const m of ds) {
+        const x = monThanhDong(m, nguon, luc);
+        const bienThe = new Map();
+        for (const d of x.dongBienThe) {
+          const cu2 = bienThe.get(d.ma_bien_the);
+          if (!cu2 || (Number(d.gia || 0) > 0 && (Number(cu2.gia || 0) === 0 || Number(d.gia) < Number(cu2.gia)))) bienThe.set(d.ma_bien_the, d);
+        }
+        await trong.bang(B_BIEN_THE).xoa({ ma_mon: m.code, nguon });
+        const dong = [...bienThe.values()];
+        if (dong.length) await trong.bang(B_BIEN_THE).themNhieu(dong);
+        soBienThe += dong.length;
+        const [co] = await trong.cauLenh(`SELECT nguon FROM \`${B_MON}\` WHERE ma = ?`, [m.code]);
+        const nguonCu = co.length ? String(co[0].nguon || "") : "";
+        if (nguonCu && nguonCu !== nguon && (UU_TIEN_NGUON[nguonCu] ?? 0) > (UU_TIEN_NGUON[nguon] ?? 0)) { soMonNhuong += 1; continue; }
+        await trong.bang(B_MON).themHoacThay(x.dongMon);
+        soMonGhi += 1;
+      }
+    });
+    return { soMon: ds.length, soBienThe, soMonGhi, soMonNhuong, biBo: tho.length - mon.length, ma: ds.map((m) => m.code) };
+  }
+
+  /** Ghi MOT mon; tra ve mon sau khi ghi (ban trong nha). `null` = bi bo (thieu ma/ten hoac ma bi chan). */
+  async function ghiMon(nguon, monTho) {
+    const kq = await ghiNhieuMon(nguon, [monTho]);
+    if (kq.soMon === 0) return { ...kq, mon: null };
+    return { ...kq, mon: await docMon(kq.ma[0]) };
+  }
+
+  /**
+   * XOA mot mon khoi mot nguon: bo bien the cua nguon do; dong mon chi bo khi KHONG con bien
+   * the nao (cua bat ky nguon nao) tro toi — xoa som la bo roi hang cua nguon khac.
+   */
+  async function xoaMon(nguon, ma) {
+    const maSach = String(ma || "").trim();
+    if (!maSach) return { daXoa: false, conNguonKhac: false, viSao: "thieu_ma" };
+    let daXoa = false;
+    let conNguonKhac = false;
+    await kho.giaoDich(async (trong) => {
+      const [co] = await trong.cauLenh(`SELECT ma FROM \`${B_MON}\` WHERE ma = ?`, [maSach]);
+      if (!co.length) return;
+      await trong.bang(B_BIEN_THE).xoa({ ma_mon: maSach, nguon });
+      const [con] = await trong.cauLenh(`SELECT COUNT(*) AS n FROM \`${B_BIEN_THE}\` WHERE ma_mon = ?`, [maSach]);
+      if (Number(con[0]?.n || 0) > 0) { conNguonKhac = true; daXoa = true; return; }
+      await trong.bang(B_MON).xoa({ ma: maSach });
+      daXoa = true;
+    });
+    return { daXoa, conNguonKhac, viSao: daXoa ? "" : "khong_thay" };
+  }
+
   return {
     NGUON, B_MON, B_BIEN_THE, B_CHAN, B_GIU,
-    docMon, timMon, demMon, docTatCa, tonCuaMon, thayNguon, maBiChan, dangGiuTheoBienThe, bayGio,
+    docMon, timMon, demMon, docTatCa, tonCuaMon, thayNguon, ghiNhieuMon, ghiMon, xoaMon, maBiChan, dangGiuTheoBienThe, bayGio,
     bang: (ten) => kho.bang(ten),
     giaoDich: (viec) => kho.giaoDich(viec)
   };
