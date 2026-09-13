@@ -103,7 +103,9 @@ function dungKhung({ httpNgoai, kho = taoKhoTep({ thuMuc: tam() }) }) {
 }
 
 function webhookMeta(chu = "còn size 42 không") {
-  const goiTin = { object: "page", entry: [{ id: "trang-1", time: 1, messaging: [{ sender: { id: "khach-1" }, recipient: { id: "trang-1" }, timestamp: 1, message: { mid: "m.1", text: chu } }] }] };
+  // Moc gio gan gio gia (2026-09-12) — tin cu hon 24 gio thi hop thu co y KHONG day sang bo nao.
+  const luc = Date.parse("2026-09-12T00:00:00.000Z");
+  const goiTin = { object: "page", entry: [{ id: "trang-1", time: luc, messaging: [{ sender: { id: "khach-1" }, recipient: { id: "trang-1" }, timestamp: luc, message: { mid: "m.1", text: chu } }] }] };
   const tho = Buffer.from(JSON.stringify(goiTin), "utf8");
   const chuKy = `sha256=${crypto.createHmac("sha256", APP_SECRET).update(tho).digest("hex")}`;
   return {

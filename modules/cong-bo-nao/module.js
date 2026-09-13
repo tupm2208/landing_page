@@ -20,6 +20,16 @@
 const { LOI } = require("../../../hop-dong");
 const { maKhoMu } = require("./ma-kho-mu");
 
+// TRI NHO HOI THOAI cua bot nam O DAY (anh Dung chot 14/09/2026: landing chua toan bo du lieu
+// cua khach; Xeon khong giu gi). Bo may tren Xeon doc/ghi qua hai duong dich-vu ben duoi.
+// Trang thai la thu bo may tu che so dien thoai truoc khi ghi (assertNoStoredPII); o day chi cat.
+const SO_TRI_NHO = "cong-bo-nao-tri-nho";
+const GIU_HOI_THOAI_TOI_DA = 2000;
+const HAN_MOT_HOI_THOAI = 96 * 1024;
+const MAU_MA_HOI_THOAI = /^[A-Za-z0-9_.:@-]{1,160}$/;
+
+function soTriNhoMacDinh() { return { version: 1, hoiThoai: {} }; }
+
 /** Mot mon o ban rut gon ma bo nao doi (`CatalogItemLite`). */
 function monGon(mon = {}) {
   const gia = Number(mon.price || mon.suggestedPrice || 0);
@@ -147,8 +157,8 @@ module.exports = {
   mang: "chatbot",
   chay: "server-khach",
   manh: "chatbot-cskh",
-  phienBan: "0.1.0",
-  canCong: ["nhatKy", "gio", "cauHinh"],
+  phienBan: "0.2.0",
+  canCong: ["nhatKy", "gio", "cauHinh", "kho"],
   // Hang hoa la BAT BUOC: khong tra duoc ton thi bot khong co viec gi de lam.
   canDichVu: ["hang-kho.tim", "hang-kho.tonKho"],
   // Don hang va Van chuyen la TUY CHON: khach mua goi khong co hai manh nay thi cong cu
@@ -179,6 +189,47 @@ module.exports = {
     {
       method: "GET", path: "/api/bo-nao/cong-cu", quyen: "dich-vu",
       tay: async (ctx) => ({ ma: 200, than: { ok: true, congCu: congCuDangMo(ctx) } })
+    },
+
+    // Tri nho hoi thoai: bo may doc truoc moi luot, ghi sau moi luot.
+    {
+      method: "GET", path: "/api/bo-nao/tri-nho/:ma", quyen: "dich-vu",
+      hanGoi: { soLan: 3000, trongMs: 10 * 60 * 1000 },
+      tay: async (ctx, yc) => {
+        const ma = String(yc.tham.ma || "");
+        if (!MAU_MA_HOI_THOAI.test(ma)) return { ma: 400, than: { ok: false, error: "ma_hoi_thoai_sai" } };
+        const so = (await ctx.cong.kho.so(SO_TRI_NHO).doc(null)) ?? soTriNhoMacDinh();
+        const d = so.hoiThoai?.[ma] ?? null;
+        return { ma: 200, tieuDe: { "Cache-Control": "no-store" }, than: { ok: true, trangThai: d ? d.trangThai : null, capNhatLuc: d ? d.capNhatLuc : "" } };
+      }
+    },
+    {
+      method: "PUT", path: "/api/bo-nao/tri-nho/:ma", quyen: "dich-vu",
+      hanGoi: { soLan: 3000, trongMs: 10 * 60 * 1000 },
+      hanThan: 128 * 1024,
+      tay: async (ctx, yc) => {
+        const ma = String(yc.tham.ma || "");
+        if (!MAU_MA_HOI_THOAI.test(ma)) return { ma: 400, than: { ok: false, error: "ma_hoi_thoai_sai" } };
+        const than = await yc.doc();
+        const trangThai = than?.trangThai;
+        if (!trangThai || typeof trangThai !== "object" || Array.isArray(trangThai)) return { ma: 400, than: { ok: false, error: "thieu_trang_thai" } };
+        const chu = JSON.stringify(trangThai);
+        if (Buffer.byteLength(chu, "utf8") > HAN_MOT_HOI_THOAI) return { ma: 413, than: { ok: false, error: "trang_thai_qua_lon" } };
+        const luc = ctx.cong.gio.bayGio().toISOString();
+        await ctx.cong.kho.so(SO_TRI_NHO).capNhat((cu) => {
+          const so = cu && typeof cu === "object" && cu.hoiThoai ? cu : soTriNhoMacDinh();
+          so.hoiThoai[ma] = { trangThai, capNhatLuc: luc };
+          // Cat bot: giu 2000 hoi thoai moi nhat. Bo may tu dat ranh gioi phien 6 gio; o day chi
+          // chong phinh vo han.
+          const khoa = Object.keys(so.hoiThoai);
+          if (khoa.length > GIU_HOI_THOAI_TOI_DA) {
+            khoa.sort((a, b) => String(so.hoiThoai[a].capNhatLuc).localeCompare(String(so.hoiThoai[b].capNhatLuc)));
+            for (const k of khoa.slice(0, khoa.length - GIU_HOI_THOAI_TOI_DA)) delete so.hoiThoai[k];
+          }
+          return so;
+        }, soTriNhoMacDinh());
+        return { ma: 200, than: { ok: true, capNhatLuc: luc } };
+      }
     }
   ],
 
