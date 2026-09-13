@@ -31,6 +31,8 @@ const crypto = require("crypto");
 
 const SO_LAN_SAI_TOI_DA = 10;
 const SO_KHOA_MAY = "khung-nen-tang-khoa-may";
+const SONG_MS_MAC_DINH = 15 * 60 * 1000;
+const SONG_MS_TOI_DA = 60 * 60 * 1000;
 
 /** Ma ghep: 6 chu so, de doc qua dien thoai. Sinh bang nguon ngau nhien that. */
 function sinhMaGhep() {
@@ -58,6 +60,41 @@ function taoSoGhep({ ma = "", hetLuc = 0 } = {}) {
 }
 
 /**
+ * CAP MOT MA GHEP MOI luc dang chay — chu shop bam mot nut tren man Quan tri may, khong phai bat
+ * lai may chu.
+ *
+ * MOT LUC CHI CO MOT MA SONG: cap ma moi la ma cu chet ngay. Co y — hai ma cung song la hai cua
+ * mo, va chu shop khong the nho minh da doc ma nao cho ai.
+ */
+function moMaMoi(so, bayGio, { songMs = SONG_MS_MAC_DINH } = {}) {
+  const song = Math.min(SONG_MS_TOI_DA, Math.max(60 * 1000, Number(songMs) || SONG_MS_MAC_DINH));
+  so.ma = sinhMaGhep();
+  so.hetLuc = bayGio.getTime() + song;
+  so.soLanSai = 0;
+  so.daDung = false;
+  return { ma: so.ma, hetLuc: so.hetLuc, songGiay: Math.round(song / 1000) };
+}
+
+/**
+ * Trang thai ma ghep, de man Quan tri may hien duoc.
+ *
+ * Ma CHI ra man hinh khi con song. Mot ma da dung hoac het han hien ra chi de nguoi ta doc cho
+ * nguoi khac go, roi ca hai khong hieu vi sao truot.
+ */
+function xemSo(so, bayGio) {
+  const luc = bayGio.getTime();
+  const dangSong = so.ma !== "" && !so.daDung && so.hetLuc > luc && so.soLanSai < SO_LAN_SAI_TOI_DA;
+  return {
+    co: so.ma !== "",
+    dangSong,
+    ma: dangSong ? so.ma : "",
+    conLaiGiay: dangSong ? Math.max(0, Math.round((so.hetLuc - luc) / 1000)) : 0,
+    soLanSai: so.soLanSai,
+    daDung: so.daDung
+  };
+}
+
+/**
  * Ghep mot may.
  *
  * @param so      so ghep trong bo nho (tu `taoSoGhep`)
@@ -70,10 +107,10 @@ function ghep(so, bayGio, vao = {}) {
   const luc = bayGio.getTime();
 
   if (so.ma === "") return { ok: false, viSao: "chua_bat_ghep_may", message: "Máy chủ chưa bật ghép máy." };
-  if (so.daDung) return { ok: false, viSao: "ma_da_dung", message: "Mã ghép này đã dùng rồi. Khởi động lại máy chủ để lấy mã mới." };
-  if (so.hetLuc <= luc) return { ok: false, viSao: "ma_het_han", message: "Mã ghép đã hết hạn. Khởi động lại máy chủ để lấy mã mới." };
+  if (so.daDung) return { ok: false, viSao: "ma_da_dung", message: "Mã ghép này đã dùng rồi. Chủ shop bấm \"Tạo mã ghép mới\" trong OMI (tab Máy & khoá) để cấp mã khác." };
+  if (so.hetLuc <= luc) return { ok: false, viSao: "ma_het_han", message: "Mã ghép đã hết hạn. Chủ shop bấm \"Tạo mã ghép mới\" trong OMI (tab Máy & khoá) để cấp mã khác." };
   if (so.soLanSai >= SO_LAN_SAI_TOI_DA) {
-    return { ok: false, viSao: "sai_qua_nhieu", message: "Nhập sai quá nhiều lần — mã này đã bị khoá. Khởi động lại máy chủ để lấy mã mới." };
+    return { ok: false, viSao: "sai_qua_nhieu", message: "Nhập sai quá nhiều lần — mã này đã bị khoá. Chủ shop cấp mã mới trong OMI (tab Máy & khoá)." };
   }
 
   // So tung byte, khong tra loi som: ma 6 chu so thi moi cai gi giup do deu dang.
@@ -92,4 +129,7 @@ function ghep(so, bayGio, vao = {}) {
   return { ok: true, khoa: sinhKhoaMay(), ten: tenKhoaCuaMay(vao.tenMay) };
 }
 
-module.exports = { sinhMaGhep, sinhKhoaMay, tenKhoaCuaMay, taoSoGhep, ghep, SO_LAN_SAI_TOI_DA, SO_KHOA_MAY };
+module.exports = {
+  sinhMaGhep, sinhKhoaMay, tenKhoaCuaMay, taoSoGhep, ghep, moMaMoi, xemSo,
+  SO_LAN_SAI_TOI_DA, SO_KHOA_MAY, SONG_MS_MAC_DINH
+};

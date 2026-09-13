@@ -230,6 +230,7 @@ if (require.main === module) {
         console.log(`  │  MA GHEP MAY:  ${maGhep}                         │`);
         console.log(`  │  Song den ${den}, dung MOT lan.            │`);
         console.log("  │  Mo OMI -> Cai dat -> go dia chi + ma nay.     │");
+        console.log("  │  MAY SAU: OMI -> tab 'May & khoa' -> Tao ma.   │");
         console.log("  └───────────────────────────────────────────────┘");
         console.log("");
       }

@@ -17,7 +17,7 @@ const { taoKhoTep } = require("../loi/cong/kho-tep");
 const { taoNhatKyGia, taoGioGia } = require("../loi/cong/co-ban");
 const { taoCongQuyen } = require("../loi/cong/quyen");
 const { taoBoDemGoi } = require("../loi/cong/han-goi");
-const { sinhMaGhep, sinhKhoaMay, tenKhoaCuaMay, taoSoGhep, ghep, SO_LAN_SAI_TOI_DA } = require("../modules/khung-nen-tang/ghep-may");
+const { sinhMaGhep, sinhKhoaMay, tenKhoaCuaMay, taoSoGhep, ghep, moMaMoi, xemSo, SO_LAN_SAI_TOI_DA } = require("../modules/khung-nen-tang/ghep-may");
 const mKhung = require("../modules/khung-nen-tang/module");
 
 const MA_QT = "ma-quan-tri";
@@ -189,4 +189,141 @@ test("cong quyen: khoa may qua ngan hay thieu ten thi TU CHOI", () => {
   const k = sinhKhoaMay();
   assert.equal(quyen.themKhoa({ ma: k, ten: "omi:x", vai: "quan-tri" }), true);
   assert.equal(quyen.themKhoa({ ma: k, ten: "omi:x", vai: "quan-tri" }), false);
+});
+
+// ---------- MAN QUAN LY MAY & KHOA (anh Dung 13/09/2026: "phai co trang de admin quan ly cac key") ----------
+
+test("xemSo: ma CHI ra man hinh khi con song", () => {
+  const gio = new Date();
+  const song = taoSoGhep({ ma: "123456", hetLuc: gio.getTime() + 60000 });
+  assert.equal(xemSo(song, gio).ma, "123456");
+  assert.equal(xemSo(song, gio).dangSong, true);
+
+  const hetHan = taoSoGhep({ ma: "123456", hetLuc: gio.getTime() - 1 });
+  assert.equal(xemSo(hetHan, gio).ma, "", "ma het han khong duoc hien ra cho nguoi ta go");
+  assert.equal(xemSo(hetHan, gio).dangSong, false);
+
+  const daDung = taoSoGhep({ ma: "123456", hetLuc: gio.getTime() + 60000 });
+  daDung.daDung = true;
+  assert.equal(xemSo(daDung, gio).ma, "");
+
+  const daSaiNhieu = taoSoGhep({ ma: "123456", hetLuc: gio.getTime() + 60000 });
+  daSaiNhieu.soLanSai = SO_LAN_SAI_TOI_DA;
+  assert.equal(xemSo(daSaiNhieu, gio).ma, "");
+});
+
+test("moMaMoi: ma moi la 6 chu so, ma CU CHET ngay", () => {
+  const gio = new Date();
+  const so = taoSoGhep({ ma: "111111", hetLuc: gio.getTime() + 60000 });
+  const cu = so.ma;
+  const moi = moMaMoi(so, gio);
+  assert.match(moi.ma, /^\d{6}$/);
+  assert.notEqual(moi.ma, cu);
+  // Ma cu khong ghep duoc nua — chi mot ma song mot luc.
+  assert.equal(ghep(so, gio, { maGhep: cu, tenMay: "x" }).viSao, "ma_sai");
+  assert.equal(ghep(so, gio, { maGhep: moi.ma, tenMay: "x" }).ok, true);
+});
+
+test("moMaMoi: xoa sach so lan sai va co ep han gio", () => {
+  const gio = new Date();
+  const so = taoSoGhep({ ma: "111111", hetLuc: gio.getTime() + 60000 });
+  so.soLanSai = SO_LAN_SAI_TOI_DA;
+  so.daDung = true;
+  const moi = moMaMoi(so, gio, { songMs: 999 * 60 * 60 * 1000 });
+  assert.equal(so.soLanSai, 0);
+  assert.equal(so.daDung, false);
+  assert.ok(moi.songGiay <= 60 * 60, `ma ghep khong duoc song lau the: ${moi.songGiay}s`);
+});
+
+test("CHU SHOP CAP MA cho may moi ngay tren man quan tri (khong bat lai may chu)", async () => {
+  const { khung } = dung({ maGhep: "" });   // may chu khoi dong KHONG in ma nao
+  const quanTri = { authorization: `Bearer ${MA_QT}` };
+
+  const chuaCo = await khung.xuLy({ method: "GET", duong: "/api/admin/may", truyVan: {}, tieuDe: quanTri });
+  assert.equal(chuaCo.than.maGhep.dangSong, false);
+
+  const cap = await khung.xuLy({
+    method: "POST", duong: "/api/admin/ma-ghep", truyVan: {}, tieuDe: quanTri, doc: async () => ({})
+  });
+  assert.equal(cap.ma, 200, JSON.stringify(cap.than));
+  assert.match(cap.than.ma, /^\d{6}$/);
+  assert.ok(cap.than.conLaiGiay >= 60);
+
+  // Ma vua cap ghep duoc that.
+  const ghepDuoc = await khung.xuLy({
+    method: "POST", duong: "/api/ghep-may", truyVan: {}, tieuDe: {}, ip: "9.9.9.9",
+    doc: async () => ({ maGhep: cap.than.ma, tenMay: "may-moi" })
+  });
+  assert.equal(ghepDuoc.ma, 200, JSON.stringify(ghepDuoc.than));
+  assert.equal(ghepDuoc.than.ten, "omi:may-moi");
+});
+
+test("duong cap ma la CUA QUAN TRI: khach vang lai va ma la deu bi chan", async () => {
+  const { khung } = dung();
+  for (const tieuDe of [{}, { authorization: "Bearer ma-la" }]) {
+    const ra = await khung.xuLy({
+      method: "POST", duong: "/api/admin/ma-ghep", truyVan: {}, tieuDe, doc: async () => ({})
+    });
+    assert.equal(ra.ma, 401, JSON.stringify(ra.than));
+  }
+});
+
+test("nhat ky KHONG BAO GIO ghi ma ghep vua cap", async () => {
+  const { khung, nhatKy } = dung();
+  const cap = await khung.xuLy({
+    method: "POST", duong: "/api/admin/ma-ghep", truyVan: {},
+    tieuDe: { authorization: `Bearer ${MA_QT}` }, doc: async () => ({})
+  });
+  const chu = JSON.stringify(nhatKy.dong);
+  assert.ok(chu.includes("cap mot ma ghep moi"), "phai co dong nhat ky — keo bai nay khong kiem gi ca");
+  assert.ok(!chu.includes(cap.than.ma), "nhat ky server thuong duoc gui di khi co su co — cam ghi ma ghep vao do");
+});
+
+test("danh sach may danh dau MAY NAY va noi anh dang vao bang khoa gi", async () => {
+  const { goiGhep, khung } = dung();
+  const ra = await goiGhep({ maGhep: MA_GHEP, tenMay: "may-cua-anh-dung" });
+
+  const cuaMay = await khung.xuLy({
+    method: "GET", duong: "/api/admin/may", truyVan: {}, tieuDe: { authorization: `Bearer ${ra.than.ma}` }
+  });
+  assert.equal(cuaMay.than.toi.ten, "omi:may-cua-anh-dung");
+  assert.equal(cuaMay.than.may.find((m) => m.ten === "omi:may-cua-anh-dung").laMayNay, true);
+
+  // Cung danh sach do, nhin bang ma quan tri cua may chu: khong may nao la "may nay".
+  const cuaQuanTri = await khung.xuLy({
+    method: "GET", duong: "/api/admin/may", truyVan: {}, tieuDe: { authorization: `Bearer ${MA_QT}` }
+  });
+  assert.equal(cuaQuanTri.than.toi.ten, "quan-tri");
+  assert.ok(cuaQuanTri.than.may.every((m) => m.laMayNay === false));
+});
+
+test("KHONG bo duoc chinh cai may dang goi — bo la mat duong vao man quan tri", async () => {
+  const { goiGhep, khung } = dung();
+  const ra = await goiGhep({ maGhep: MA_GHEP, tenMay: "may-cua-anh-dung" });
+  const cuaMay = { authorization: `Bearer ${ra.than.ma}` };
+
+  const tuBo = await khung.xuLy({
+    method: "POST", duong: "/api/admin/may/bo", truyVan: {}, tieuDe: cuaMay,
+    doc: async () => ({ ten: "omi:may-cua-anh-dung" })
+  });
+  assert.equal(tuBo.ma, 409);
+  assert.equal(tuBo.than.error, "khong_bo_may_nay");
+
+  // Van vao duoc.
+  assert.equal((await khung.xuLy({ method: "GET", duong: "/api/admin/may", truyVan: {}, tieuDe: cuaMay })).ma, 200);
+
+  // Nhung may KHAC thi bo duoc.
+  const so2 = await khung.xuLy({
+    method: "POST", duong: "/api/admin/ma-ghep", truyVan: {}, tieuDe: cuaMay, doc: async () => ({})
+  });
+  await khung.xuLy({
+    method: "POST", duong: "/api/ghep-may", truyVan: {}, tieuDe: {}, ip: "8.8.8.8",
+    doc: async () => ({ maGhep: so2.than.ma, tenMay: "may-kho" })
+  });
+  const bo = await khung.xuLy({
+    method: "POST", duong: "/api/admin/may/bo", truyVan: {}, tieuDe: cuaMay,
+    doc: async () => ({ ten: "omi:may-kho" })
+  });
+  assert.equal(bo.ma, 200);
+  assert.equal(bo.than.daBo, 1);
 });

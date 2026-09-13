@@ -7,7 +7,7 @@
 "use strict";
 
 const { noiDungMacDinh, chuanHoa, soCuaTien } = require("./noi-dung");
-const { taoSoGhep, ghep, tenKhoaCuaMay, SO_KHOA_MAY } = require("./ghep-may");
+const { taoSoGhep, ghep, moMaMoi, xemSo, tenKhoaCuaMay, SO_KHOA_MAY } = require("./ghep-may");
 const { gioMySQL } = require("../../../chung/gio-mysql.js");
 
 const SO_NOI_DUNG = "khung-nen-tang-noi-dung";
@@ -114,16 +114,53 @@ module.exports = {
       }
     },
     {
-      // Chu shop xem may nao dang duoc ghep, va bo mot may.
+      // MAN QUAN TRI MAY doc duong nay: may nao dang duoc vao, va ma ghep con song khong.
+      //
+      // Anh Dung nhac 13/09/2026: "phai co trang de admin quan ly cac key chu". Dung — bo mot may
+      // hay cap ma cho may moi la viec hang ngay cua chu shop, khong phai viec go lenh.
       method: "GET", path: "/api/admin/may", quyen: "quan-tri",
       hanGoi: { soLan: 120, trongMs: 10 * 60 * 1000 },
-      tay: async (ctx) => {
+      tay: async (ctx, yc) => {
         const so = await ctx.cong.kho.so(SO_KHOA_MAY).doc();
         const ds = Array.isArray(so?.khoa) ? so.khoa : [];
+        const toi = ctx.cong.quyen.ai(yc);
         return {
           ma: 200, tieuDe: { "Cache-Control": "no-store" },
-          // KHONG tra ban ma — chi ten va luc ghep.
-          than: { ok: true, may: ds.map((k) => ({ ten: k.ten, vai: k.vai, ghepLuc: k.ghepLuc ?? "" })) }
+          than: {
+            ok: true,
+            // KHONG tra ban ma — chi ten va luc ghep. `laMayNay` de man hinh khong de chu shop
+            // bam bo chinh cai may minh dang ngoi.
+            may: ds.map((k) => ({
+              ten: k.ten, vai: k.vai, ghepLuc: k.ghepLuc ?? "",
+              laMayNay: toi.ten !== "" && k.ten === toi.ten
+            })),
+            // Ten khoa dang goi: co the la mot khoa cau hinh san (Desk, Image Tool), khong nam
+            // trong so may. Man hinh noi ro "anh dang vao bang khoa nao".
+            toi: { ten: toi.ten, vai: toi.vai, bang: toi.bang },
+            maGhep: xemSo(soGhepCua(ctx), ctx.cong.gio.bayGio())
+          }
+        };
+      }
+    },
+    {
+      // CAP MA GHEP CHO MAY MOI — thay cho viec bat lai may chu chi de lay mot ma 6 chu so.
+      //
+      // Mot luc chi co MOT ma song: bam nut nay la ma cu chet. Ma khong bao gio duoc ghi nhat ky
+      // (nhat ky server thuong duoc gui di khi co su co).
+      method: "POST", path: "/api/admin/ma-ghep", quyen: "quan-tri",
+      hanGoi: { soLan: 30, trongMs: 10 * 60 * 1000 },
+      hanThan: 2 * 1024,
+      tay: async (ctx, yc) => {
+        const toi = ctx.cong.quyen.ai(yc);
+        const moi = moMaMoi(soGhepCua(ctx), ctx.cong.gio.bayGio());
+        ctx.cong.nhatKy.tin(`[ghep-may] "${toi.ten}" cap mot ma ghep moi (song ${Math.round(moi.songGiay / 60)} phut)`);
+        return {
+          ma: 200, tieuDe: { "Cache-Control": "no-store" },
+          than: {
+            ok: true, ma: moi.ma,
+            hetLuc: new Date(moi.hetLuc).toISOString(),
+            conLaiGiay: moi.songGiay
+          }
         };
       }
     },
@@ -134,6 +171,16 @@ module.exports = {
         const than = await yc.doc();
         const ten = String(than.ten || "").trim();
         if (!ten) return { ma: 400, than: { ok: false, error: "thieu_ten_may" } };
+        const toi = ctx.cong.quyen.ai(yc);
+        if (toi.ten !== "" && ten === toi.ten) {
+          return {
+            ma: 409,
+            than: {
+              ok: false, error: "khong_bo_may_nay",
+              message: "Đây là máy anh đang ngồi. Bỏ nó là mất đường vào màn quản trị — bỏ từ một máy khác."
+            }
+          };
+        }
         const luc = ctx.cong.gio.bayGio();
         let bo = 0;
         await ctx.cong.kho.so(SO_KHOA_MAY).capNhat((cu) => {
@@ -142,6 +189,8 @@ module.exports = {
           bo = ds.length - con.length;
           return { version: 1, khoa: con, updatedAt: luc.toISOString() };
         }, { version: 1, khoa: [] });
+        // KHONG cho bo chinh cai may dang goi: chu shop bo minh la mat duong vao man quan tri,
+        // va phai bat lai may chu de lay ma ghep. Bo may khac thi duoc.
         ctx.cong.quyen.boKhoaTheoTen(ten);
         ctx.cong.nhatKy.tin(`[ghep-may] bo may "${ten}" (${bo} khoa)`);
         return { ma: 200, than: { ok: true, daBo: bo } };
