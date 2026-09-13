@@ -77,21 +77,29 @@ async function nhanWebhook(ctx, yc) {
  * nam trong so roi — bo nao song lai thi keo ve duoc.
  */
 function daySangBoNao(ctx, tin) {
-  const { diaChi, ma, tenant } = ctx.cauHinh.boNao ?? {};
-  if (!diaChi) return;                       // chua noi bo nao: hop thu van chay binh thuong
-  const goc = String(diaChi).replace(/\/+$/, "");
   Promise.resolve()
-    .then(() => ctx.cong.httpNgoai.goi(`${goc}/tin-den`, {
-      method: "POST",
-      hanMs: 8000,
-      headers: { "Content-Type": "application/json", Authorization: `Bearer ${ma}` },
-      body: JSON.stringify({
-        tenant: String(tenant || ""),
-        kenh: tin.kenh, nguoi: tin.nguoi, chu: tin.chu, soAnh: tin.soAnh,
-        maTin: tin.maTin, maHoiThoai: `${tin.kenh}:${tin.nguoi}`, luc: tin.luc
-      })
-    }))
-    .then((tl) => { if (!tl.ok) ctx.cong.nhatKy.canhBao(`[hop-thu] bo nao tu choi tin: HTTP ${tl.status}`); })
+    .then(async () => {
+      // Xeon nao, ma nao: doc tu dang ky voi Xeon (khung nen tang). Chua dang ky thi thu cau
+      // hinh tay `boNao` (bai kiem tra / chay thu). Khong co ca hai = chua noi bo nao, hop thu
+      // van chay binh thuong.
+      const dk = ctx.dichVu["khung-nen-tang"]?.xeon ? await ctx.dichVu["khung-nen-tang"].xeon() : null;
+      const dich = dk?.maNhanTin
+        ? { diaChi: dk.diaChiXeon, ma: dk.maNhanTin, tenant: dk.shop }
+        : (ctx.cauHinh.boNao ?? {});
+      if (!dich.diaChi) return null;
+      const goc = String(dich.diaChi).replace(/\/+$/, "");
+      return ctx.cong.httpNgoai.goi(`${goc}/tin-den`, {
+        method: "POST",
+        hanMs: 8000,
+        headers: { "Content-Type": "application/json", Authorization: `Bearer ${dich.ma}` },
+        body: JSON.stringify({
+          tenant: String(dich.tenant || ""),
+          kenh: tin.kenh, nguoi: tin.nguoi, chu: tin.chu, soAnh: tin.soAnh,
+          maTin: tin.maTin, maHoiThoai: `${tin.kenh}:${tin.nguoi}`, luc: tin.luc
+        })
+      });
+    })
+    .then((tl) => { if (tl && !tl.ok) ctx.cong.nhatKy.canhBao(`[hop-thu] bo nao tu choi tin: HTTP ${tl.status}`); })
     .catch((e) => ctx.cong.nhatKy.canhBao(`[hop-thu] khong day duoc tin sang bo nao: ${e?.message || e}`));
 }
 
@@ -100,8 +108,11 @@ module.exports = {
   ten: "Hộp thư đa kênh",
   mang: "chatbot",
   chay: "server-khach",
+  manh: "hop-thu",
   phienBan: "0.1.0",
   canCong: ["kho", "nhatKy", "gio", "httpNgoai", "bus", "cauHinh"],
+  // Biet Xeon nao / ma nao de day tin sang bo nao. Khong co (chua dang ky) thi hop thu van chay.
+  canDichVuNeuCo: ["khung-nen-tang.xeon"],
 
   suKien: {
     phat: [SU_KIEN.tin_nhan_den, SU_KIEN.tin_nhan_di],

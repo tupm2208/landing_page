@@ -155,6 +155,7 @@ module.exports = {
   ten: "Tiền & đối soát",
   mang: "van-hanh",
   chay: "server-khach",
+  manh: "tien",
   phienBan: "0.1.0",
   canCong: ["nhatKy", "gio", "httpNgoai", "bus", "cauHinh"],
   canDichVu: ["don-khach.doc", "don-khach.docTheoMaTra", "don-khach.ghiTien"],

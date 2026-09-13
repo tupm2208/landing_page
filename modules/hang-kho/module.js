@@ -115,6 +115,7 @@ module.exports = {
   ten: "Hàng hoá & kho",
   mang: "van-hanh",
   chay: "server-khach",
+  manh: "hang-kho",
   phienBan: "0.2.0",
   canCong: ["kho", "nhatKy", "gio", "bus", "cauHinh"],
   luocDo: LUOC_DO,

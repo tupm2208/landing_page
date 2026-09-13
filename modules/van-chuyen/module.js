@@ -138,6 +138,7 @@ module.exports = {
   ten: "Vận chuyển",
   mang: "van-hanh",
   chay: "server-khach",
+  manh: "van-chuyen",
   phienBan: "0.1.0",
   canCong: ["kho", "nhatKy", "gio", "httpNgoai", "bus", "cauHinh"],
   // Tao van don TU MOT DON can doc don do. "NEU CO" vi nha ban hang co the khong mua manh Don

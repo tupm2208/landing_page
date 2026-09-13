@@ -141,6 +141,7 @@ module.exports = {
   ten: "Mua hộ & đặt tự động",
   mang: "van-hanh",
   chay: "server-khach",
+  manh: "mua-ho",
   phienBan: "0.1.0",
   canCong: ["kho", "nhatKy", "gio", "bus", "cauHinh"],
   canDichVu: ["don-khach.tim"],

@@ -495,6 +495,7 @@ module.exports = {
   ten: "Đơn hàng & khách",
   mang: "van-hanh",
   chay: "server-khach",
+  manh: "don-khach",
   phienBan: "0.1.0",
   canCong: ["kho", "nhatKy", "gio", "bus", "cauHinh"],
   canDichVu: ["hang-kho.giuCho", "hang-kho.traCho"],

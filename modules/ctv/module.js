@@ -176,6 +176,7 @@ module.exports = {
   ten: "Cộng tác viên",
   mang: "van-hanh",
   chay: "server-khach",
+  manh: "gian-hang",
   phienBan: "0.1.0",
   canCong: ["kho", "nhatKy", "gio", "cauHinh"],
   luocDo: LUOC_DO,

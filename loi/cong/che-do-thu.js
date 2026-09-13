@@ -47,17 +47,20 @@ class BiChanOCheDoThu extends Error {
 
 /**
  * @param httpNgoaiThat cong that (chi duoc goi cho nhung gi trong CHO_QUA)
+ * @param choQuaThem  them dich duoc di that — vi du Xeon cua minh (day tin cho bo nao, dang ky
+ *                    license): do la may cua MINH, khong phai khach hay doi tac.
  */
-function bocCheDoThu({ httpNgoaiThat, nhatKy } = {}) {
+function bocCheDoThu({ httpNgoaiThat, nhatKy, choQuaThem = [] } = {}) {
   const ky = nhatKy ?? { tin: () => {}, canhBao: () => {} };
   const daChan = [];
+  const danhSachChoQua = [...CHO_QUA, ...choQuaThem];
 
   return {
     daChan,
     async goi(url, tuyChon = {}) {
       const u = String(url);
 
-      const choQua = CHO_QUA.find((x) => x.khop(u, tuyChon));
+      const choQua = danhSachChoQua.find((x) => x.khop(u, tuyChon));
       if (choQua) {
         ky.tin(`[thu] cho qua (${choQua.chu}): ${u.split("?")[0]}`);
         return httpNgoaiThat.goi(url, tuyChon);

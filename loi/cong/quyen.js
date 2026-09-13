@@ -1,17 +1,16 @@
 // CONG QUYEN — mot cho duy nhat tra loi "nguoi goi nay LA AI, co duoc lam viec nay khong".
 //
 // Ban dang chay rai `isLandingAdminAuthorized(request, url)` khap server.js; them mot duong
-// ma quen goi la lo mot cua. O day module KHONG tu kiem: no khai `quyen` cho tung duong
-// trong to khai, khung chan truoc khi goi vao module (anh Dung chot 12/09/2026).
+// ma quen goi la lo mot cua. O day module KHONG tu kiem: no khai `quyen` (va `manh`) cho tung
+// duong trong to khai, khung chan truoc khi goi vao module (anh Dung chot 12/09/2026).
 //
-// BA DANH TINH + VE 15 PHUT (anh duyet 12/09, artifact 8d181936):
+// HAI CACH VAO (anh Dung chot 14/09/2026 — bo ve 15 phut va ghep may):
 //
-//   - Moi ben giu mot KHOA DAI HAN cua rieng minh, co TEN. Nho co ten nen nhat ky ghi duoc
-//     "bo-nao vua goi", chu khong phai "co nguoi cam ma hop le".
-//   - Khoa dai han doi lay VE song 15 phut (`POST /api/ve`). Ve lo chi thiet 15 phut.
-//   - Khoa dai han VAN goi thang duoc: Sales Desk va Image Tool dang cam ma cu, cat ngay la
-//     gay he dang ban hang. Nhung moi lan dung khoa dai han deu duoc ghi nhat ky, de biet
-//     con ai chua doi sang ve.
+//   1. VE MAY ky tu Xeon (`VM1.…`). OMI cua chu shop cam ve vai "quan-tri"; bo nao cam ve vai
+//      "dich-vu". Landing soi bang KHOA CONG cua Xeon (nhan luc dang ky), khong goi Xeon. Ve
+//      mang `shop` — phai la chinh shop nay; `manh` — landing tu chan duong thuoc manh chua mua.
+//   2. KHOA DAI HAN co ten (Sales Desk, Image Tool cua TopRun). Khong bi chan theo manh: do la
+//      cong cu noi bo cua TopRun, khong phai thu ban theo manh.
 //
 // Ba cach dua ma giu y het ban dang chay (Desk va Image Tool dang dung ca ba):
 //   Authorization: Bearer <ma>   |   x-landing-token: <ma>   |   ?token=<ma>
@@ -19,6 +18,7 @@
 "use strict";
 
 const crypto = require("crypto");
+const { docVe, laVe } = require("../../../chung/ve-may.js");
 
 function bangNhau(a, b) {
   const x = Buffer.from(String(a ?? ""), "utf8");
@@ -38,14 +38,17 @@ function maTrongYeuCau(yc) {
 
 /**
  * @param cacKhoa  [{ ma, ten, vai }] — khoa dai han co TEN. `vai`: "quan-tri" | "dich-vu".
- * @param boVe     bo phat/doc ve ngan han (tuy chon; khong co thi chi con khoa dai han)
+ * @param xeon     { keyId, khoaCongPem, shop } — nhan luc landing dang ky voi Xeon. Chua co thi
+ *                 moi ve deu bi tu choi (chua dang ky = chua ai duoc vao bang ve).
+ * @param gio      dong ho (de soi han ve)
  * @param nhatKy   de ghi "ai vua goi"
  *
  * Giu them `maQuanTri` / `maDon` / `maDichVu` cho tuong thich voi cach cu.
- * KHONG cau hinh khoa nao = tu choi tat ca (fail-closed) — giong ban dang chay.
+ * KHONG cau hinh khoa nao va chua dang ky Xeon = tu choi tat ca (fail-closed).
  */
-function taoCongQuyen({ cacKhoa = [], maQuanTri = "", maDon = "", maDichVu = "", boVe = null, nhatKy = null } = {}) {
+function taoCongQuyen({ cacKhoa = [], maQuanTri = "", maDon = "", maDichVu = "", xeon = null, gio = null, nhatKy = null } = {}) {
   const ky = nhatKy ?? { tin: () => {}, canhBao: () => {} };
+  const bayGio = () => (gio?.bayGio ? gio.bayGio() : new Date());
 
   const khoa = [
     ...cacKhoa.map((k) => ({ ma: String(k.ma || "").trim(), ten: String(k.ten || "khong-ten"), vai: k.vai })),
@@ -54,17 +57,34 @@ function taoCongQuyen({ cacKhoa = [], maQuanTri = "", maDon = "", maDichVu = "",
     { ma: String(maDichVu || "").trim(), ten: "bo-nao", vai: "dich-vu" }
   ].filter((k) => k.ma !== "" && (k.vai === "quan-tri" || k.vai === "dich-vu"));
 
-  /** Tra `{ vai, ten, bang }` — `bang` = "ve" hay "khoa-dai-han". */
+  /** Khoa cong cua Xeon — co the co vai khoa khi Xeon dang xoay khoa. */
+  const khoaXeon = new Map();
+  let shopCuaToi = "";
+  function datXeon(x) {
+    if (!x?.keyId || !x?.khoaCongPem || !x?.shop) throw new Error("datXeon can { keyId, khoaCongPem, shop }.");
+    khoaXeon.set(String(x.keyId), String(x.khoaCongPem));
+    shopCuaToi = String(x.shop);
+    ky.tin(`[quyen] nhan khoa cong Xeon ${x.keyId} cho shop "${x.shop}"`);
+  }
+  if (xeon) datXeon(xeon);
+
+  /** Tra `{ vai, ten, bang, ... }` — `bang` = "ve-xeon" | "khoa-dai-han" | ly do tu choi. */
   function ai(yc) {
     const ma = maTrongYeuCau(yc);
     if (!ma) return { vai: "khach-vang-lai", ten: "", bang: "khong-co-ma" };
 
-    // Ve truoc: ve la duong duoc khuyen dung, va doc ve khong phai so voi tung khoa.
-    if (boVe && ma.includes(".")) {
-      const v = boVe.doc(ma);
-      if (v.hopLe) return { vai: v.vai, ten: v.ten, bang: "ve" };
-      if (v.viSao === "het_han") return { vai: "khach-vang-lai", ten: "", bang: "ve-het-han" };
-      // Chu ky sai thi roi xuong duoi thu nhu khoa dai han — mot khoa co the chua dau cham.
+    if (laVe(ma)) {
+      if (khoaXeon.size === 0) return { vai: "khach-vang-lai", ten: "", bang: "chua-dang-ky-xeon" };
+      const v = docVe(ma, { khoaCongTheoKeyId: (id) => khoaXeon.get(id) ?? null, bayGio: bayGio() });
+      if (!v.hopLe) return { vai: "khach-vang-lai", ten: "", bang: `ve-${v.viSao}` };
+      if (v.than.shop !== shopCuaToi) return { vai: "khach-vang-lai", ten: "", bang: "ve-shop-khac" };
+      return {
+        vai: v.than.vai,
+        ten: `${v.than.shop}:${v.than.tenMay || v.than.maMay || "?"}`,
+        bang: "ve-xeon",
+        shop: v.than.shop, maMay: v.than.maMay, manh: v.than.manh, truc: v.than.truc === true,
+        hetLuc: v.than.hetLuc
+      };
     }
 
     for (const k of khoa) {
@@ -74,69 +94,34 @@ function taoCongQuyen({ cacKhoa = [], maQuanTri = "", maDon = "", maDichVu = "",
   }
 
   return {
-    daCauHinh: () => khoa.length > 0,
+    daCauHinh: () => khoa.length > 0 || khoaXeon.size > 0,
+    daDangKyXeon: () => khoaXeon.size > 0,
+    shop: () => shopCuaToi,
+    datXeon,
     ai,
     vai: (yc) => ai(yc).vai,
-
-    /**
-     * THEM MOT KHOA LUC DANG CHAY — dung khi mot may duoc GHEP vao server (xem duong
-     * `/api/ghep-may` cua Khung nen tang).
-     *
-     * Vi sao can: neu khong co cho nay thi cach duy nhat de OMI vao duoc la NGUOI BE MA QUAN TRI
-     * sang, dan bang tay. Ma quan tri la khoa cua CA server; dua no cho tung may la mot may bi lo
-     * thanh ca he bi lo, va khong ai thu hoi duoc rieng may do. Moi may mot khoa CO TEN thi nhat
-     * ky ghi duoc "omi:may-cua-anh-dung vua goi", va bo mot may la bo mot dong.
-     */
-    themKhoa({ ma, ten, vai } = {}) {
-      const sach = String(ma || "").trim();
-      const tenSach = String(ten || "").trim();
-      if (sach.length < 24) throw new Error("Khoa may phai dai it nhat 24 ky tu.");
-      if (tenSach === "") throw new Error("Khoa may phai co ten (de nhat ky ghi duoc ai goi).");
-      if (vai !== "quan-tri" && vai !== "dich-vu") throw new Error(`Vai khong hop le: ${String(vai)}`);
-      if (khoa.some((k) => bangNhau(k.ma, sach))) return false;   // da co roi, khong them hai lan
-      khoa.push({ ma: sach, ten: tenSach, vai });
-      ky.tin(`[quyen] them khoa may "${tenSach}" (${vai})`);
-      return true;
-    },
-
-    /** Bo mot khoa theo TEN — thu hoi quyen cua dung mot may. */
-    boKhoaTheoTen(ten) {
-      const tenSach = String(ten || "").trim();
-      const truoc = khoa.length;
-      for (let i = khoa.length - 1; i >= 0; i -= 1) {
-        if (khoa[i].ten === tenSach) khoa.splice(i, 1);
-      }
-      const bo = truoc - khoa.length;
-      if (bo > 0) ky.tin(`[quyen] bo ${bo} khoa mang ten "${tenSach}"`);
-      return bo;
-    },
-
-    /** Ten cac khoa dang co — KHONG bao gio tra ban ma. */
-    tenCacKhoa: () => khoa.map((k) => ({ ten: k.ten, vai: k.vai })),
 
     /** Vai nay co du de goi duong khai `can` khong. Quan tri di duoc ca duong dich vu. */
     duoc(yc, can) {
       if (can === "cong-khai") return true;
       const n = ai(yc);
-      const qua = can === "quan-tri" ? n.vai === "quan-tri"
+      return can === "quan-tri" ? n.vai === "quan-tri"
         : can === "dich-vu" ? (n.vai === "dich-vu" || n.vai === "quan-tri")
           : false;
-      if (qua && n.bang === "khoa-dai-han") {
-        // Con ai dung khoa dai han thi ghi lai — de biet khi nao tat duoc duong do.
-        ky.tin(`[quyen] "${n.ten}" goi bang KHOA DAI HAN (chua doi sang ve)`);
-      }
-      return qua;
     },
 
-    /** Doi khoa dai han lay ve. Tra `null` neu ma khong hop le. */
-    phatVe(yc) {
-      if (!boVe) return null;
+    /**
+     * Nguoi goi bang VE co thieu manh nay khong. Khoa dai han (Desk, Image Tool) khong bi chan
+     * theo manh. Khach vang lai cung khong (duong cong khai khong xet manh).
+     */
+    thieuManh(yc, manh) {
       const n = ai(yc);
-      if (n.vai === "khach-vang-lai") return null;
-      const { ve, hetSauMs } = boVe.phat({ vai: n.vai, ten: n.ten });
-      ky.tin(`[quyen] phat ve cho "${n.ten}" (${n.vai}), song ${Math.round(hetSauMs / 60000)} phut`);
-      return { ve, vai: n.vai, ten: n.ten, hetSauMs };
+      if (n.bang !== "ve-xeon") return false;
+      return !(Array.isArray(n.manh) && n.manh.includes(manh));
     },
+
+    /** Ten cac khoa dai han dang co — KHONG bao gio tra ban ma. */
+    tenCacKhoa: () => khoa.map((k) => ({ ten: k.ten, vai: k.vai })),
 
     /** Giu lai cho cho nao con goi truc tiep; duong moi thi khai `quyen` trong to khai. */
     laQuanTri: (yc) => ai(yc).vai === "quan-tri"

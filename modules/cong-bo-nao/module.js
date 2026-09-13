@@ -146,6 +146,7 @@ module.exports = {
   ten: "Cổng cho bộ não",
   mang: "chatbot",
   chay: "server-khach",
+  manh: "chatbot-cskh",
   phienBan: "0.1.0",
   canCong: ["nhatKy", "gio", "cauHinh"],
   // Hang hoa la BAT BUOC: khong tra duoc ton thi bot khong co viec gi de lam.

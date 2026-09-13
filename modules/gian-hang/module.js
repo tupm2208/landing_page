@@ -110,6 +110,7 @@ module.exports = {
   ten: "Gian hàng (mặt web)",
   mang: "van-hanh",
   chay: "server-khach",
+  manh: "gian-hang",
   phienBan: "0.1.0",
   canCong: ["tepTinh", "nhatKy", "cauHinh"],
 

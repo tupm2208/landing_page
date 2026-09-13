@@ -98,7 +98,9 @@ function taoKhung({ cong, toKhais, nhatKy, cauHinh = {}, tinProxy = false }) {
     }
 
     for (const d of toKhai.duong ?? []) {
-      boDinhTuyen.them({ method: d.method, path: d.path, moduleId: toKhai.id, quyen: d.quyen, hanGoi: d.hanGoi, hanThan: d.hanThan, tay: (yc) => d.tay(ctx, yc) });
+      // Manh cua duong: khai rieng > khai o module > khong thuoc manh nao. `manh: false` = mien.
+      const manh = d.manh === false ? null : (d.manh ?? toKhai.manh ?? null);
+      boDinhTuyen.them({ method: d.method, path: d.path, moduleId: toKhai.id, quyen: d.quyen, manh, hanGoi: d.hanGoi, hanThan: d.hanThan, tay: (yc) => d.tay(ctx, yc) });
     }
     for (const [ten, ham] of Object.entries(toKhai.suKien?.nghe ?? {})) {
       bus.nghe(ten, toKhai.id, (duLieu) => ham(ctx, duLieu));
@@ -168,6 +170,13 @@ function taoKhung({ cong, toKhais, nhatKy, cauHinh = {}, tinProxy = false }) {
         const n = typeof congQuyen.ai === "function" ? congQuyen.ai(yc) : { ten: "", bang: "?" };
         ky.canhBao(`[khung] tu choi ${yc.method} ${tim.path}: can "${tim.quyen}", nguoi goi la "${n.ten || "khong ro"}" (${n.bang})`);
         return { ma: 401, than: { ok: false, error: LOI.chua_dang_nhap, message: "Thiếu mã hoặc mã không đủ quyền cho đường này." } };
+      }
+      // CHAN THEO MANH: ve may mang danh sach manh shop da mua. Duong thuoc manh chua mua thi
+      // 403 va noi ro manh nao — OMI hien "chua mua manh X", khong phai loi la.
+      if (tim.manh && typeof congQuyen.thieuManh === "function" && congQuyen.thieuManh(yc, tim.manh)) {
+        const n = typeof congQuyen.ai === "function" ? congQuyen.ai(yc) : { ten: "" };
+        ky.canhBao(`[khung] tu choi ${yc.method} ${tim.path}: "${n.ten}" chua mua manh "${tim.manh}"`);
+        return { ma: 403, than: { ok: false, error: LOI.chua_mua_manh, manh: tim.manh, message: `Shop chưa mua mảnh "${tim.manh}".` } };
       }
     }
 

@@ -3,9 +3,13 @@
 // Day la CHO DUY NHAT doc bien moi truong va quyet dinh dung cong nao. Module khong bao gio
 // doc `process.env` — no nhan `ctx.cauHinh`. Nho vay doi tu tep JSON sang MySQL, hay doi
 // tu Graph API that sang ban gia, chi sua tep nay.
+//
+// Bien moi truong doc tu `.env` canh tep nay (bo cai `cong-cu/cai-dat.js` viet ra), bien da
+// dat san trong moi truong thi de len tren.
 
 "use strict";
 
+const fs = require("fs");
 const path = require("path");
 const { taoKhung } = require("./loi/khung");
 const { taoMayChu } = require("./loi/may-chu");
@@ -15,13 +19,32 @@ const { taoKhoMysql } = require("./loi/cong/kho-mysql");
 const { taoCongQuyen } = require("./loi/cong/quyen");
 const { taoNhatKy, gioThat, taoHttpNgoai } = require("./loi/cong/co-ban");
 const { taoBoDemGoi } = require("./loi/cong/han-goi");
-const { taoBoVe } = require("./loi/cong/ve");
 const { bocCheDoThu } = require("./loi/cong/che-do-thu");
 const { taoCongTepTinh } = require("./loi/cong/tep-tinh");
-const { sinhMaGhep, SO_KHOA_MAY } = require("./modules/khung-nen-tang/ghep-may");
+const { dangKyXeon, docXeon, luuXeon, chuanKey, chuanDiaChi } = require("./modules/khung-nen-tang/dang-ky-xeon");
 
-async function dungHe({ thuMucDuLieu, env = process.env } = {}) {
+/** Doc `.env` dang KEY=value (bo dong #, bo dau nhay bao quanh). Bien da co trong `env` thang. */
+function napTepEnv(tep, env) {
+  if (!fs.existsSync(tep)) return 0;
+  let so = 0;
+  for (const dong of fs.readFileSync(tep, "utf8").split(/\r?\n/)) {
+    const d = dong.trim();
+    if (!d || d.startsWith("#")) continue;
+    const i = d.indexOf("=");
+    if (i <= 0) continue;
+    const ten = d.slice(0, i).trim();
+    let gia = d.slice(i + 1).trim();
+    if ((gia.startsWith('"') && gia.endsWith('"')) || (gia.startsWith("'") && gia.endsWith("'"))) gia = gia.slice(1, -1);
+    if (env[ten] === undefined) { env[ten] = gia; so += 1; }
+  }
+  return so;
+}
+
+async function dungHe({ thuMucDuLieu, env = process.env, tepEnv = path.join(__dirname, ".env") } = {}) {
   const nhatKy = taoNhatKy();
+  const soEnv = napTepEnv(tepEnv, env);
+  if (soEnv > 0) nhatKy.tin(`[chay] doc ${soEnv} bien tu ${tepEnv}`);
+
   // Anh Dung chot 12/09: du lieu khach ve HET MySQL. Duong tep chi con cho may chua co
   // MySQL (chay thu tren may ca nhan) — va no noi ro ra o nhat ky, khong im lang.
   const duongMysql = String(env.TOPRUN_MYSQL_URL || "").trim();
@@ -32,14 +55,34 @@ async function dungHe({ thuMucDuLieu, env = process.env } = {}) {
     ? await taoKhoMysql({ duongKetNoi: duongMysql, nhatKy })
     : taoKhoTep({ thuMuc: thuMucDuLieu, nhatKy });
   if (!duongMysql) nhatKy.canhBao("[chay] CHUA co TOPRUN_MYSQL_URL — dang chay bang tep JSON, chi dung de thu.");
-  if (String(env.CHE_DO_THAT || "").trim() !== "1") {
+
+  const cheDoThat = String(env.CHE_DO_THAT || "").trim() === "1";
+  if (!cheDoThat) {
     nhatKy.canhBao("[chay] CHE DO THU: khong gui tin cho khach, khong tao van don that, khong bao Telegram.");
   } else {
     nhatKy.canhBao("[chay] CHE DO THAT: moi loi goi ra ngoai la THAT. Kiem lai truoc khi chay tren du lieu that.");
   }
-  if (String(env.BI_MAT_VE || "").trim().length < 16) {
-    nhatKy.canhBao("[chay] CHUA co BI_MAT_VE — ve 15 phut dang TAT, moi ben van dung khoa dai han.");
-  }
+
+  const diaChiWeb = String(env.LANDING_SITE_BASE_URL || env.SITE_URL || "").trim().replace(/\/+$/, "");
+  const diaChiXeonEnv = chuanDiaChi(env.XEON_DIA_CHI);
+  const keyLicense = chuanKey(env.LICENSE_KEY);
+
+  // Xeon la MAY CUA MINH: day tin cho bo nao va dang ky license phai di duoc ke ca o che do thu.
+  const httpNgoaiThat = taoHttpNgoai();
+  const choQuaThem = diaChiXeonEnv ? [{ chu: "noi voi Xeon cua minh", khop: (url) => String(url).startsWith(`${diaChiXeonEnv}/`) }] : [];
+
+  const quyen = taoCongQuyen({
+    // Khoa dai han CO TEN — cong cu noi bo cua TopRun (Desk, Image Tool). Khong bi chan theo manh.
+    cacKhoa: [
+      { ma: env.LANDING_ADMIN_TOKEN, ten: "quan-tri", vai: "quan-tri" },
+      { ma: env.LANDING_ORDERS_TOKEN, ten: "don-hang", vai: "quan-tri" },
+      { ma: env.IMAGE_TOOL_TOKEN, ten: "image-tool", vai: "quan-tri" },
+      { ma: env.BO_NAO_TOKEN, ten: "bo-nao", vai: "dich-vu" }
+    ].filter((k) => String(k.ma || "").trim() !== ""),
+    gio: gioThat,
+    nhatKy
+  });
+
   const cong = {
     kho,
     nhatKy,
@@ -48,32 +91,12 @@ async function dungHe({ thuMucDuLieu, env = process.env } = {}) {
     // Anh Dung chot 12/09: ban thu duoc doc realtime tu Graph API nhung KHONG duoc tra loi
     // khach. Mac dinh la "an toan" chu khong phai "tien": quen dat bien thi khong ai bi
     // nhan tin oan.
-    httpNgoai: String(env.CHE_DO_THAT || "").trim() === "1"
-      ? taoHttpNgoai()
-      : bocCheDoThu({ httpNgoaiThat: taoHttpNgoai(), nhatKy }),
-    quyen: taoCongQuyen({
-      // Khoa dai han CO TEN — nho vay nhat ky ghi duoc "sales-desk vua goi".
-      cacKhoa: [
-        { ma: env.LANDING_ADMIN_TOKEN, ten: "quan-tri", vai: "quan-tri" },
-        { ma: env.LANDING_ORDERS_TOKEN, ten: "don-hang", vai: "quan-tri" },
-        { ma: env.IMAGE_TOOL_TOKEN, ten: "image-tool", vai: "quan-tri" },
-        { ma: env.BO_NAO_TOKEN, ten: "bo-nao", vai: "dich-vu" }
-      ].filter((k) => String(k.ma || "").trim() !== ""),
-      boVe: String(env.BI_MAT_VE || "").trim().length >= 16
-        ? taoBoVe({ biMat: env.BI_MAT_VE, gio: gioThat })
-        : null,
-      nhatKy
-    }),
+    httpNgoai: cheDoThat ? httpNgoaiThat : bocCheDoThu({ httpNgoaiThat, nhatKy, choQuaThem }),
+    quyen,
     hanGoi: taoBoDemGoi({ gio: gioThat }),
     // Mat web: module chi thay thu muc `goc/` cua chinh no, va chi nhung duoi tep da khai.
     tepTinh: taoCongTepTinh({ thuMucGoc: path.join(__dirname, "modules"), nhatKy })
   };
-
-  // MA GHEP MAY — de OMI (va may khac cua chinh shop) duoc CAP khoa rieng, khong ai phai be ma
-  // quan tri sang. In ra o duoi, song 15 phut, dung mot lan. `KHONG_GHEP_MAY=1` thi tat han.
-  const batGhepMay = String(env.KHONG_GHEP_MAY || "").trim() !== "1";
-  const maGhep = batGhepMay ? sinhMaGhep() : "";
-  const maGhepHetLuc = batGhepMay ? Date.now() + 15 * 60 * 1000 : 0;
 
   const thuMucModules = path.join(__dirname, "modules");
   const bat = String(env.MODULE_BAT || "").trim()
@@ -95,11 +118,15 @@ async function dungHe({ thuMucDuLieu, env = process.env } = {}) {
       },
       "gian-hang": {
         // Goc site that, dung cho the OG (crawler Facebook doc the nay khi khach share link).
-        gocSite: String(env.LANDING_SITE_BASE_URL || env.SITE_URL || "https://toprun.site").trim(),
+        gocSite: diaChiWeb || "https://toprun.site",
         // 33.809 tep anh san pham (7,6 GB) KHONG duoc cop sang ban tach. Khai bien nay thi anh
         // nao khong co o day se duoc 302 sang site that de trinh duyet tu lay — may thu khong
         // goi ra ngoai, no chi chi duong.
         gocAnhThat: String(env.GOC_ANH_THAT || "").trim()
+      },
+      "cong-bo-nao": {
+        // Bot dua khach link ve web: link phai la dia chi cong khai cua shop.
+        diaChiWeb
       },
       "tien-doi-soat": {
         // Phan tram coc / phi ship / tien to chuyen khoan: neu co manh Khung nen tang thi
@@ -148,8 +175,8 @@ async function dungHe({ thuMucDuLieu, env = process.env } = {}) {
       },
       "khung-nen-tang": {
         deployId: String(env.DEPLOY_ID || "").trim() || "chua-dat",
-        maGhep,
-        maGhepHetLuc
+        diaChiXeon: diaChiXeonEnv,
+        diaChiLanding: diaChiWeb
       },
       "ctv": {
         // Phien cua cong tac vien cung ky bang khoa nay. Thieu thi khong ky duoc phien ->
@@ -161,10 +188,38 @@ async function dungHe({ thuMucDuLieu, env = process.env } = {}) {
     }
   });
 
+  // Chay luoc do cua tung module truoc khi nhan yeu cau dau tien.
+  if (typeof kho.chayLuocDo === "function") {
+    for (const tk of napToKhais(thuMucModules, { bat })) {
+      if ((tk.luocDo ?? []).length > 0) {
+        await kho.chayLuocDo(tk.id, tk.luocDo, { bangKeThua: tk.bangKeThua ?? [] });
+      }
+    }
+  }
+
+  // DANG KY VOI XEON (anh Dung chot 14/09): landing tu khai minh bang license key, nhan ve khoa
+  // cong Xeon (de soi ve may cua OMI va ve cua bo nao) va ma nhan tin rieng (de day tin sang bo
+  // nao). Da dang ky roi va key khong doi thi dung lai; doi key hay doi Xeon thi dang ky lai.
+  let xeon = typeof kho.so === "function" ? await docXeon(kho) : null;
+  if (keyLicense && diaChiXeonEnv && (!xeon || xeon.key !== keyLicense || xeon.diaChiXeon !== diaChiXeonEnv)) {
+    try {
+      const ban = await dangKyXeon({ httpNgoai: httpNgoaiThat, diaChiXeon: diaChiXeonEnv, key: keyLicense, diaChiLanding: diaChiWeb });
+      await luuXeon(kho, ban, gioThat.bayGio());
+      xeon = { ...ban, dangKyLuc: gioThat.bayGio().toISOString() };
+      nhatKy.tin(`[chay] dang ky voi Xeon ${ban.diaChiXeon}: landing nay la shop "${ban.shop}"`);
+    } catch (e) {
+      nhatKy.canhBao(`[chay] KHONG dang ky duoc voi Xeon: ${e.message}${xeon ? " — dung ban dang ky cu" : ""}`);
+    }
+  }
+  if (xeon) quyen.datXeon({ keyId: xeon.keyId, khoaCongPem: xeon.khoaCongPem, shop: xeon.shop });
+
   // NOI RO CAI GI DANG TAT. Mot manh thieu khoa thi no im lang khong lam gi — va im lang la
   // thu kho tim nhat: chu shop tuong Telegram hong, doi tac tuong cong sap. Vi vay bao ngay
   // luc khoi dong, mot lan, ro rang.
   const dangTat = [];
+  if (!xeon) {
+    dangTat.push("OMI vao bang ve may va bo nao tra loi khach (chua dang ky voi Xeon: can LICENSE_KEY + XEON_DIA_CHI + LANDING_SITE_BASE_URL)");
+  }
   if (!String(env.TELEGRAM_BOT_TOKEN || "").trim() || !String(env.TELEGRAM_CHAT_ID || env.TELEGRAM_ALERT_CHAT_ID || "").trim()) {
     dangTat.push("bao Telegram cho nguoi ban hang (thieu TELEGRAM_BOT_TOKEN / TELEGRAM_CHAT_ID)");
   }
@@ -185,55 +240,24 @@ async function dungHe({ thuMucDuLieu, env = process.env } = {}) {
   }
   for (const viec of dangTat) nhatKy.canhBao(`[chay] DANG TAT: ${viec}`);
 
-  // Chay luoc do cua tung module truoc khi nhan yeu cau dau tien.
-  if (typeof kho.chayLuocDo === "function") {
-    for (const tk of napToKhais(thuMucModules, { bat })) {
-      if ((tk.luocDo ?? []).length > 0) {
-        await kho.chayLuocDo(tk.id, tk.luocDo, { bangKeThua: tk.bangKeThua ?? [] });
-      }
-    }
-  }
-
-  // KHOA MAY DA GHEP tu nhung lan chay truoc: doc lai vao cong quyen. Khong co buoc nay thi
-  // moi lan bat lai server, may da ghep lai bi coi la nguoi la — va nguoi ban hang phai ghep lai.
-  if (typeof kho.so === "function") {
-    const soKhoa = await kho.so(SO_KHOA_MAY).doc();
-    const ds = Array.isArray(soKhoa?.khoa) ? soKhoa.khoa : [];
-    let daNap = 0;
-    for (const k of ds) {
-      try {
-        if (cong.quyen.themKhoa({ ma: k.ma, ten: k.ten, vai: k.vai || "quan-tri" })) daNap += 1;
-      } catch (e) {
-        nhatKy.canhBao(`[chay] khoa may "${k?.ten ?? "khong ten"}" trong so khong dung duoc: ${e.message}`);
-      }
-    }
-    if (daNap > 0) nhatKy.tin(`[chay] nap lai ${daNap} khoa may da ghep`);
-  }
-
   const chuaTach = moduleChuaTach(thuMucModules);
   if (chuaTach.length > 0) nhatKy.tin(`[chay] con ${chuaTach.length} module chua tach: ${chuaTach.join(", ")}`);
-  // Tra ca ma ghep ra ngoai: cho in no nam o `require.main` — khac pham vi voi cho sinh no.
-  return { khung, cong, kho, maGhep, maGhepHetLuc };
+  return { khung, cong, kho, xeon };
 }
 
 if (require.main === module) {
   const cong = Number(process.env.PORT || 4180);
-  dungHe({ thuMucDuLieu: process.env.THU_MUC_DU_LIEU || path.join(__dirname, "du-lieu") }).then(({ khung, maGhep, maGhepHetLuc }) => {
+  dungHe({ thuMucDuLieu: process.env.THU_MUC_DU_LIEU || path.join(__dirname, "du-lieu") }).then(({ khung, xeon }) => {
     taoMayChu(khung).listen(cong, () => {
       console.log(`[chay] server khach nghe o cong ${cong}`);
-      for (const d of khung.banDuong()) console.log(`        ${d.method.padEnd(6)} ${d.path}  (${d.moduleId})`);
-      // MA GHEP in SAU CUNG, to va ro: day la thu nguoi ban hang phai doc de noi OMI vao.
-      if (maGhep) {
-        const den = new Date(maGhepHetLuc).toLocaleTimeString("vi-VN");
-        console.log("");
-        console.log("  ┌───────────────────────────────────────────────┐");
-        console.log(`  │  MA GHEP MAY:  ${maGhep}                         │`);
-        console.log(`  │  Song den ${den}, dung MOT lan.            │`);
-        console.log("  │  Mo OMI -> Cai dat -> go dia chi + ma nay.     │");
-        console.log("  │  MAY SAU: OMI -> tab 'May & khoa' -> Tao ma.   │");
-        console.log("  └───────────────────────────────────────────────┘");
-        console.log("");
+      for (const d of khung.banDuong()) console.log(`        ${d.method.padEnd(6)} ${d.path}  (${d.moduleId}${d.manh ? `, manh ${d.manh}` : ""})`);
+      console.log("");
+      if (xeon) {
+        console.log(`  Shop "${xeon.shop}" da dang ky voi Xeon ${xeon.diaChiXeon}. OMI: nhap license key la vao.`);
+      } else {
+        console.log("  CHUA dang ky voi Xeon. Chay `node cong-cu/cai-dat.js` hoac dat LICENSE_KEY + XEON_DIA_CHI roi bat lai.");
       }
+      console.log("");
     });
   }).catch((e) => {
     console.error("[chay] khong khoi dong duoc:", e.message);
@@ -241,4 +265,4 @@ if (require.main === module) {
   });
 }
 
-module.exports = { dungHe };
+module.exports = { dungHe, napTepEnv };
