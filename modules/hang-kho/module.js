@@ -127,6 +127,7 @@ module.exports = {
     "hang-kho.tonKho": tonKho,
     "hang-kho.giuCho": giuCho,
     "hang-kho.traCho": traCho,
+    "hang-kho.dem": async (ctx) => taoKhoHang(ctx).demMon(),
     "hang-kho.doc": async (ctx, ma) => {
       const mon = await taoKhoHang(ctx).docMon(ma);
       return mon ? banCongKhai(mon) : null;

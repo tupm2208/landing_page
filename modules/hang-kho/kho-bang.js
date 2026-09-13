@@ -222,6 +222,12 @@ function taoKhoHang(ctx) {
     return ra;
   }
 
+  /** So mon trong danh muc — bo nao dung con so nay cho cong "khong kinh doanh hang X". Khong doc tung mon. */
+  async function demMon() {
+    const [dong] = await kho.cauLenh(`SELECT COUNT(*) AS n FROM \`${B_MON}\``, []);
+    return Number(dong?.[0]?.n || 0);
+  }
+
   /** Ca danh muc (da bo ma bi chan, da tru cho giu). Co tran de khong bao gio tra vo han. */
   async function docTatCa(gioiHan = 5000) {
     const n = Math.min(Math.max(1, Number(gioiHan) || 5000), 20000);
@@ -354,7 +360,7 @@ function taoKhoHang(ctx) {
 
   return {
     NGUON, B_MON, B_BIEN_THE, B_CHAN, B_GIU,
-    docMon, timMon, docTatCa, tonCuaMon, thayNguon, maBiChan, dangGiuTheoBienThe, bayGio,
+    docMon, timMon, demMon, docTatCa, tonCuaMon, thayNguon, maBiChan, dangGiuTheoBienThe, bayGio,
     bang: (ten) => kho.bang(ten),
     giaoDich: (viec) => kho.giaoDich(viec)
   };

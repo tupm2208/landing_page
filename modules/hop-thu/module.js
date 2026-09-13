@@ -26,6 +26,8 @@ const choGui = require("./cho-gui");
 const SO_TIN = "hop-thu-den";          // nhat ky tho de Desk keo ve (giu tuong thich ban dang chay)
 const SO_CHO_GUI = "hop-thu-cho-gui";
 const SO_CAU_HINH = "hop-thu-cau-hinh";
+const SO_CAN_NGUOI = "hop-thu-can-nguoi";   // bot chuyen nguoi that: hoi thoai nao dang cho nguoi
+const GIU_CAN_NGUOI = 200;
 const HAN_THAN = 256 * 1024;           // Meta khong gui goi lon hon
 const GIU_TOI_DA = 500;                // cat bot cho khoi phinh so
 const GIU_MA_TIN = 2000;               // de bo tin trung khi OMI quet lai man hinh
@@ -379,6 +381,55 @@ module.exports = {
           ctx.bus.phat(SU_KIEN.tin_nhan_di, { kenh: muc.kenh, nguoi: muc.nguoi, chu: muc.chu, luc: muc.guiLuc, boi: muc.boi });
         }
         return { ma: 200, than: { ok: true, trangThai: muc.trangThai, thuLai: muc.thuLai } };
+      }
+    },
+
+    // CAN NGUOI THAT — bo nao co y KHONG tra loi (handoff) thi bao ve day; OMI hien danh sach.
+    {
+      method: "POST", path: "/api/hop-thu/can-nguoi", quyen: "dich-vu",
+      hanGoi: { soLan: 600, trongMs: PHUT10 },
+      hanThan: 8 * 1024,
+      tay: async (ctx, yc) => {
+        const than = await yc.doc();
+        const maHoiThoai = String(than.maHoiThoai || "").trim().slice(0, 160);
+        if (!maHoiThoai) return { ma: 400, than: { ok: false, error: "thieu_ma_hoi_thoai" } };
+        const luc = ctx.cong.gio.bayGio().toISOString();
+        const muc = {
+          maHoiThoai, kenh: String(than.kenh || "").slice(0, 40), nguoi: String(than.nguoi || "").slice(0, 120),
+          lyDo: String(than.lyDo || "").slice(0, 300), tinCuoi: String(than.tinCuoi || "").slice(0, 500),
+          baoLuc: luc, xongLuc: ""
+        };
+        await ctx.cong.kho.so(SO_CAN_NGUOI).capNhat((cu) => {
+          const ds = Array.isArray(cu?.muc) ? cu.muc.filter((m) => m.maHoiThoai !== maHoiThoai) : [];
+          ds.push(muc);
+          return { version: 1, muc: ds.slice(-GIU_CAN_NGUOI), updatedAt: luc };
+        }, { version: 1, muc: [] });
+        ctx.cong.nhatKy.tin(`[hop-thu] can nguoi that: ${maHoiThoai} (${muc.lyDo || "khong ghi ly do"})`);
+        return { ma: 200, than: { ok: true } };
+      }
+    },
+    {
+      method: "GET", path: "/api/hop-thu/can-nguoi", quyen: "quan-tri",
+      hanGoi: { soLan: 600, trongMs: PHUT10 },
+      tay: async (ctx) => {
+        const so = (await ctx.cong.kho.so(SO_CAN_NGUOI).doc(null)) ?? { muc: [] };
+        const muc = (so.muc ?? []).filter((m) => !m.xongLuc);
+        return { ma: 200, tieuDe: { "Cache-Control": "no-store" }, than: { ok: true, muc, soDangCho: muc.length } };
+      }
+    },
+    {
+      method: "POST", path: "/api/hop-thu/can-nguoi/xong", quyen: "quan-tri",
+      hanGoi: { soLan: 600, trongMs: PHUT10 },
+      tay: async (ctx, yc) => {
+        const than = await yc.doc();
+        const maHoiThoai = String(than.maHoiThoai || "").trim();
+        let thay = false;
+        await ctx.cong.kho.so(SO_CAN_NGUOI).capNhat((cu) => {
+          const ds = Array.isArray(cu?.muc) ? cu.muc : [];
+          for (const m of ds) if (m.maHoiThoai === maHoiThoai && !m.xongLuc) { m.xongLuc = ctx.cong.gio.bayGio().toISOString(); thay = true; }
+          return { version: 1, muc: ds, updatedAt: ctx.cong.gio.bayGio().toISOString() };
+        }, { version: 1, muc: [] });
+        return thay ? { ma: 200, than: { ok: true } } : { ma: 404, than: { ok: false, error: "khong_thay" } };
       }
     },
 

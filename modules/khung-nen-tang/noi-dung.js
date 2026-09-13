@@ -46,6 +46,13 @@ function noiDungMacDinh() {
     orderEmailBody: "Xin chào {customerName},\n\nTopRun đã nhận đơn {orderId}.\n\nBạn có thể xem lại đơn hàng và theo dõi trạng thái tại:\n{orderUrl}\n\nTrong 15 phút đầu, bạn có thể kiểm tra và chỉnh sửa thông tin đơn hàng qua link trên. Sau thời gian này, thông tin người nhận sẽ được ẩn để bảo mật.\n\nTopRun sẽ liên hệ lại nếu cần xác nhận thêm về size/tồn kho.",
     chatMessageTemplate: "Em đã đặt đơn {orderId}, mã CK {paymentReference}, tổng {total}. Nhờ TopRun xác nhận giúp em ạ.",
     productSectionTitle: "Sản phẩm toprunvn",
+    // Chinh sach cho bot tra loi (14/09/2026): bot CHI khang dinh chinh sach khi doc duoc tu day.
+    // Trong = bot khong biet, chuyen nguoi that. Chu shop sua trong OMI (tab Noi dung trang).
+    chinhSachDoiTra: "",
+    chinhSachShip: "",
+    chinhSachBaoHanh: "",
+    // Hang phai order thi bao nhieu ngay ve — bot dung cho cau "bao lau co hang".
+    soNgayHangOrder: "7",
     updatedAt: ""
   };
 }

@@ -129,17 +129,68 @@ const CONG_CU = {
     const goc = String(ctx.cauHinh.diaChiWeb || "").replace(/\/+$/, "");
     const hoi = String(vao.q || "").trim();
     return { url: hoi ? `${goc}/?q=${encodeURIComponent(hoi)}` : `${goc}/` };
-  }
+  },
+
+  // ---- Bon cong cu them 14/09/2026 (truoc do bo may khai ma landing khong co -> moi cau hoi
+  // ---- doi tra / ship / bao hanh deu roi xuong "hoi lai" roi chuyen nguoi that).
+
+  /** Tong so mon — cong "khong kinh doanh hang X" cua bo may can >= 200 mon moi dam noi. */
+  "catalog.count": async (ctx) => ({ total: Number(await ctx.dichVu["hang-kho"].dem()) || 0 }),
+
+  /** Bang bien the (size) cua mot mon, kem con/het. */
+  "variant.chart": async (ctx, vao = {}) => {
+    const mon = await ctx.dichVu["hang-kho"].doc(String(vao.itemId || vao.code || ""));
+    const sizes = Array.isArray(mon?.sizes) ? mon.sizes : [];
+    return {
+      axis: "size",
+      rows: sizes.map((s) => ({ label: String(s.size ?? s.label ?? ""), note: Number(s.qty ?? s.stock ?? 0) > 0 ? "còn" : "hết" })).filter((r) => r.label !== "")
+    };
+  },
+
+  /**
+   * Chinh sach shop — NGUON HOP LE DUY NHAT de bot khang dinh ve doi tra / ship / bao hanh.
+   * Doc tu noi dung trang (chu shop sua trong OMI). Trong = khong tim thay -> bot chuyen nguoi.
+   */
+  "policy.get": async (ctx, vao = {}) => {
+    const nd = await ctx.dichVu["khung-nen-tang"].noiDung();
+    const topic = String(vao.topic || "").toLowerCase();
+    let text = "";
+    if (/doi|tra|hoan|return/.test(topic)) text = nd.chinhSachDoiTra;
+    else if (/ship|giao|van-chuyen|phi/.test(topic)) text = nd.chinhSachShip;
+    else if (/bao-hanh|baohanh|warranty/.test(topic)) text = nd.chinhSachBaoHanh;
+    text = String(text || "").trim();
+    return { found: text !== "", text, updatedAt: String(nd.updatedAt || "") };
+  },
+
+  /** Hang phai order thi bao lau ve — so ngay chu shop khai trong noi dung trang. */
+  "purchase.eta": async (ctx, vao = {}) => {
+    const mon = await ctx.dichVu["hang-kho"].doc(String(vao.itemId || vao.code || ""));
+    if (!mon) return { available: false };
+    const nd = ctx.dichVu["khung-nen-tang"]?.noiDung ? await ctx.dichVu["khung-nen-tang"].noiDung() : {};
+    const ngay = Number(String(nd.soNgayHangOrder || "").trim());
+    return Number.isFinite(ngay) && ngay > 0 ? { available: true, days: ngay } : { available: false };
+  },
+
+  /**
+   * Nhan ra khach cu. Landing CHUA co cach doi hoi thoai -> so dien thoai (khach chua tu go),
+   * nen tra "chua biet" mot cach trung thuc; bo may hien khong dung ket qua nay de noi gi.
+   */
+  "customer.recognize": async () => ({ isReturning: false, orderCount: 0 })
 };
 
 /** Cong cu nao can dich vu nao moi mo duoc. Thieu dich vu = cong cu khong xuat hien. */
 const CAN_DICH_VU = {
   "catalog.search": ["hang-kho", "tim"],
   "stock.lookup": ["hang-kho", "tonKho"],
+  "catalog.count": ["hang-kho", "dem"],
+  "variant.chart": ["hang-kho", "doc"],
+  "purchase.eta": ["hang-kho", "doc"],
+  "policy.get": ["khung-nen-tang", "noiDung"],
   "order.lookup": ["don-khach", "tim"],
   "payment.status": ["don-khach", "doc"],
   "shipment.track": ["van-chuyen", "traCuu"],
-  "storefront.link": null
+  "storefront.link": null,
+  "customer.recognize": null
 };
 
 /** Danh sach cong cu DANG MO voi ban cai nay — tuy khach mua nhung manh nao. */
@@ -163,7 +214,7 @@ module.exports = {
   canDichVu: ["hang-kho.tim", "hang-kho.tonKho"],
   // Don hang va Van chuyen la TUY CHON: khach mua goi khong co hai manh nay thi cong cu
   // tuong ung bien mat khoi danh sach, bot khong bao gio goi toi — chu khong phai ca bot chet.
-  canDichVuNeuCo: ["don-khach.doc", "don-khach.tim", "van-chuyen.traCuu"],
+  canDichVuNeuCo: ["hang-kho.dem", "hang-kho.doc", "khung-nen-tang.noiDung", "don-khach.doc", "don-khach.tim", "van-chuyen.traCuu"],
 
   duong: [
     {

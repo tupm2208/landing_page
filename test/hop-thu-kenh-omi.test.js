@@ -194,3 +194,17 @@ test("nguoi that trong OMI tra loi qua /api/hop-thu/gui thi nguon ghi la omi", a
   const so = await kho.so(mHopThu.SO_CHO_GUI).doc();
   assert.equal(so.muc[0].nguon, "omi");
 });
+
+test("bot chuyen nguoi that: bo nao bao /api/hop-thu/can-nguoi; OMI xem danh sach; danh dau xong", async () => {
+  const { goi } = dungThu();
+  assert.equal((await goi("POST", "/api/hop-thu/can-nguoi", { ma: MA_BO_NAO, than: { kenh: "zalo", nguoi: "k1" } })).ma, 400, "thieu ma hoi thoai");
+  const bao = await goi("POST", "/api/hop-thu/can-nguoi", { ma: MA_BO_NAO, than: { kenh: "zalo", nguoi: "k1", maHoiThoai: "zalo:k1", lyDo: "khong chac", tinCuoi: "co doi duoc khong" } });
+  assert.equal(bao.ma, 200);
+  await goi("POST", "/api/hop-thu/can-nguoi", { ma: MA_BO_NAO, than: { kenh: "zalo", nguoi: "k1", maHoiThoai: "zalo:k1", lyDo: "lan hai" } });
+  const ds = await goi("GET", "/api/hop-thu/can-nguoi");
+  assert.equal(ds.than.soDangCho, 1, "cung hoi thoai bao hai lan chi mot dong");
+  assert.equal(ds.than.muc[0].lyDo, "lan hai");
+  assert.equal((await goi("POST", "/api/hop-thu/can-nguoi/xong", { than: { maHoiThoai: "zalo:k1" } })).ma, 200);
+  assert.equal((await goi("GET", "/api/hop-thu/can-nguoi")).than.soDangCho, 0);
+  assert.equal((await goi("POST", "/api/hop-thu/can-nguoi/xong", { than: { maHoiThoai: "zalo:k1" } })).ma, 404);
+});
