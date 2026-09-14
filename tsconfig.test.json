@@ -1,0 +1,16 @@
+{
+  // Type-checks the test files without emitting. Tests run directly on Node 24 (type stripping)
+  // and import the compiled `dist/`, so `npm run build` must have run first.
+  "extends": "./tsconfig.base.json",
+  "compilerOptions": {
+    // ES modules: the test files are `.mts` and use `import.meta.dirname`.
+    "module": "es2022",
+    "noEmit": true,
+    "declaration": false,
+    "declarationMap": false,
+    "sourceMap": false,
+    "rootDir": ".",
+    "allowImportingTsExtensions": true
+  },
+  "include": ["test/**/*.mts", "test-mysql/**/*.mts"]
+}

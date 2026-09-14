@@ -1,0 +1,186 @@
+/**
+ * @file The order services: place, change status, record payment, read, search, read by token.
+ *
+ * These are what the manifest publishes as `don-khach.*` and what the HTTP routes call. The
+ * three rules of the module are enforced here and in the repository:
+ *
+ * 1. PLACING AN ORDER RESERVES STOCK FIRST. Writing an order without a reservation sells one pair
+ *    of shoes to two people. Reservation goes through Inventory's service — this module never
+ *    touches stock itself.
+ * 2. WRITING AN ORDER IS ONE TRANSACTION (see `OrderRepository.insert`).
+ * 3. EVERY MONEY NUMBER GOES THROUGH THE ORDER-MONEY KIT (see `orderFromRows`).
+ */
+
+import crypto from "node:crypto";
+import { EVENTS } from "../../contract";
+import type { OrderContext, ReserveResult } from "./context";
+import { repositoryOf } from "./context";
+import {
+  isDuplicateKeyError, normaliseLine, type CustomerProfile, type NormalisedLine, type Order, type OrderDraft, type SearchFilter
+} from "./order-repository";
+
+const text = (v: unknown): string => String(v ?? "").trim();
+
+/** Result of placing an order. `code`/`size` say which line ran out when `reason` is `het_hang`. */
+export type PlaceResult =
+  | { ok: true; id: string; token: string; total: number }
+  | { ok: false; reason: "don_khong_co_mon" | "thieu_ten_khach" | "thieu_dien_thoai" | "het_hang"; code?: string; size?: string };
+
+/** Result of a status or payment write. */
+export type WriteOutcome = { ok: true } | { ok: false; reason: string };
+
+/** A status change: which order, the new status, an optional note and who did it. */
+export interface ChangeStatusInput {
+  id: string;
+  status: string;
+  note?: string | undefined;
+  /** Who did it: `"quan-tri"`, `"khach"`, `"he-thong"`... Goes into `actor_type`. */
+  actor?: string | undefined;
+}
+
+/** Money fields to write on an order; `null`/absent fields are left untouched. */
+export interface RecordPaymentInput {
+  id: string;
+  paymentMethod?: string | null | undefined;
+  paymentStatus?: string | null | undefined;
+  paymentAmount?: number | null | undefined;
+  paymentReference?: string | null | undefined;
+  note?: string | undefined;
+}
+
+/** One order by id, or null. */
+export function readOrder(ctx: OrderContext, id: string): Promise<Order | null> {
+  return repositoryOf(ctx).read(String(id || ""));
+}
+
+/** Orders newest first, filtered by status / phone / since; at most 500. */
+export function searchOrders(ctx: OrderContext, filter: SearchFilter = {}): Promise<Order[]> {
+  return repositoryOf(ctx).search(filter);
+}
+
+/** An order by id + the customer's lookup token — the public routes' only key. */
+export function readByLookupToken(ctx: OrderContext, { id = "", token = "" }: { id?: string; token?: string } = {}): Promise<Order | null> {
+  return repositoryOf(ctx).readByLookupToken(String(id || ""), String(token || ""));
+}
+
+/** The recipient profile as the storefront sends it; `address` falls back to the joined parts. */
+function profileFromBody(body: Record<string, unknown>): CustomerProfile {
+  const addressDetail = text(body["addressDetail"]);
+  const ward = text(body["ward"]);
+  const district = text(body["district"]);
+  const province = text(body["province"]);
+  return {
+    customerName: text(body["customerName"]),
+    phone: text(body["phone"]),
+    email: text(body["email"]),
+    address: text(body["address"] || [addressDetail, ward, district, province].filter(Boolean).join(", ")),
+    province, district, ward, addressDetail,
+    note: text(body["note"])
+  };
+}
+
+/**
+ * Places an order. Reserves stock FIRST, then writes the whole order in ONE transaction.
+ * If the reservation succeeded but the write failed, the reservation is released — stock is
+ * never left hanging.
+ */
+export async function placeOrder(ctx: OrderContext, rawBody: unknown): Promise<PlaceResult> {
+  const body = (rawBody && typeof rawBody === "object" ? rawBody : {}) as Record<string, unknown>;
+  const lines = (Array.isArray(body["items"]) ? body["items"] : []).map(normaliseLine).filter((l): l is NormalisedLine => l !== null);
+  if (lines.length === 0) return { ok: false, reason: "don_khong_co_mon" };
+  if (!text(body["customerName"])) return { ok: false, reason: "thieu_ten_khach" };
+  if (!text(body["phone"])) return { ok: false, reason: "thieu_dien_thoai" };
+
+  const inventory = ctx.services["hang-kho"];
+  const releaseAll = async (held: Extract<ReserveResult, { ok: true }>[]) => {
+    for (const h of held) await inventory.release({ ticket: h.ticket });
+  };
+
+  // RULE 1: reserve before writing.
+  // AND: THE PRICE COMES FROM STOCK, NOT FROM THE CUSTOMER. The order route is public — the
+  // customer can edit anything they send. Trusting the client's `price` sells a pair of shoes
+  // for 1 dong. The right price is the price of the stock line just reserved, as Inventory returns it.
+  const held: Extract<ReserveResult, { ok: true }>[] = [];
+  for (const line of lines) {
+    const r = await inventory.reserve({ code: line.code, size: line.size, quantity: line.quantity, heldBy: "dat-don" });
+    if (!r.ok) {
+      await releaseAll(held);
+      return { ok: false, reason: "het_hang", code: line.code, size: line.size };
+    }
+    line.unitPrice = Math.max(0, Number(r.price || 0));
+    if (!line.variantId) line.variantId = r.variantId || "";
+    if (!line.warehouseId) line.warehouseId = r.warehouseId || "";
+    if (!line.size) line.size = r.size || "";
+    held.push(r);
+  }
+
+  const placedAt = ctx.ports.clock.now();
+  const lookupToken = crypto.randomBytes(16).toString("hex");
+  const total = lines.reduce((sum, l) => sum + l.unitPrice * l.quantity, 0);
+  const draft: Omit<OrderDraft, "id"> = {
+    lookupToken, total, lines, profile: profileFromBody(body), paymentMethod: text(body["paymentMethod"]), placedAt
+  };
+
+  // ORDER ID from the timestamp (`ORD-<milliseconds>`) — the exact shape of the running site,
+  // because Sales Desk and Image Tool read it. But two customers ordering in the SAME millisecond
+  // collide: the second write is refused. Rare but real, and when it happens an order is lost
+  // without anyone noticing. The patch: on a duplicate id, bump the timestamp by 1 ms and write
+  // again — the shape is unchanged, and it is the REAL write that decides, because MySQL itself
+  // reports the duplicate key.
+  const repository = repositoryOf(ctx);
+  let id = "";
+  let lastError: unknown = null;
+  for (let step = 0; step < 50; step += 1) {
+    id = `ORD-${placedAt.getTime() + step}`;
+    try {
+      await repository.insert({ ...draft, id });
+      lastError = null;
+      break;
+    } catch (e) {
+      lastError = e;
+      if (!isDuplicateKeyError(e)) break;
+    }
+  }
+  if (lastError) {
+    await releaseAll(held);
+    ctx.ports.logger.warn(`[don-khach] ghi don hong, da tra lai cho giu: ${lastError instanceof Error ? lastError.message : String(lastError)}`);
+    throw lastError;
+  }
+
+  ctx.bus.emit(EVENTS.orderCreated, { maDon: id, tong: total, soMon: lines.length, dienThoai: text(body["phone"]) });
+  return { ok: true, id, token: lookupToken, total };
+}
+
+/** Sets a new status, logs it and announces it on the bus. `khong_co_don` when the id is unknown. */
+export async function changeStatus(ctx: OrderContext, { id, status, note = "", actor = "he-thong" }: ChangeStatusInput): Promise<WriteOutcome> {
+  const changed = await repositoryOf(ctx).changeStatus({
+    id: String(id || ""), status: String(status || ""), note: String(note || ""), actor: String(actor), at: ctx.ports.clock.now()
+  });
+  if (changed === 0) return { ok: false, reason: "khong_co_don" };
+  ctx.bus.emit(EVENTS.orderStatusChanged, { maDon: id, trangThai: status, boi: actor });
+  return { ok: true };
+}
+
+/**
+ * Writes MONEY fields onto an order. Only the orders module writes the orders table — every other
+ * feature (Money & reconciliation included) comes through this door, so two places never edit one
+ * order. Every write appends a log entry so later someone can tell who changed what.
+ */
+export async function recordPayment(ctx: OrderContext, input: RecordPaymentInput): Promise<WriteOutcome> {
+  const id = String(input.id || "");
+  if (!id) return { ok: false, reason: "thieu_ma_don" };
+  const changed = await repositoryOf(ctx).recordPayment({
+    id,
+    patch: {
+      paymentMethod: input.paymentMethod ?? null,
+      paymentStatus: input.paymentStatus ?? null,
+      paymentAmount: input.paymentAmount ?? null,
+      paymentReference: input.paymentReference ?? null
+    },
+    logStatus: String(input.paymentStatus || input.paymentMethod || "tien"),
+    note: String(input.note || ""),
+    at: ctx.ports.clock.now()
+  });
+  if (changed === -1) return { ok: false, reason: "khong_co_gi_de_ghi" };
+  return changed > 0 ? { ok: true } : { ok: false, reason: "khong_co_don" };
+}

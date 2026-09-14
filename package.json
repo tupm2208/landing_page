@@ -1,15 +1,27 @@
 {
-  "name": "toprun-server-khach",
-  "version": "0.1.0",
+  "name": "@sp/landing",
+  "version": "0.2.0",
   "private": true,
-  "description": "Server backend cua tung nha ban hang: giu du lieu, mo API cho OMI va Bo nao, nhan tin Fanpage",
-  "main": "chay.js",
+  "description": "The merchant's own server (landing): keeps the shop's data, serves the storefront, opens APIs for OMI and the brain, receives Fanpage messages.",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
   "scripts": {
-    "chay": "node chay.js",
-    "test": "node --test \"test/khai-quyen.test.js\" \"test/luat-kien-truc.test.js\" \"test/han-goi.test.js\" \"test/ve-xeon.test.js\" \"test/xeon-dang-ky.test.js\" \"test/che-do-thu.test.js\" \"test/gian-hang.test.js\" \"test/don-cong-khai.test.js\" \"test/gio-mysql.test.js\" \"test/goi-that.test.js\" \"test/han-than.test.js\" \"test/noi-dung.test.js\" \"test/bao-cao.test.js\" \"test/hop-thu.test.js\" \"test/hop-thu-kenh-omi.test.js\" \"test/tri-nho-bo-nao.test.js\" \"test/cong-bo-nao-cong-cu.test.js\" \"test/van-chuyen.test.js\"",
-    "test:mysql": "node --test --test-concurrency=1 --test-timeout=90000 \"test/kho-mysql.test.js\" \"test/hang-kho.test.js\" \"test/don-khach.test.js\" \"test/tien-doi-soat.test.js\" \"test/mua-ho.test.js\" \"test/ctv.test.js\""
+    "build": "tsc --build",
+    "check": "tsc -p tsconfig.check.json && tsc -p tsconfig.test.json",
+    "clean": "tsc --build --clean",
+    "start": "node dist/main.js",
+    "install-wizard": "node dist/tools/install.js",
+    "test": "npm run build && node --test --test-timeout=60000 --test-force-exit \"test/*.test.mts\"",
+    "test:mysql": "npm run build && node --test --test-concurrency=1 --test-timeout=90000 --test-force-exit \"test-mysql/*.test.mts\""
   },
   "dependencies": {
     "mysql2": "^3.24.4"
+  },
+  "devDependencies": {
+    "@types/node": "^24.3.0",
+    "typescript": "^5.9.2"
+  },
+  "engines": {
+    "node": ">=24.0.0"
   }
 }

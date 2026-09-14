@@ -1,0 +1,12 @@
+{
+  // Type-checks `src` without writing `dist` — safe to run while another build is in progress.
+  "extends": "./tsconfig.base.json",
+  "compilerOptions": {
+    "noEmit": true,
+    "declaration": false,
+    "declarationMap": false,
+    "sourceMap": false,
+    "rootDir": "src"
+  },
+  "include": ["src/**/*.ts", "src/**/*.json"]
+}
