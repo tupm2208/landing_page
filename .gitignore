@@ -3,8 +3,12 @@
 .env.*
 !.env.example
 
-# Thư viện tải về
-node_modules/
+# Thư viện tải về. Không có "/" cuối: trên cPanel `node_modules` là symlink sang nodevenv, mẫu có "/"
+# không khớp symlink, git coi là tệp lạ và cPanel từ chối "Deploy HEAD Commit".
+node_modules
+
+# Passenger/LiteSpeed: `tmp/restart.txt` báo khởi động lại app
+tmp/
 
 # Bản dịch TypeScript (sinh lại bằng `npm run build`)
 dist/

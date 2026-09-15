@@ -1,0 +1,3 @@
+# Script chạy trên hosting Linux: giữ LF kể cả khi commit từ Windows (CRLF làm bash hỏng).
+*.sh text eol=lf
+.cpanel.yml text eol=lf

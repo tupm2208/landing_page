@@ -28,6 +28,19 @@ Bảng biến đầy đủ ở `../HUONG-DAN-CHAY.md`. **Chế độ thử bật
 khách, không tạo vận đơn thật, không báo Telegram — chỉ `CHE_DO_THAT=1` mới cho gọi thật.
 Cổng MySQL 3306 là dữ liệu thật của landing đang chạy: mọi công cụ ở đây tự ném nếu trỏ vào đó.
 
+## Triển khai cPanel (không cần Terminal)
+
+Repo clone thẳng làm *Application root* (Git Version Control), startup file `dist/main.js`, `.env`
+tải lên bằng File Manager, không đặt `PORT`.
+
+- **Build sau mỗi lần cập nhật:** Git Version Control → Manage → Pull or Deploy → *Update from Remote*
+  rồi *Deploy HEAD Commit*. `.cpanel.yml` chạy `scripts/cpanel/build.sh` (npm install cả dev → build →
+  `tmp/restart.txt`). Nhật ký ở `~/landing-logs/build-*.log`.
+- **Chuyển dữ liệu từ bản cũ trên cùng hosting:** Cron Job chạy
+  `bash ~/repositories/landing_page/scripts/cpanel/chuyen-du-lieu.sh thu` (chỉ đếm), rồi `... that`.
+  Mỗi chế độ chạy một lần (tệp dấu `~/landing-logs/chuyen-du-lieu-<che-do>.da-chay`). Đơn web và tài
+  khoản khách nằm trong MySQL cũ nên chép bằng phpMyAdmin, không qua script.
+
 ## Cấu trúc
 
 | Tầng | Vai trò | Thư mục |

@@ -1,0 +1,7 @@
+---
+# cPanel Git Version Control -> Manage -> Pull or Deploy -> "Deploy HEAD Commit" chạy các lệnh dưới đây
+# (thay Terminal). Repo được clone thẳng làm Application root nên build ngay tại chỗ, không chép đi đâu.
+# Nhật ký: ~/landing-logs/build-<giờ>.log
+deployment:
+  tasks:
+    - /bin/bash scripts/cpanel/build.sh
