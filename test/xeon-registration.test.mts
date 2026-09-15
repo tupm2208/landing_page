@@ -93,10 +93,14 @@ function buildKernel({ http, store = new JsonFileStore(tmp()) }: { http: HttpCli
   return { kernel, call, clock, logger, auth, store };
 }
 
+/** Every delivery is a NEW message: the inbox files a message id once and never answers it twice. */
+let metaWebhookCount = 0;
+
 /** A Meta webhook delivery signed with the app secret. Timestamp near the fake clock: older than 24 h is deliberately not forwarded. */
 function metaWebhook(text = "còn size 42 không"): IncomingRequest {
   const at = Date.parse("2026-09-12T00:00:00.000Z");
-  const payload = { object: "page", entry: [{ id: "trang-1", time: at, messaging: [{ sender: { id: "khach-1" }, recipient: { id: "trang-1" }, timestamp: at, message: { mid: "m.1", text } }] }] };
+  metaWebhookCount += 1;
+  const payload = { object: "page", entry: [{ id: "trang-1", time: at, messaging: [{ sender: { id: "khach-1" }, recipient: { id: "trang-1" }, timestamp: at, message: { mid: `m.${metaWebhookCount}`, text } }] }] };
   const raw = Buffer.from(JSON.stringify(payload), "utf8");
   const signature = `sha256=${crypto.createHmac("sha256", APP_SECRET).update(raw).digest("hex")}`;
   return { method: "POST", path: "/api/facebook/webhook", ip: "3.3.3.3", headers: { "x-hub-signature-256": signature }, raw: async () => raw, json: async () => payload };

@@ -24,10 +24,13 @@
 import { ACCESS, EVENTS, defineModule, reply, type KernelRequest, type ModuleContext } from "../../contract";
 import type { PlatformServices } from "../khung-nen-tang/module";
 import {
-  defaultConversationBook, fileIncoming, fileOutgoing, listThreads, markOutgoingState, markRead, threadOf, unreadThreadCount,
+  conversationId, defaultConversationBook, fileIncoming, fileOutgoing, listThreads, markOutgoingState, markRead, threadOf, unreadThreadCount,
   type ConversationBook
 } from "./conversations";
-import { GraphApiClient } from "./graph-api";
+import { GRAPH_VERSION, GraphApiClient } from "./graph-api";
+import {
+  PAGE_TOKEN_DOCUMENT, defaultPageTokenBook, mergePages, normaliseIncomingPages, publicPages, tokenForPage, type PageTokenBook
+} from "./page-tokens";
 import {
   COMMENT_CHANNEL, INBOX_KEEP_MAX, INBOX_SEEN_MAX, OMI_CHANNELS, defaultInboxBook, isOmiEvent, normaliseOmiMessage,
   type InboundMessage, type InboxBook, type InboxEvent
@@ -244,6 +247,18 @@ async function receiveMetaWebhook(ctx: Ctx, request: KernelRequest) {
     return reply.json({ ok: false, error: "chu_ky_sai" }, 401);
   }
 
+  await acceptPagePacket(ctx, payload, raw, signature, verified);
+  return reply.json({ ok: true, daXacMinh: verified });
+}
+
+/**
+ * Files one Fanpage packet: the raw event into the inbox (Desk pulls it), then — only when it is
+ * known to come from Meta — each message and comment into its thread, onto the bus and to the brain.
+ *
+ * Two doors lead here: Meta calling this landing directly (signature checked by the caller), and
+ * Xeon forwarding what Meta sent to the developer's app (service ticket checked by the kernel).
+ */
+async function acceptPagePacket(ctx: Ctx, payload: unknown, raw: Buffer, signature: string, verified: boolean): Promise<{ daNhan: number; trung: number }> {
   const at = ctx.ports.clock.now().toISOString();
   await inboxDocument(ctx).update((current) => {
     const book = current ?? defaultInboxBook();
@@ -259,17 +274,61 @@ async function receiveMetaWebhook(ctx: Ctx, request: KernelRequest) {
   }, defaultInboxBook());
 
   // Announce on the bus only when really verified. The brain listens to answer the customer.
-  if (verified) {
-    const settings = await readSettings(ctx);
-    // Messages AND public comments. A shop that reads only the inbox loses the loudest questions
-    // it gets — the ones under a post, where everybody can see whether they were answered.
-    for (const message of [...parseWebhookMessages(payload), ...parseWebhookComments(payload)]) {
-      await fileInThread(ctx, (book, when) => fileIncoming(book, message, when));
-      ctx.bus.emit(EVENTS.messageIn, message);
-      pushUnlessStale(ctx, message, settings);
-    }
+  if (!verified) return { daNhan: 0, trung: 0 };
+  const settings = await readSettings(ctx);
+  let filed = 0;
+  let duplicates = 0;
+  // Messages AND public comments. A shop that reads only the inbox loses the loudest questions
+  // it gets — the ones under a post, where everybody can see whether they were answered.
+  for (const message of [...parseWebhookMessages(payload), ...parseWebhookComments(payload)]) {
+    // The same delivery can arrive twice (Meta retrying, Xeon re-sending a packet it kept): a
+    // message already in its thread is neither filed again nor answered a second time.
+    const thread = threadOf(await conversationDocument(ctx).read(null), conversationId(message.kenh, message.nguoi));
+    if (message.maTin !== "" && thread?.tin.some((m) => m.maTin === message.maTin)) { duplicates += 1; continue; }
+    await fileInThread(ctx, (book, when) => fileIncoming(book, message, when));
+    ctx.bus.emit(EVENTS.messageIn, message);
+    pushUnlessStale(ctx, message, settings);
+    filed += 1;
   }
-  return reply.json({ ok: true, daXacMinh: verified });
+  return { daNhan: filed, trung: duplicates };
+}
+
+/**
+ * Xeon forwards what Meta sent to the developer's app for THIS shop's pages (decided 15/09/2026:
+ * one app for every merchant, its webhook on Xeon). No Meta signature survives the hop; the kernel
+ * already checked Xeon's service ticket, which names this shop.
+ */
+async function receiveFromXeon(ctx: Ctx, request: KernelRequest) {
+  const packet = asObject(await request.json())["goi"];
+  if (!isPagePayload(packet)) return reply.json({ ok: false, error: "goi_webhook_khong_hop_le" }, 400);
+  const result = await acceptPagePacket(ctx, packet, Buffer.from(JSON.stringify(packet), "utf8"), "xeon", true);
+  return reply.json({ ok: true, ...result }, 200, NO_STORE);
+}
+
+const pageTokenDocument = (ctx: Ctx) => ctx.ports.store.document<PageTokenBook>(PAGE_TOKEN_DOCUMENT);
+
+/**
+ * Tells Xeon which pages this shop answers for, with their tokens as PROOF: Xeon asks Meta whose
+ * each token is, subscribes the page to the app, and keeps no token. From then on Xeon routes those
+ * pages' events here. Not registered with Xeon = nothing to tell; the tokens still serve replies.
+ */
+async function connectPagesWithXeon(ctx: Ctx, pages: { ma: string; ten: string; token: string }[]): Promise<Record<string, unknown>> {
+  const registration = ctx.services["khung-nen-tang"]?.xeon ? await ctx.services["khung-nen-tang"].xeon() : null;
+  if (!registration?.diaChiXeon || !registration.maNhanTin) return { ok: false, viSao: "chua_dang_ky_xeon" };
+  try {
+    const response = await ctx.ports.http.fetch(`${String(registration.diaChiXeon).replace(/\/+$/, "")}/meta/trang`, {
+      method: "POST",
+      timeoutMs: 60_000,
+      headers: { "Content-Type": "application/json", Authorization: `Bearer ${registration.maNhanTin}` },
+      body: JSON.stringify({ trang: pages.map((p) => ({ ma: p.ma, ten: p.ten, token: p.token })), dangKyNhanTin: true })
+    });
+    const answer = asObject(await response.json().catch(() => ({})));
+    if (!response.ok) return { ok: false, viSao: String(answer["error"] ?? `HTTP ${response.status}`) };
+    // Xeon's outcomes carry page ids, names and reasons — never a token.
+    return { ok: true, ketQua: Array.isArray(answer["ketQua"]) ? answer["ketQua"] : [] };
+  } catch (e) {
+    return { ok: false, viSao: "khong_goi_duoc_xeon", chiTiet: e instanceof Error ? e.message : String(e) };
+  }
 }
 
 /** OMI (the on-duty machine) pushes messages it read from Zalo / personal Facebook into the inbox. */
@@ -326,24 +385,28 @@ async function sendMessage(ctx: Ctx, input: SendInput): Promise<SendResult> {
   }
   const at = ctx.ports.clock.now();
   const sentBy = input.nguon ?? "nguoi";
-  if (channel === COMMENT_CHANNEL) {
+  if (channel === COMMENT_CHANNEL || channel === "facebook") {
+    // WHICH PAGE answers: the thread remembers the page the customer wrote to, and Meta accepts a
+    // reply only with THAT page's token. A shop with several pages and one token answered one page
+    // and failed the rest (15/09/2026). No token stored for the page = the old single token, as `/me`.
+    const thread = threadOf(await conversationDocument(ctx).read(null), String(input.maHoiThoai ?? "").trim() || conversationId(channel, recipient));
+    const pageId = String(thread?.trang ?? "");
+    const tokens = await pageTokenDocument(ctx).read(null);
+    const pageToken = tokenForPage(tokens, pageId);
+    const sender = {
+      graph: new GraphApiClient(ctx.ports.http, pageToken || (await facebookKeys(ctx)).pageToken, String(tokens?.graph ?? "") || GRAPH_VERSION),
+      pageId: pageToken ? pageId : ""
+    };
+    if (channel === "facebook") return sendFacebookText(ctx, sender, { recipient, text, sentBy, at });
     // Answering under the comment, not in the inbox: a public question answered privately still
-    // looks unanswered to everyone else reading the post.
-    const target = String(input.traLoiTin ?? "").trim();
+    // looks unanswered to everyone else reading the post. No comment id given (the brain did not
+    // send one before 15/09/2026) = the customer's latest comment in this thread.
+    const latestComment = [...(thread?.tin ?? [])].reverse().find((m) => m.chieu === "den" && m.maTin !== "")?.maTin ?? "";
+    const target = String(input.traLoiTin ?? "").trim() || latestComment;
     if (!target) throw new Error("Tra loi binh luan can `traLoiTin` — ma cua binh luan.");
-    const graph = new GraphApiClient(ctx.ports.http, (await facebookKeys(ctx)).pageToken);
+    const graph = sender.graph;
     const metaReply = await graph.replyToComment(target, text);
     const messageId = String((metaReply as Record<string, unknown>)["id"] ?? "") || `bl_${at.getTime()}`;
-    await fileInThread(ctx, (book, when) => fileOutgoing(book, { kenh: channel, nguoi: recipient, maTin: messageId, chu: text, luc: when, boi: sentBy, trangThai: "da-gui" }, when));
-    ctx.bus.emit(EVENTS.messageOut, { kenh: channel, nguoi: recipient, chu: text, luc: at.toISOString() });
-    return { ...metaReply, guiNgay: true };
-  }
-  if (channel === "facebook") {
-    const graph = new GraphApiClient(ctx.ports.http, (await facebookKeys(ctx)).pageToken);
-    const metaReply = await graph.sendText(recipient, text);
-    // Meta's own message id when it gave one, otherwise a local one — either way the thread keeps
-    // WHAT WE SAID. Without this the chat pane shows every question and no answer.
-    const messageId = String((metaReply as Record<string, unknown>)["message_id"] ?? "") || `di_${at.getTime()}`;
     await fileInThread(ctx, (book, when) => fileOutgoing(book, { kenh: channel, nguoi: recipient, maTin: messageId, chu: text, luc: when, boi: sentBy, trangThai: "da-gui" }, when));
     ctx.bus.emit(EVENTS.messageOut, { kenh: channel, nguoi: recipient, chu: text, luc: at.toISOString() });
     return { ...metaReply, guiNgay: true };
@@ -365,6 +428,21 @@ async function sendMessage(ctx: Ctx, input: SendInput): Promise<SendResult> {
     return { xepHang: true, id: item.id, guiNgay: false };
   }
   throw new Error(`Kenh "${channel}" chua co o ban nay.`);
+}
+
+/** A Messenger reply sent as the thread's page (see `sendMessage`), kept in the thread as what we said. */
+async function sendFacebookText(
+  ctx: Ctx,
+  sender: { graph: GraphApiClient; pageId: string },
+  { recipient, text, sentBy, at }: { recipient: string; text: string; sentBy: string; at: Date }
+): Promise<SendResult> {
+  const metaReply = await sender.graph.sendText(recipient, text, sender.pageId);
+  // Meta's own message id when it gave one, otherwise a local one — either way the thread keeps
+  // WHAT WE SAID. Without this the chat pane shows every question and no answer.
+  const messageId = String((metaReply as Record<string, unknown>)["message_id"] ?? "") || `di_${at.getTime()}`;
+  await fileInThread(ctx, (book, when) => fileOutgoing(book, { kenh: "facebook", nguoi: recipient, maTin: messageId, chu: text, luc: when, boi: sentBy, trangThai: "da-gui" }, when));
+  ctx.bus.emit(EVENTS.messageOut, { kenh: "facebook", nguoi: recipient, chu: text, luc: at.toISOString() });
+  return { ...metaReply, guiNgay: true };
 }
 
 /** Only the ON-DUTY machine (or a long-lived key) may drain the queue — so two machines never both type the same reply. */
@@ -412,6 +490,45 @@ export const manifest = defineModule<Config, Services>({
       // 600 per 10 minutes — the running site's number. Meta batches when many messages arrive at once.
       rateLimit: { calls: 600, windowMs: TEN_MINUTES },
       handle: receiveMetaWebhook
+    },
+
+    // Xeon forwards Meta's deliveries for this shop's pages (one developer app for every merchant, 15/09/2026).
+    {
+      method: "POST", path: "/api/hop-thu/meta-tu-xeon", access: ACCESS.service,
+      rateLimit: { calls: 1200, windowMs: TEN_MINUTES },
+      bodyLimit: 512 * 1024,
+      handle: receiveFromXeon
+    },
+
+    // PAGE TOKENS — one per Fanpage. The old site's door for Sales Desk, same body; OMI and the import tool use it too.
+    {
+      method: "POST", path: "/api/admin/fanpage/credentials", access: ACCESS.admin,
+      rateLimit: { calls: 60, windowMs: TEN_MINUTES },
+      bodyLimit: 64 * 1024,
+      handle: async (ctx, request) => {
+        const body = asObject(await request.json());
+        const pages = normaliseIncomingPages(body["pages"] ?? body["trang"]);
+        if (pages.length === 0) return reply.json({ ok: false, error: "can_danh_sach_trang", message: "Cần ít nhất một trang có mã và token." }, 400);
+        const at = ctx.ports.clock.now().toISOString();
+        let book: PageTokenBook = defaultPageTokenBook();
+        await pageTokenDocument(ctx).update((current) => {
+          book = mergePages(current, pages, body["metaGraphVersion"] ?? body["graph"], at);
+          return book;
+        }, defaultPageTokenBook());
+        // Xeon learns which pages this shop answers for, so it routes their messages here.
+        const xeon = await connectPagesWithXeon(ctx, pages);
+        ctx.ports.logger.info(`[hop-thu] nhan token ${pages.length} trang: ${pages.map((p) => p.ma).join(", ")}`);
+        // Never echo a token: the reply lists pages through `publicPages`.
+        return reply.json({ ok: true, soTrang: pages.length, trang: publicPages(book), xeon }, 200, NO_STORE);
+      }
+    },
+    {
+      method: "GET", path: "/api/hop-thu/trang", access: ACCESS.admin,
+      rateLimit: { calls: 120, windowMs: TEN_MINUTES },
+      handle: async (ctx) => {
+        const book = await pageTokenDocument(ctx).read(null);
+        return reply.json({ ok: true, trang: publicPages(book), graph: String(book?.graph ?? "") }, 200, NO_STORE);
+      }
     },
 
     // OMI (the on-duty machine) pushes messages read from Zalo / personal Facebook. Duplicate ids are skipped.

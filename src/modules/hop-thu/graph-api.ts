@@ -44,14 +44,18 @@ export class GraphApiClient {
     return parsed !== null && typeof parsed === "object" ? (parsed as Record<string, unknown>) : {};
   }
 
-  /** Sends one text message. THROWS when Meta refuses (the caller reports, never swallows). Returns Meta's reply (`message_id`...). */
-  async sendText(recipientId: string, text: string): Promise<Record<string, unknown>> {
+  /**
+   * Sends one text message. THROWS when Meta refuses (the caller reports, never swallows). Returns Meta's reply (`message_id`...).
+   * `pageId`: send as THAT page (`/{pageId}/messages`, the token must be that page's); empty = `/me`, the token's own page.
+   */
+  async sendText(recipientId: string, text: string, pageId = ""): Promise<Record<string, unknown>> {
     if (!this.pageToken) throw new Error("Chua co token trang — khong gui tin duoc.");
     if (!recipientId) throw new Error("Thieu nguoi nhan.");
     const content = String(text ?? "").trim();
     if (!content) throw new Error("Tin rong — khong gui.");
 
-    const url = `https://graph.facebook.com/${this.version}/me/messages?access_token=${encodeURIComponent(this.pageToken)}`;
+    const sender = String(pageId ?? "").trim() ? encodeURIComponent(String(pageId).trim()) : "me";
+    const url = `https://graph.facebook.com/${this.version}/${sender}/messages?access_token=${encodeURIComponent(this.pageToken)}`;
     const response = await this.http.fetch(url, {
       method: "POST",
       headers: { "Content-Type": "application/json" },

@@ -236,13 +236,23 @@ test("a PUBLIC COMMENT becomes its own kind of thread, and the reply goes under 
   assert.equal(one["hoiThoai"]["tin"][0]["baiViet"], "trang-1_99", "the seller must see WHICH post is being asked about");
   assert.equal(one["hoiThoai"]["tin"][0]["luc"].slice(0, 4), "2026", "comment times are SECONDS; treating them as ms lands in the year 57,000");
 
-  // Replying without saying which comment is refused rather than answered into the void.
+  // No comment id (the brain sent none before 15/09/2026): the reply goes under the customer's
+  // latest comment in the thread rather than failing.
+  http.calls.length = 0;
   const noTarget = await kernel.handle({
     method: "POST", path: "/api/hop-thu/gui", query: {}, headers: admin, ip: "1.1.1.1",
     json: async () => ({ kenh: "facebook-binh-luan", nguoi: "khach-9", chu: "dạ 2.890.000đ ạ" })
   });
-  assert.equal(noTarget.status, 502);
-  assert.match(String((noTarget.body as Body)["message"]), /traLoiTin/);
+  assert.equal(noTarget.status, 200, JSON.stringify(noTarget.body));
+  assert.match(String(http.calls[0]?.url), /\/c\.1\/comments/, "without an id: under the customer's latest comment");
+
+  // Someone with no comment anywhere: nothing to answer under — refused rather than answered into the void.
+  const nowhere = await kernel.handle({
+    method: "POST", path: "/api/hop-thu/gui", query: {}, headers: admin, ip: "1.1.1.1",
+    json: async () => ({ kenh: "facebook-binh-luan", nguoi: "khach-chua-binh-luan", chu: "dạ" })
+  });
+  assert.equal(nowhere.status, 502);
+  assert.match(String((nowhere.body as Body)["message"]), /traLoiTin/);
 
   http.calls.length = 0;
   const replied = await kernel.handle({
@@ -253,7 +263,9 @@ test("a PUBLIC COMMENT becomes its own kind of thread, and the reply goes under 
   assert.match(String(http.calls[0]?.url), /\/c\.1\/comments/, "the answer goes UNDER the comment, not into the inbox");
 
   const after = (await thread("facebook-binh-luan:khach-9")).body as Body;
-  assert.deepEqual(after["hoiThoai"]["tin"].map((m: Body) => m["chieu"]), ["den", "di"]);
+  const directions = after["hoiThoai"]["tin"].map((m: Body) => m["chieu"]);
+  assert.equal(directions[0], "den");
+  assert.ok(directions.length >= 2 && directions.slice(1).every((d: string) => d === "di"), `the answers are kept: ${JSON.stringify(directions)}`);
 });
 
 test("a comment the PAGE ITSELF wrote, and a deleted one, are not questions", () => {
