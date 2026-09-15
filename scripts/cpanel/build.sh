@@ -6,10 +6,15 @@
 set -eo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
-LOG_DIR="$HOME/landing-logs"
-mkdir -p "$LOG_DIR"
-LOG="$LOG_DIR/build-$(date +%Y%m%d-%H%M%S).log"
-exec > >(tee -a "$LOG") 2>&1
+if [ -z "${BUILD_LOG:-}" ]; then
+  LOG_DIR="$HOME/landing-logs"
+  mkdir -p "$LOG_DIR"
+  export BUILD_LOG="$LOG_DIR/build-$(date +%Y%m%d-%H%M%S).log"
+  # Chạy lại chính script qua đường ống để mọi dòng vào cả nhật ký lẫn log deploy của cPanel.
+  # Không dùng `exec > >(tee ...)`: shell bị giam (jailshell) của cPanel không có /dev/fd.
+  bash "${BASH_SOURCE[0]}" "$@" 2>&1 | tee -a "$BUILD_LOG"
+  exit "${PIPESTATUS[0]}"
+fi
 trap 'echo "[build] HỎNG ở dòng $LINENO — xem các dòng ngay trên."' ERR
 
 echo "[build] $(date '+%F %T') tại $ROOT"
