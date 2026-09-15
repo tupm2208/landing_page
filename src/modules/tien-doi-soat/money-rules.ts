@@ -70,13 +70,9 @@ export function shippingFee(choice: string, defaultFee = 30000): number {
 
 /**
  * The transfer reference the shop reconciles by: `<prefix>-<last 8 characters of the order id>`.
- * The prefix belongs to each shop (config), so two shops never mistake each other's money.
+ * Lives in `shared/` because Orders stamps the same string when the order is placed.
  */
-export function transferCode(orderId: string, prefix = "TR"): string {
-  const p = String(prefix || "TR").trim().replace(/[^a-z0-9_-]/gi, "").slice(0, 12) || "TR";
-  const tail = String(orderId || Date.now()).replace(/[^0-9a-z]/gi, "").slice(-8).toUpperCase();
-  return `${p}-${tail}`;
-}
+export { transferCode } from "../../shared/transfer-code";
 
 export function isValidChoice(choice: unknown): choice is PaymentChoice {
   return Object.prototype.hasOwnProperty.call(PAYMENT_METHODS, String(choice || ""));

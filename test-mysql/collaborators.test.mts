@@ -222,7 +222,14 @@ test("Collaborators on real MySQL", { ...skip }, async (t) => {
 
   await t.test("SWITCHING an account off ends its open session at once", async () => {
     const { cookie, collaboratorId } = await loggedInCollaborator();
-    assert.equal((await asCollaborator("/api/ctv/me", cookie)).status, 200);
+    const me = await asCollaborator("/api/ctv/me", cookie);
+    assert.equal(me.status, 200);
+    // The old site's envelope: ctv-account.js reads payload.data.name / .code, ctv-image.js .allowNoLogo.
+    assert.equal(bodyOf(me).data.id, collaboratorId);
+    assert.equal(bodyOf(me).data.name, "Đặng Mai");
+    assert.ok(String(bodyOf(me).data.code).length > 0, "the ?ref link needs the referral code");
+    assert.equal(bodyOf(me).data.allowNoLogo, true);
+    assert.ok(!JSON.stringify(me.body).includes("maPhien"), "the session id must not leave the server");
 
     await addCollaborator({ ma: collaboratorId, ten: "Đặng Mai", dienThoai: "0356095310", dangBat: false });
     assert.equal((await asCollaborator("/api/ctv/me", cookie)).status, 401, "an account switched off that still gets in is a hole");

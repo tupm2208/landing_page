@@ -323,7 +323,18 @@ export const manifest = defineModule<Config, Services>({
       handle: async (ctx, request) => {
         const who = await loggedIn(ctx, request);
         if (!who) return reply.json({ ok: false, error: ERROR_CODES.unauthenticated }, 401);
-        return reply.json({ ok: true, ctv: who }, 200, NO_STORE);
+        // The old site's envelope and English names, which the storefront reads: ctv-account.js
+        // `payload.data.name` / `.code`, ctv-image.js `.allowNoLogo`, the ?ref badge `.code`. Returning
+        // `{ ctv }` (15/09/2026) threw on `account.name` and bounced collaborators between the login
+        // and account pages forever. Commission figures come from Sales Desk and are not on this
+        // server yet: empty, never invented. Session and device ids stay inside.
+        return reply.json({
+          ok: true,
+          data: {
+            id: who.ma, affiliateId: who.ma, name: who.ten, email: who.email, username: who.tenDangNhap,
+            code: who.maGioiThieu, allowNoLogo: who.choBoLogo, commissionSummary: {}, orders: [], payments: []
+          }
+        }, 200, NO_STORE);
       }
     },
     {

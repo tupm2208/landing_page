@@ -45,6 +45,7 @@ import {
   changeStatus, placeOrder, readByLookupToken, readOrder, recordPayment, recordShipment, searchOrders,
   type ChangeStatusInput, type PlaceResult, type RecordPaymentInput, type WriteOutcome
 } from "./order-service";
+import { placeOrderOnce, placeRefusal } from "./placement-guard";
 import { ORDER_CAP, overview } from "./reports";
 import { ORDER_TABLES, SCHEMA } from "./schema";
 
@@ -104,7 +105,8 @@ export const manifest = defineModule<Config, Services>({
   // Money on an order is computed by the Money module (RULE 3: every number through the kit).
   // OPTIONAL because a merchant may not have bought Money — the lookup page still works, it
   // just does not show the paid amount.
-  requiresOptional: ["tien-doi-soat.orderMoney"],
+  // The transfer prefix comes from page content when the platform module is there (the owner edits it).
+  requiresOptional: ["tien-doi-soat.orderMoney", "khung-nen-tang.moneySettings"],
 
   events: {
     emits: [EVENTS.orderCreated, EVENTS.orderStatusChanged, EVENTS.orderCancelled],
@@ -139,9 +141,14 @@ export const manifest = defineModule<Config, Services>({
       // Placing an order RESERVES real stock — a flooder could reserve the whole shop. Tight limit.
       rateLimit: { calls: 20, windowMs: TEN_MINUTES },
       handle: async (ctx, request): Promise<ReplyDraft> => {
-        const result = await placeOrder(ctx, await request.json());
-        if (!result.ok) return { status: 400, body: { ok: false, error: result.reason, mon: result.code, size: result.size } };
-        return { status: 200, body: { ok: true, id: result.id, token: result.token, total: result.total } };
+        const result = await placeOrderOnce(ctx, await request.json());
+        if (!result.ok) return placeRefusal(result);
+        // `paymentReference`: the checkout popup puts it in the QR and "Nội dung CK". Without it the
+        // customer paid with the order id while the shop reconciled by TR-... (15/09/2026).
+        return {
+          status: 200,
+          body: { ok: true, id: result.id, token: result.token, total: result.total, paymentReference: result.paymentReference, ...(result.duplicate ? { duplicate: true } : {}) }
+        };
       }
     },
     {

@@ -206,9 +206,10 @@ function copyText(value) {
   navigator.clipboard?.writeText(String(value || "")).catch(() => {});
 }
 
-// BAN TACH (12/09/2026): POST /api/orders tra ve { ok, id, token, total } chu khong tra ca
-// don nhu ban dang chay. Popup thanh toan can ma don + ma tra cuu, nen ghep lai o day —
+// BAN TACH (12/09/2026): POST /api/orders tra ve { ok, id, token, total, paymentReference } chu khong
+// tra ca don nhu ban dang chay. Popup thanh toan can ma don + ma tra cuu + ma CK, nen ghep lai o day —
 // mot cho duy nhat, va van chay duoc voi ban cu (ban cu co `order` thi dung luon `order`).
+// 15/09/2026: thieu paymentReference thi QR va "Noi dung CK" hien ORD-... thay vi TR-... (lech doi soat).
 function orderFromCreateResult(result = {}, payload = {}) {
   if (result && typeof result.order === "object" && result.order) return result.order;
   const id = String(result?.id || "").trim();
@@ -218,6 +219,7 @@ function orderFromCreateResult(result = {}, payload = {}) {
     ...payload,
     id,
     total: Number(result?.total ?? payload?.total ?? 0),
+    paymentReference: String(result?.paymentReference || "").trim(),
     lookupToken: token,
     lookupUrl: `/order-status.html?order=${encodeURIComponent(id)}&token=${encodeURIComponent(token)}`
   };

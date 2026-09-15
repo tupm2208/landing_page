@@ -6,7 +6,7 @@
  *   1. Serves the storefront files (HTML, CSS, JS, images) — through the `staticFiles` port,
  *      never by opening `fs` itself.
  *   2. Maps a few friendly paths: "/" -> index.html, "/mobile" -> mobile.html,
- *      "/product/<slug>" -> product.html.
+ *      "/product/<slug>" -> product.html, "/ctv-login" and "/ctv-account" -> the collaborator pages.
  *   3. Injects Open Graph tags into the product page, because Facebook's crawler runs no JavaScript.
  *
  * THE UI HERE IS A VERBATIM COPY of the running site (directory `goc/`), as Dũng decided on
@@ -157,6 +157,20 @@ export const manifest = defineModule<Config, Services>({
       whyPublic: "Ban web cho dien thoai. Chi tra tep tinh, khong doc du lieu khach.",
       rateLimit: { calls: 600, windowMs: MINUTES_10 },
       handle: async (ctx) => serveFile(ctx, "/mobile.html")
+    },
+    {
+      // The collaborator pages navigate to these friendly paths (ctv-login.js, ctv-account.js); the
+      // catch-all cannot serve them because it only serves declared extensions.
+      method: "GET", path: "/ctv-login", access: ACCESS.public,
+      whyPublic: "Trang dang nhap cong tac vien. Chi tra tep tinh, khong doc du lieu.",
+      rateLimit: { calls: 600, windowMs: MINUTES_10 },
+      handle: async (ctx) => serveFile(ctx, "/ctv-login.html")
+    },
+    {
+      method: "GET", path: "/ctv-account", access: ACCESS.public,
+      whyPublic: "Trang tai khoan cong tac vien. Chi tra tep tinh; du lieu lay qua /api/ctv/me, can phien dang nhap.",
+      rateLimit: { calls: 600, windowMs: MINUTES_10 },
+      handle: async (ctx) => serveFile(ctx, "/ctv-account.html")
     },
     {
       method: "GET", path: "/product.html", access: ACCESS.public,

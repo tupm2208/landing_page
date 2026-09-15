@@ -72,7 +72,9 @@ export function moduleConfigFromEnv(env: Env, { siteUrl, xeonAddress }: { siteUr
       siteUrl: siteUrl || "https://toprun.site",
       https: text(env["PHIEN_HTTPS"]) === "1",
       sessionDays: Number(env["PHIEN_KHACH_NGAY"] || 30),
-      resetMinutes: Number(env["LINK_KHACH_PHUT"] || 30)
+      resetMinutes: Number(env["LINK_KHACH_PHUT"] || 30),
+      // The transfer reference is stamped when the order is placed — same fallback prefix as Money.
+      transferPrefix: text(env["TIEN_TIEN_TO_CK"]) || undefined
     },
     "tien-doi-soat": {
       // Deposit percent / shipping fee / transfer prefix: with the platform module present these

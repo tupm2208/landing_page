@@ -150,27 +150,60 @@ test("Orders on real MySQL", { ...skip }, async (t) => {
     assert.equal(await store.table("order_status_logs").count({ order_id: placed.id }), 1);
   });
 
+  // The old site's refusal, which the storefront reads: `message` is shown, m-order.js branches on 409 / invalid_order.
+  type Refusal = { ok: false; error: string; lyDo: string; message: string };
+
   await t.test("placing an order RESERVES stock — the next customer cannot buy the pair already sold", async () => {
     await cleanUp(); stockUp(1);
     assert.equal((await place(SAMPLE_ORDER)).status, 200);
 
     const second = await place(SAMPLE_ORDER);
-    assert.equal(second.status, 400);
-    assert.equal(body<PlacedBody>(second).error, "het_hang");
+    assert.equal(second.status, 409);
+    assert.equal(body<Refusal>(second).error, "insufficient_stock");
+    assert.equal(body<Refusal>(second).lyDo, "het_hang");
+    assert.match(body<Refusal>(second).message, /DV1234 size 42/);
   });
 
   await t.test("out of stock writes NO order at all", async () => {
     await cleanUp(); stockUp(0);
-    assert.equal(body<PlacedBody>(await place(SAMPLE_ORDER)).error, "het_hang");
+    assert.equal(body<Refusal>(await place(SAMPLE_ORDER)).lyDo, "het_hang");
     assert.equal(await store.table("orders").count(), 0, "no empty order may be left behind");
   });
 
   await t.test("an order missing the name or the phone is refused", async () => {
     await cleanUp();
-    assert.equal(body<PlacedBody>(await place({ ...SAMPLE_ORDER, customerName: "" })).error, "thieu_ten_khach");
-    assert.equal(body<PlacedBody>(await place({ ...SAMPLE_ORDER, phone: "" })).error, "thieu_dien_thoai");
-    assert.equal(body<PlacedBody>(await place({ ...SAMPLE_ORDER, items: [] })).error, "don_khong_co_mon");
+    const cases: [unknown, string][] = [
+      [{ ...SAMPLE_ORDER, customerName: "" }, "thieu_ten_khach"],
+      [{ ...SAMPLE_ORDER, phone: "" }, "thieu_dien_thoai"],
+      [{ ...SAMPLE_ORDER, items: [] }, "don_khong_co_mon"]
+    ];
+    for (const [order, reason] of cases) {
+      const r = await place(order);
+      assert.equal(r.status, 422);
+      assert.equal(body<Refusal>(r).error, "invalid_order");
+      assert.equal(body<Refusal>(r).lyDo, reason);
+      assert.ok(body<Refusal>(r).message.length > 0, "the page shows this message to the customer");
+    }
     assert.equal(await store.table("orders").count(), 0);
+  });
+
+  await t.test("the order carries its transfer reference from the start — the QR and 'Nội dung CK' show it", async () => {
+    await cleanUp();
+    const placed = body<PlacedBody & { paymentReference: string }>(await place(SAMPLE_ORDER));
+    assert.equal(placed.paymentReference, `TR-${placed.id.replace(/[^0-9a-z]/gi, "").slice(-8).toUpperCase()}`);
+    assert.equal((await readAsAdmin(placed.id)).paymentReference, placed.paymentReference, "stamped on the order, not only in the reply");
+  });
+
+  await t.test("the same checkout form sent twice places ONE order (clientOrderId)", async () => {
+    await cleanUp();
+    const form = { ...SAMPLE_ORDER, clientOrderId: "co-bai-thu-1" };
+    const first = body<PlacedBody>(await place(form));
+    const again = await place(form);
+    assert.equal(again.status, 200);
+    assert.equal(body<PlacedBody & { duplicate?: boolean }>(again).id, first.id);
+    assert.equal(body<PlacedBody & { duplicate?: boolean }>(again).duplicate, true);
+    assert.equal(await store.table("orders").count(), 1, "a retry must not hold the stock twice");
+    assert.notEqual(body<PlacedBody>(await place({ ...SAMPLE_ORDER, clientOrderId: "co-bai-thu-2" })).id, first.id, "another form is another order");
   });
 
   await t.test("a placed order is announced on the bus", async () => {

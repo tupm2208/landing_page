@@ -281,5 +281,6 @@ test("share link /l/<token> 302s to the filter; a garbage token goes to the home
 test("the route table keeps the exact public paths of the old site", () => {
   const { kernel } = buildKernel();
   const paths = kernel.routes().filter((r) => r.moduleId === "gian-hang").map((r) => `${r.method} ${r.path}`).sort();
-  assert.deepEqual(paths, ["GET /", "GET /*", "GET /l/:token", "GET /mobile", "GET /product.html", "GET /product/:khoa"]);
+  // /ctv-login and /ctv-account: the old site mapped them too, and the collaborator pages navigate there.
+  assert.deepEqual(paths, ["GET /", "GET /*", "GET /ctv-account", "GET /ctv-login", "GET /l/:token", "GET /mobile", "GET /product.html", "GET /product/:khoa"]);
 });

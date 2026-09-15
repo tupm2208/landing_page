@@ -26,6 +26,8 @@ export interface Config {
   sessionDays?: number;
   /** Password-reset and change-verification links live this long; default 30 minutes. */
   resetMinutes?: number;
+  /** Transfer prefix when page content sets none (`TIEN_TIEN_TO_CK`); same fallback as the Money module. */
+  transferPrefix?: string;
 }
 
 /** What placing an order asks Inventory to hold. */
@@ -80,7 +82,12 @@ export interface RestockInput {
 
 export type RestockResult = { ok: true } | { ok: false; reason: string };
 
-/** Services this module consumes. Money is optional: a shop may not have bought that feature. */
+/** The slice of page content's money settings this module reads (the transfer prefix). */
+export interface PageMoneySettings {
+  tienToChuyenKhoan?: string | null;
+}
+
+/** Services this module consumes. Money and the platform are optional: a shop may not have bought them. */
 export interface Services {
   "hang-kho": {
     reserve(input: ReserveInput): Promise<ReserveResult>;
@@ -90,6 +97,9 @@ export interface Services {
   };
   "tien-doi-soat"?: {
     orderMoney(orderId: string): Promise<OrderMoneySummary | null>;
+  };
+  "khung-nen-tang"?: {
+    moneySettings(): Promise<PageMoneySettings>;
   };
 }
 

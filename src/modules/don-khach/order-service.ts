@@ -13,6 +13,7 @@
 
 import crypto from "node:crypto";
 import { EVENTS } from "../../contract";
+import { transferCode } from "../../shared/transfer-code";
 import type { OrderContext, ReserveResult } from "./context";
 import { repositoryOf } from "./context";
 import {
@@ -24,9 +25,28 @@ const CANCELLED = "cancelled";
 
 const text = (v: unknown): string => String(v ?? "").trim();
 
+/**
+ * The shop's transfer prefix, read the way the Money module reads it: page content first (the owner
+ * edits it), then the environment, then "TR". The reference stamped when the order is placed must
+ * equal the one Money writes when the customer picks how to pay, or the QR shows one code while
+ * reconciliation looks for another.
+ */
+async function transferPrefixOf(ctx: OrderContext): Promise<string> {
+  const read = ctx.services["khung-nen-tang"]?.moneySettings;
+  if (read) {
+    try {
+      const fromPage = (await read())?.tienToChuyenKhoan;
+      if (fromPage) return fromPage;
+    } catch (e) {
+      ctx.ports.logger.warn(`[don-khach] khong doc duoc tien to chuyen khoan: ${e instanceof Error ? e.message : String(e)}`);
+    }
+  }
+  return String(ctx.config?.transferPrefix || "TR");
+}
+
 /** Result of placing an order. `code`/`size` say which line ran out when `reason` is `het_hang`. */
 export type PlaceResult =
-  | { ok: true; id: string; token: string; total: number }
+  | { ok: true; id: string; token: string; total: number; paymentReference: string }
   | { ok: false; reason: "don_khong_co_mon" | "thieu_ten_khach" | "thieu_dien_thoai" | "het_hang"; code?: string; size?: string };
 
 /** Result of a status or payment write. */
@@ -156,6 +176,7 @@ export async function placeOrder(ctx: OrderContext, rawBody: unknown): Promise<P
   const placedAt = ctx.ports.clock.now();
   const lookupToken = crypto.randomBytes(16).toString("hex");
   const total = lines.reduce((sum, l) => sum + l.unitPrice * l.quantity, 0);
+  const prefix = await transferPrefixOf(ctx);
   const draft: Omit<OrderDraft, "id"> = {
     lookupToken, total, lines, profile: profileFromBody(body), paymentMethod: text(body["paymentMethod"]), placedAt
   };
@@ -172,7 +193,9 @@ export async function placeOrder(ctx: OrderContext, rawBody: unknown): Promise<P
   for (let step = 0; step < 50; step += 1) {
     id = `ORD-${placedAt.getTime() + step}`;
     try {
-      await repository.insert({ ...draft, id });
+      // The transfer reference is part of the order from the first write, as on the old site: the
+      // checkout popup shows it right away, before the customer picks how to pay.
+      await repository.insert({ ...draft, id, paymentReference: transferCode(id, prefix) });
       lastError = null;
       break;
     } catch (e) {
@@ -194,7 +217,7 @@ export async function placeOrder(ctx: OrderContext, rawBody: unknown): Promise<P
   if (taken.length > 0) await repository.recordStockTaken({ id, lines: taken, at: placedAt });
 
   ctx.bus.emit(EVENTS.orderCreated, { maDon: id, tong: total, soMon: lines.length, dienThoai: text(body["phone"]) });
-  return { ok: true, id, token: lookupToken, total };
+  return { ok: true, id, token: lookupToken, total, paymentReference: transferCode(id, prefix) };
 }
 
 /**

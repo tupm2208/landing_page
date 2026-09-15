@@ -87,6 +87,8 @@ test("THE LIST OF OPEN DOORS — this test fails whenever someone opens a new pu
     "GET /api/products",
     "GET /api/products/:khoa",
     "GET /api/runtime-version",
+    "GET /ctv-account",
+    "GET /ctv-login",
     "GET /l/:token",
     "GET /mobile",
     "GET /product.html",
