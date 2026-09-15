@@ -109,7 +109,7 @@ export class Kernel {
   private portsFor(manifest: AnyManifest): ModulePorts {
     const wanted = new Set(manifest.ports ?? []);
     const ports = {} as ModulePorts;
-    for (const name of ["store", "logger", "clock", "http", "auth", "staticFiles"] as const) {
+    for (const name of ["store", "logger", "clock", "http", "auth", "staticFiles", "mail"] as const) {
       if (wanted.has(name)) {
         const port = this.ports[name];
         if (port === undefined) throw new Error(`Module "${manifest.id}" asks for port "${name}" but the kernel has no such port.`);

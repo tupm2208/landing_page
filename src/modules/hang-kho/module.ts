@@ -26,8 +26,8 @@
 
 import { ACCESS, EVENTS, defineModule, reply, type ModuleContext } from "../../contract";
 import {
-  CatalogRepository, SOURCE, type DeleteResult, type ReserveFailure, type Source, type StockLine, type SyncResult,
-  type WriteOneResult
+  CatalogRepository, SOURCE, type CommitOutcome, type DeleteResult, type QuickEditPatch, type ReserveFailure, type RestockOutcome,
+  type Source, type StockLine, type SyncResult, type WriteOneResult
 } from "./catalog-repository";
 import { DEFAULT_READY_WAREHOUSES, convertCampaignPayload, convertReadyStockPayload } from "./desk-payloads";
 import { asRecord, publicView, type PublicItem } from "./normalise";
@@ -39,6 +39,16 @@ const TEN_MINUTES_MS = 10 * 60 * 1000;
 const READY_STOCK_REVISION_DOCUMENT = "hang-kho-hang-co-san";
 /** The most items one OMI import may carry. */
 const IMPORT_CAP = 20000;
+/** Document remembering the last imports. Name is on-disk contract. */
+const IMPORT_LOG_DOCUMENT = "hang-kho-lich-su-nap";
+const IMPORT_LOG_CAP = 50;
+
+/** The import book: newest first, at most `IMPORT_LOG_CAP` entries. Field names are wire (OMI reads them). */
+interface ImportLog {
+  lan: Record<string, unknown>[];
+}
+/** The most items ONE quick edit may touch — a bulk screen with no ceiling is a bulk mistake. */
+const QUICK_EDIT_CAP = 1000;
 
 /** Error strings answered by this module's doors. Wire: OMI, Desk and Image Tool branch on them. */
 export const CATALOG_ERRORS = {
@@ -82,6 +92,10 @@ export type ReserveResult =
   | { ok: false; reason: ReserveFailure };
 export interface ReleaseInput { ticket: string }
 export interface ReleaseResult { ok: boolean }
+export interface CommitInput { ticket: string }
+export type CommitResult = CommitOutcome;
+export interface RestockInput { variantId: string; quantity: number }
+export type RestockResult = RestockOutcome;
 
 /** The services this module PROVIDES (`hang-kho.search` ...). Consumers `import type` this. */
 export interface InventoryServices {
@@ -93,6 +107,10 @@ export interface InventoryServices {
   reserve(input: ReserveInput): Promise<ReserveResult>;
   /** Gives a reservation back. */
   release(input: ReleaseInput): Promise<ReleaseResult>;
+  /** Turns a reservation into a sale: stock goes down for good, the ticket is gone. */
+  commit(input: CommitInput): Promise<CommitResult>;
+  /** Puts pairs back on the shelf (a cancelled order). */
+  restock(input: RestockInput): Promise<RestockResult>;
   /** How many items the catalogue holds. */
   count(): Promise<number>;
   /** Writes ONE house item (add or edit). */
@@ -147,6 +165,20 @@ async function release(ctx: Ctx, input: ReleaseInput): Promise<ReleaseResult> {
   return { ok: await repository(ctx).release(input.ticket) };
 }
 
+/** The order was written: the hold becomes a sale (see `CatalogRepository.commit`). */
+async function commit(ctx: Ctx, input: CommitInput): Promise<CommitResult> {
+  return repository(ctx).commit(input.ticket);
+}
+
+/** A cancelled order gives its pairs back; crossing zero announces "back in stock" to the bus. */
+async function restock(ctx: Ctx, input: RestockInput): Promise<RestockResult> {
+  const outcome = await repository(ctx).restock(input.variantId, input.quantity);
+  if (outcome.ok && outcome.before <= 0 && outcome.after > 0) {
+    ctx.bus.emit(EVENTS.stockBack, { ma: outcome.code, size: outcome.size, maBienThe: outcome.variantId });
+  }
+  return outcome;
+}
+
 // ---- the Vietnamese wire of the HTTP doors -----------------------------------------------------
 
 /** A sync result as Desk / Image Tool / OMI read it. */
@@ -188,7 +220,27 @@ async function loadSource(ctx: Ctx, source: Source, body: unknown, label: string
     `[hang-kho] nạp ${label}: ${result.itemCount} món / ${result.variantCount} biến thể` +
     (result.dropped > 0 ? `, bỏ ${result.dropped} (mã bị chặn hoặc thiếu mã/tên)` : "")
   );
+  await noteImport(ctx, { nguon: source, viec: label, ...syncWire(result) });
   return { ok: true, result };
+}
+
+/**
+ * Remembers what the last imports did — "Đồng bộ kho" in Sales Desk.
+ *
+ * Without this, a catalogue that suddenly lost 400 items has no story: the operating log rolls
+ * over, and the tables only ever show the present. The book is deliberately small and bounded —
+ * the last `IMPORT_LOG_CAP` runs — because it is a place to look when something went wrong, not
+ * an audit trail. It can never fail an import: a write that throws is logged and swallowed.
+ */
+async function noteImport(ctx: Ctx, entry: Record<string, unknown>): Promise<void> {
+  try {
+    const book = ctx.ports.store.document<ImportLog>(IMPORT_LOG_DOCUMENT);
+    const now = (await book.read(null))?.lan ?? [];
+    const next = [{ luc: ctx.ports.clock.now().toISOString(), ...entry }, ...now].slice(0, IMPORT_LOG_CAP);
+    await book.write({ lan: next });
+  } catch (e) {
+    ctx.ports.logger.warn(`[hang-kho] khong ghi duoc lich su nap: ${e instanceof Error ? e.message : String(e)}`);
+  }
 }
 
 function syncReply(outcome: SyncOutcome, extra: Record<string, unknown> = {}) {
@@ -217,6 +269,8 @@ export const manifest = defineModule<Config>({
     "hang-kho.stock": stock,
     "hang-kho.reserve": reserve,
     "hang-kho.release": release,
+    "hang-kho.commit": commit,
+    "hang-kho.restock": restock,
     "hang-kho.count": (ctx) => repository(ctx).countItems(),
     "hang-kho.write": (ctx, item: unknown) => repository(ctx).writeItem(SOURCE.own, item),
     "hang-kho.read": async (ctx, key: string) => {
@@ -349,8 +403,58 @@ export const manifest = defineModule<Config>({
         if (list.length > IMPORT_CAP) return reply.json({ ok: false, error: CATALOG_ERRORS.tooManyItems, tran: IMPORT_CAP }, 400);
         const result = await repository(ctx).writeItems(SOURCE.own, list);
         ctx.ports.logger.info(`[hang-kho] OMI nạp thêm: ${result.itemCount} món / ${result.variantCount} biến thể${result.dropped ? `, bỏ ${result.dropped}` : ""}`);
+        await noteImport(ctx, { nguon: SOURCE.own, viec: "nạp thêm từ OMI", ...syncWire(result) });
         // The code list is for callers of the service, not for the HTTP reply.
         return reply.json({ ok: true, ...syncWire(result) });
+      }
+    },
+    {
+      // "Đồng bộ kho" in OMI: what the last imports did, newest first.
+      method: "GET", path: "/api/hang-kho/lich-su-nap", access: ACCESS.admin,
+      rateLimit: { calls: 120, windowMs: TEN_MINUTES_MS },
+      handle: async (ctx) => reply.json(
+        { ok: true, lan: (await ctx.ports.store.document<ImportLog>(IMPORT_LOG_DOCUMENT).read(null))?.lan ?? [] },
+        200, { "Cache-Control": "no-store" }
+      )
+    },
+    {
+      // "Kho hàng sẵn" and "Kho đối tác" in OMI: everything stocked from ONE source. One door for
+      // both screens — the source is the only thing that differs.
+      method: "GET", path: "/api/hang-kho/theo-nguon/:nguon", access: ACCESS.admin,
+      rateLimit: { calls: 120, windowMs: TEN_MINUTES_MS },
+      handle: async (ctx, request) => {
+        const asked = String(request.params["nguon"] ?? "").trim();
+        const source = (Object.values(SOURCE) as string[]).includes(asked) ? (asked as Source) : null;
+        if (source === null) {
+          return reply.json({ ok: false, error: "nguon_khong_co", nguonDangCo: Object.values(SOURCE) }, 400);
+        }
+        const items = await repository(ctx).itemsBySource(source, Number(request.query["limit"] || 0));
+        return reply.json({ ok: true, nguon: source, mon: items }, 200, { "Cache-Control": "no-store" });
+      }
+    },
+    {
+      // OMI's "Sửa nhanh web" (Sales Desk's `landingquickedit`): many items, three fields — list
+      // price, discount, shown/hidden. Deliberately narrow; see `CatalogRepository.quickEdit`.
+      method: "POST", path: "/api/hang-kho/sua-nhanh", access: ACCESS.admin,
+      rateLimit: { calls: 120, windowMs: TEN_MINUTES_MS },
+      bodyLimit: 512 * 1024,
+      handle: async (ctx, request) => {
+        const body = asRecord(await request.json());
+        const raw = Array.isArray(body["mon"]) ? (body["mon"] as unknown[]) : Array.isArray(body) ? (body as unknown[]) : null;
+        if (raw === null) return reply.json({ ok: false, error: CATALOG_ERRORS.needProductArray }, 400);
+        if (raw.length > QUICK_EDIT_CAP) return reply.json({ ok: false, error: CATALOG_ERRORS.tooManyItems, tran: QUICK_EDIT_CAP }, 400);
+        const patches: QuickEditPatch[] = raw.map((x) => {
+          const m = asRecord(x);
+          return {
+            code: String(m["ma"] ?? m["code"] ?? "").trim(),
+            ...(m["giaNiemYet"] === undefined ? {} : { listPrice: Number(m["giaNiemYet"]) }),
+            ...(m["giamGia"] === undefined ? {} : { discountPercent: Number(m["giamGia"]) }),
+            ...(m["trangThai"] === undefined ? {} : { status: String(m["trangThai"]) })
+          };
+        });
+        const result = await repository(ctx).quickEdit(patches, ctx.ports.clock.now());
+        ctx.ports.logger.info(`[hang-kho] sửa nhanh: ${result.changed.length} món đổi${result.missing.length ? `, ${result.missing.length} mã không thấy` : ""}`);
+        return reply.json({ ok: true, daSua: result.changed, khongThay: result.missing }, 200, { "Cache-Control": "no-store" });
       }
     },
     {

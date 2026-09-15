@@ -8,7 +8,7 @@
  */
 
 import crypto from "node:crypto";
-import type { InboundMessage } from "./inbox";
+import { COMMENT_CHANNEL, type InboundMessage } from "./inbox";
 
 /** Meta never sends a bigger packet. */
 export const WEBHOOK_BODY_LIMIT = 256 * 1024;
@@ -29,6 +29,54 @@ export function verifySignature(rawBody: Buffer, signature: string, appSecret: s
 /** Whether a parsed packet is a Fanpage packet at all (`object: "page"`). */
 export function isPagePayload(payload: unknown): payload is { object: "page"; entry?: unknown } {
   return payload !== null && typeof payload === "object" && (payload as { object?: unknown }).object === "page";
+}
+
+/**
+ * Reads the COMMENTS out of a Meta webhook packet (`changes` with field `feed`, item `comment`).
+ *
+ * Sales Desk answers comments as well as messages, and a shop that only reads the inbox loses the
+ * loudest questions it gets — the public ones under a post, where everybody can see whether they
+ * were answered.
+ *
+ * A comment the PAGE ITSELF wrote is skipped for the same reason an echo message is: otherwise
+ * the bot answers its own reply forever. So is a `remove` — a deleted comment is not a question.
+ */
+export function parseWebhookComments(payload: unknown): InboundMessage[] {
+  const out: InboundMessage[] = [];
+  if (!isPagePayload(payload) || !Array.isArray(payload.entry)) return out;
+  for (const entry of payload.entry as unknown[]) {
+    const e = (entry ?? {}) as { id?: unknown; changes?: unknown };
+    const page = String(e.id ?? "");
+    const changes = Array.isArray(e.changes) ? (e.changes as unknown[]) : [];
+    for (const raw of changes) {
+      const change = (raw ?? {}) as { field?: unknown; value?: Record<string, unknown> };
+      if (change.field !== "feed") continue;
+      const value = (change.value ?? {}) as Record<string, unknown>;
+      if (String(value["item"] ?? "") !== "comment") continue;
+      if (String(value["verb"] ?? "") === "remove") continue;
+      const from = (value["from"] ?? {}) as { id?: unknown; name?: unknown };
+      const sender = String(from.id ?? "");
+      if (!sender || sender === page) continue;
+      const text = String(value["message"] ?? "").trim();
+      const photo = String(value["photo"] ?? "");
+      if (!text && photo === "") continue;
+      const at = Number(value["created_time"] ?? 0);
+      out.push({
+        kenh: COMMENT_CHANNEL,
+        trang: page,
+        nguoi: sender,
+        tenNguoi: String(from.name ?? ""),
+        maTin: String(value["comment_id"] ?? ""),
+        baiViet: String(value["post_id"] ?? ""),
+        chu: text,
+        soAnh: photo === "" ? 0 : 1,
+        // Meta sends comment times in SECONDS, messages in milliseconds. Multiplying the wrong one
+        // by 1000 puts the comment in the year 57,000 and it sorts to the top of every thread.
+        luc: new Date(at > 0 ? at * 1000 : Date.now()).toISOString()
+      });
+    }
+  }
+  return out;
 }
 
 /**

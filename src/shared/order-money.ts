@@ -28,7 +28,8 @@ interface OrderMoneyKit {
 }
 
 const requireShared = createRequire(__filename);
-const kit: OrderMoneyKit = requireShared(path.join(__dirname, "..", "..", "..", "chung", "order-money-kit.js"));
+// `kit/order-money-kit.js` inside this repo: the landing deploys on its own, so it cannot reach `../chung`.
+const kit: OrderMoneyKit = requireShared(path.join(__dirname, "..", "..", "kit", "order-money-kit.js"));
 
 /** Amount already received on the order, by the kit's rules. */
 export const paidAmountForOrder = kit.paidAmountForOrder;

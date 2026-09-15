@@ -3,12 +3,17 @@
  */
 
 import path from "node:path";
-import { buildLandingApp, PACKAGE_ROOT } from "./app";
+import { buildLandingApp, loadEnvFile, PACKAGE_ROOT } from "./app";
 import { createHttpServer } from "./kernel";
+
+// `.env` first: PORT and THU_MUC_DU_LIEU are read here, before `buildLandingApp` would load it.
+const envFile = path.join(PACKAGE_ROOT, ".env");
+const added = loadEnvFile(envFile, process.env);
+if (added > 0) console.log(`[chay] đọc ${added} biến từ ${envFile}`);
 
 const port = Number(process.env["PORT"] || 4180);
 
-buildLandingApp({ dataDirectory: process.env["THU_MUC_DU_LIEU"] || path.join(PACKAGE_ROOT, "du-lieu") })
+buildLandingApp({ dataDirectory: process.env["THU_MUC_DU_LIEU"] || path.join(PACKAGE_ROOT, "du-lieu"), envFile })
   .then(({ kernel, xeon }) => {
     createHttpServer(kernel).listen(port, () => {
       console.log(`[chay] server khách nghe ở cổng ${port}`);

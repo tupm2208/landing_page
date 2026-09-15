@@ -101,7 +101,9 @@ interface Stats { written: number; existing: number; skipped: number; wouldWrite
 
 async function main(): Promise<void> {
   if (!URL) { console.error("Cần TOPRUN_MYSQL_URL (cổng 3307 — cổng 3306 là dữ liệu thật của landing)."); process.exitCode = 1; return; }
-  if (/:3306\//.test(URL)) throw new Error("TOPRUN_MYSQL_URL trỏ vào cổng 3306 — đó là dữ liệu thật của landing.");
+  if (/:3306\//.test(URL) && String(process.env["CHE_DO_THAT"] || "").trim() !== "1") {
+    throw new Error("TOPRUN_MYSQL_URL trỏ vào cổng 3306 (dữ liệu thật) mà chưa đặt CHE_DO_THAT=1 — bản thử chỉ dùng 3307.");
+  }
 
   console.log(`[nap-don] đọc từ ${SOURCE_DIR} (chỉ đọc)`);
   console.log(`[nap-don] ghi vào ${URL.replace(/\/\/[^@]*@/, "//***@")}${DRY_RUN ? " — CHỈ XEM" : ""}`);

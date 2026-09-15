@@ -11,6 +11,7 @@ export const EVENTS = {
   orderStatusChanged: "don-khach.doi-trang-thai",
   orderCancelled: "don-khach.da-huy",
   paymentReceived: "tien-doi-soat.da-nhan",
+  paymentRefunded: "tien-doi-soat.da-hoan",
   stockOut: "hang-kho.het-hang",
   stockBack: "hang-kho.ve-lai",
   shipmentCreated: "van-chuyen.da-tao-van-don",

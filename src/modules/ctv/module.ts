@@ -27,7 +27,7 @@ import { ACCESS, ERROR_CODES, defineModule, reply, type KernelRequest, type Modu
 import type { InventoryServices } from "../hang-kho/module";
 import { toMysqlDateTime, isoFromMysql } from "../../shared/mysql-time";
 import { CollaboratorRepository, DEVICE_STATUS, deviceView, downloadView, publicView, type CollaboratorView } from "./collaborator-repository";
-import { hashPassword, hashToken, verifyPassword } from "./password";
+import { hashPassword, hashToken, verifyPassword } from "../../shared/password";
 import { SCHEMA } from "./schema";
 import { CollaboratorCookies, DEFAULT_SESSION_HOURS } from "./session";
 

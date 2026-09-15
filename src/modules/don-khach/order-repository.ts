@@ -229,6 +229,33 @@ export interface OrderDraft {
   profile: CustomerProfile;
   paymentMethod: string;
   placedAt: Date;
+  /** Initial status; the storefront's orders start `pending`, manual orders may start elsewhere. */
+  status?: string | undefined;
+  paymentStatus?: string | undefined;
+  paymentAmount?: number | undefined;
+  paymentReference?: string | undefined;
+  fulfillmentStatus?: string | undefined;
+  shippingProvider?: string | undefined;
+  trackingCode?: string | undefined;
+  /** Account the order belongs to (when the customer was logged in, or the owner picked one). */
+  customerId?: number | null | undefined;
+  /** Who wrote it (`khach`, `quan-tri`, `sales-desk`) and the first log line. */
+  actor?: string | undefined;
+  logNote?: string | undefined;
+}
+
+/** Head columns the owner may change on an existing order (wire names of the admin door). */
+export interface HeadPatch {
+  profile?: Partial<CustomerProfile> | undefined;
+  status?: string | undefined;
+  paymentStatus?: string | undefined;
+  paymentMethod?: string | undefined;
+  paymentAmount?: number | undefined;
+  paymentReference?: string | undefined;
+  fulfillmentStatus?: string | undefined;
+  shippingProvider?: string | undefined;
+  trackingCode?: string | undefined;
+  customerId?: number | null | undefined;
 }
 
 /** Filters of the admin order list; `since` is any date string; `limit` is clamped to 1..500. */
@@ -240,6 +267,26 @@ export interface SearchFilter {
 }
 
 /** The money columns a payment write may set. Only these; the orders module owns the row. */
+/** One line taken from stock when the order was placed. On-disk JSON (`stock_reservation_json`) — names stay Vietnamese. */
+export interface StockTaken {
+  maBienThe: string;
+  soLuong: number;
+}
+
+/** Reads `stock_reservation_json`; anything malformed counts as "nothing taken". */
+export function parseStockTaken(raw: unknown): StockTaken[] {
+  if (raw === null || raw === undefined || raw === "") return [];
+  let parsed: unknown;
+  try { parsed = typeof raw === "string" ? JSON.parse(raw) : raw; } catch { return []; }
+  if (!Array.isArray(parsed)) return [];
+  return parsed
+    .map((x) => {
+      const line = (x && typeof x === "object" ? x : {}) as Record<string, unknown>;
+      return { maBienThe: text(line["maBienThe"]), soLuong: Math.max(0, Math.trunc(Number(line["soLuong"]) || 0)) };
+    })
+    .filter((l) => l.maBienThe !== "" && l.soLuong > 0);
+}
+
 export interface PaymentPatch {
   paymentMethod?: string | null;
   paymentStatus?: string | null;
@@ -313,6 +360,7 @@ export class OrderRepository {
     await this.store.transaction(async (tx) => {
       await tx.table(ORDER_TABLES.orders).insert({
         id: draft.id,
+        customer_id: draft.customerId ?? null,
         customer_name: draft.profile.customerName,
         phone: draft.profile.phone,
         email: draft.profile.email,
@@ -323,12 +371,15 @@ export class OrderRepository {
         address_detail: draft.profile.addressDetail,
         note: draft.profile.note,
         total: draft.total,
-        status: "pending",
-        payment_status: "payment_pending",
+        status: draft.status || "pending",
+        payment_status: draft.paymentStatus || "payment_pending",
         payment_method: draft.paymentMethod,
-        payment_amount: 0,
+        payment_reference: draft.paymentReference || "",
+        payment_amount: draft.paymentAmount ?? 0,
         order_lookup_token_hash: hashLookupToken(draft.lookupToken),
-        fulfillment_status: "not_assigned",
+        fulfillment_status: draft.fulfillmentStatus || "not_assigned",
+        shipping_provider: draft.shippingProvider || "",
+        tracking_code: draft.trackingCode || "",
         created_at: at,
         updated_at: at
       });
@@ -344,8 +395,94 @@ export class OrderRepository {
         });
       }
       await tx.table(ORDER_TABLES.statusLogs).insert({
-        order_id: draft.id, status: "pending", actor_type: "khach", note: "Khách đặt hàng", created_at: at
+        order_id: draft.id, status: draft.status || "pending", actor_type: draft.actor || "khach", note: draft.logNote || "Khách đặt hàng", created_at: at
       });
+    });
+  }
+
+  /** Orders of one account, newest first (the "my orders" page). */
+  async searchByCustomer(customerId: number, limit = 100): Promise<Order[]> {
+    const heads = await this.orders.find({ where: { customer_id: customerId }, orderBy: "created_at desc", limit: Math.min(Math.max(1, limit), 500) });
+    return Promise.all(heads.map(async (head) => {
+      const lines = await this.store.table(ORDER_TABLES.items).find({ where: { order_id: head["id"] as string }, orderBy: "line_no asc" });
+      return orderFromRows(head, lines, []);
+    }));
+  }
+
+  /** One order, only if it belongs to this account. */
+  async readForCustomer(id: string, customerId: number): Promise<Order | null> {
+    const head = await this.orders.one({ id: String(id || ""), customer_id: customerId });
+    return head ? this.read(String(head["id"])) : null;
+  }
+
+  /**
+   * Links an order to an account when the caller proves the order with its lookup token.
+   * `other_customer` when it already belongs to someone else — never silently re-linked.
+   */
+  async attachCustomer(input: { id: string; token: string; customerId: number; at: Date }): Promise<"attached" | "not_found" | "other_customer"> {
+    const head = await this.orders.one({ id: String(input.id || ""), order_lookup_token_hash: hashLookupToken(input.token) });
+    if (!head) return "not_found";
+    const owner = head["customer_id"];
+    if (owner !== null && owner !== undefined && Number(owner) !== input.customerId) return "other_customer";
+    await this.orders.update({ id: String(head["id"]) }, { customer_id: input.customerId, updated_at: toMysqlDateTime(input.at) });
+    return "attached";
+  }
+
+  /** The owner edits head fields (recipient, money, shipping). Only given fields change; a log line is written. */
+  async updateHead(input: { id: string; patch: HeadPatch; actor: string; note: string; at: Date }): Promise<number> {
+    const columns: Row = {};
+    const p = input.patch;
+    const profile = p.profile ?? {};
+    const map: [keyof CustomerProfile, string][] = [
+      ["customerName", "customer_name"], ["phone", "phone"], ["email", "email"], ["address", "address"],
+      ["province", "province"], ["district", "district"], ["ward", "ward"], ["addressDetail", "address_detail"], ["note", "note"]
+    ];
+    for (const [key, column] of map) if (profile[key] !== undefined) columns[column] = String(profile[key] ?? "");
+    if (p.status !== undefined) columns["status"] = p.status;
+    if (p.paymentStatus !== undefined) columns["payment_status"] = p.paymentStatus;
+    if (p.paymentMethod !== undefined) columns["payment_method"] = p.paymentMethod;
+    if (p.paymentAmount !== undefined) columns["payment_amount"] = p.paymentAmount;
+    if (p.paymentReference !== undefined) columns["payment_reference"] = p.paymentReference;
+    if (p.fulfillmentStatus !== undefined) columns["fulfillment_status"] = p.fulfillmentStatus;
+    if (p.shippingProvider !== undefined) columns["shipping_provider"] = p.shippingProvider;
+    if (p.trackingCode !== undefined) columns["tracking_code"] = p.trackingCode;
+    if (p.customerId !== undefined) columns["customer_id"] = p.customerId;
+    const at = toMysqlDateTime(input.at);
+    return this.store.transaction(async (tx) => {
+      const changed = await tx.table(ORDER_TABLES.orders).update({ id: String(input.id || "") }, { ...columns, updated_at: at });
+      if (changed === 0) return 0;
+      await tx.table(ORDER_TABLES.statusLogs).insert({
+        order_id: input.id, status: p.status || "sua", actor_type: input.actor, note: input.note, created_at: at
+      });
+      return changed;
+    });
+  }
+
+  /** Replaces every line of an order and its total, in one transaction. Stock moves are the caller's job. */
+  async replaceLines(input: { id: string; lines: NormalisedLine[]; total: number; at: Date }): Promise<void> {
+    await this.store.transaction(async (tx) => {
+      await tx.table(ORDER_TABLES.items).delete({ order_id: input.id });
+      let lineNo = 0;
+      for (const line of input.lines) {
+        lineNo += 1;
+        await tx.table(ORDER_TABLES.items).insert({
+          order_id: input.id, line_no: lineNo,
+          product_code: line.code, variant_id: line.variantId, product_name: line.name, size: line.size,
+          quantity: line.quantity, price: line.unitPrice, sale_file_price: line.originalPrice,
+          source: line.source, source_name: line.sourceName,
+          warehouse_id: line.warehouseId, warehouse_name: line.warehouseName, image_url: line.imageUrl
+        });
+      }
+      await tx.table(ORDER_TABLES.orders).update({ id: input.id }, { total: input.total, updated_at: toMysqlDateTime(input.at) });
+    });
+  }
+
+  /** Removes an order with its lines and history. Returns how many heads were removed (0 = no such order). */
+  async purge(id: string): Promise<number> {
+    return this.store.transaction(async (tx) => {
+      await tx.table(ORDER_TABLES.items).delete({ order_id: id });
+      await tx.table(ORDER_TABLES.statusLogs).delete({ order_id: id });
+      return tx.table(ORDER_TABLES.orders).delete({ id });
     });
   }
 
@@ -413,6 +550,41 @@ export class OrderRepository {
    * TWO statements, not N+1: one for the heads, one for every line of those heads. A 14-day
    * report of a busy shop is still two round trips to the database.
    */
+  /**
+   * Remembers what a placed order TOOK from stock (variant + quantity), so a cancellation can put
+   * it back. Written into the inherited columns `stock_reservation_json` / `stock_reserved_at`.
+   */
+  async recordStockTaken(input: { id: string; lines: StockTaken[]; at: Date }): Promise<void> {
+    // `stock_restored_at` is cleared: an edited order takes new pairs, which a later cancel must return.
+    await this.store.table(ORDER_TABLES.orders).update(
+      { id: String(input.id || "") },
+      { stock_reservation_json: JSON.stringify(input.lines), stock_reserved_at: toMysqlDateTime(input.at), stock_restored_at: null }
+    );
+  }
+
+  /** Replaces the lookup token/secret of an order (stored hashed). */
+  async setLookupToken(input: { id: string; token: string; at: Date }): Promise<void> {
+    await this.orders.update({ id: String(input.id || "") }, { order_lookup_token_hash: hashLookupToken(input.token), updated_at: toMysqlDateTime(input.at) });
+  }
+
+  /**
+   * Marks the order's stock as returned and hands back what to return — ONCE. A repeated cancel,
+   * or two paths cancelling at the same time, gets `null` (row locked, `stock_restored_at` set in
+   * the same transaction), so pairs are never added back twice. Orders placed before 14/09/2026
+   * have no `stock_reservation_json` and return `null` too: nothing was taken for them.
+   */
+  async markStockRestored(input: { id: string; at: Date }): Promise<StockTaken[] | null> {
+    return this.store.transaction(async (tx) => {
+      const rows = await tx.rows(`SELECT stock_reservation_json, stock_restored_at FROM \`${ORDER_TABLES.orders}\` WHERE id = ? FOR UPDATE`, [String(input.id || "")]);
+      const head = rows[0];
+      if (!head || (head["stock_restored_at"] !== null && head["stock_restored_at"] !== undefined)) return null;
+      const lines = parseStockTaken(head["stock_reservation_json"]);
+      if (lines.length === 0) return null;
+      await tx.table(ORDER_TABLES.orders).update({ id: String(input.id || "") }, { stock_restored_at: toMysqlDateTime(input.at) });
+      return lines;
+    });
+  }
+
   async rowsForReport(since: string, cap: number): Promise<ReportRow[]> {
     const heads = await this.store.rows(
       `SELECT id, total, status, payment_status, payment_amount, created_at

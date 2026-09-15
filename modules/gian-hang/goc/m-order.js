@@ -11,6 +11,13 @@
   // v65 (01/09): ghi kem MA PAGE. Thieu no, Desk khong biet gui bien nhan qua page nao nen khach dat
   // don xong khong nhan duoc gi (ca don ORD-1788263336892 cua anh Pham Quang Hiep 01/09 18:48).
   var pg = String(qs.get("pg") || "").trim().replace(/[^0-9]/g, "");
+  // 13/09: phieu di tu Zalo nhom (src=zalo) — ghi nguon cho dung; tag [MSG:conv] van giu de Desk KHONG gan nham
+  // don sang hoi thoai Messenger khac (khop theo so phien chi ap cho don khong tag).
+  var src = String(qs.get("src") || "").trim() === "zalo" ? "zalo" : "messenger";
+  // He dia chi mo san (anh chot 13/09): mac dinh 2 cap (moi); ?as=legacy → 3 cap; Desk dien san quan/huyen (?dt=) tu don cu
+  // khong ghi he → cung 3 cap, keo form mo 2 cap ma du lieu 3 cap thi server bao "Xa/Phuong khong thuoc Tinh/TP". Khach van doi bang radio.
+  var asParam = String(qs.get("as") || "").trim();
+  var schemeParam = asParam === "two_tier" ? "two_tier" : (asParam === "legacy" || String(qs.get("dt") || "").trim()) ? "legacy" : "two_tier";
   var form = document.getElementById("m-order-form");
   var msgEl = document.getElementById("m-order-message");
 
@@ -139,13 +146,6 @@
       var input = form.querySelector('[name="' + map[key] + '"]');
       if (input) { input.value = value; filled = true; }
     });
-    var scheme = String(qs.get("as") || "").trim();
-    if (scheme) {
-      setTimeout(function () {
-        var schemeInput = form.querySelector('[name="addressScheme"]');
-        if (schemeInput) schemeInput.value = scheme;
-      }, 800);
-    }
     if (filled) {
       var notice = document.createElement("p");
       notice.className = "note";
@@ -154,7 +154,7 @@
       form.insertBefore(notice, form.firstChild);
     }
   })();
-  if (window.TopRunAddressKit && TopRunAddressKit.bindAddressSelectors) TopRunAddressKit.bindAddressSelectors(form);
+  if (window.TopRunAddressKit && TopRunAddressKit.bindAddressSelectors) TopRunAddressKit.bindAddressSelectors(form, { defaultScheme: schemeParam });
 
   form.addEventListener("submit", function (event) {
     event.preventDefault();
@@ -180,7 +180,7 @@
       addressDetail: data.addressDetail, addressScheme: data.addressScheme || "",
       note: (tag + String(data.note || "")).trim(),
       clientOrderId: "msg-" + (conv || "x") + "-" + idPart,
-      paymentMethod: "", attribution: { source: "messenger" }
+      paymentMethod: "", attribution: { source: src }
     };
     var btn = document.getElementById("submit-btn");
     btn.disabled = true; btn.textContent = "Đang gửi đơn…"; msgEl.textContent = "";

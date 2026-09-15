@@ -64,6 +64,8 @@ type OrderServices = OrderServicesOf["don-khach"];
 /** Services consumed. `don-khach` is OPTIONAL: a shop may not have bought Orders; shipping still runs without the "from order" door. */
 interface Services {
   "don-khach"?: Pick<OrderServices, "read">;
+  /** The shop's own carrier keys, typed in OMI and kept on this server (see `khung-nen-tang/shop-settings.ts`). */
+  "khung-nen-tang"?: { settings(): Promise<Record<string, string>> };
 }
 
 export interface TrackInput {
@@ -80,7 +82,7 @@ export interface ShippingServices {
   createShipment(slip: ShippingSlip): Promise<CreateShipmentResult & { hang: CarrierName }>;
   track(input: TrackInput): Promise<TrackOutcome>;
   /** Pre-check before creating for real: what the slip still lacks. The screen shows it to the seller. */
-  checkSlip(slip: ShippingSlip): { thieu: string[]; luuY?: string };
+  checkSlip(slip: ShippingSlip): Promise<{ thieu: string[]; luuY?: string }>;
 }
 
 type Ctx = ModuleContext<Config, Services>;
@@ -93,12 +95,59 @@ function asRecord(v: unknown): Record<string, unknown> {
   return v && typeof v === "object" ? v as Record<string, unknown> : {};
 }
 
+/**
+ * Folds the SHOP'S OWN SETTINGS over what the environment set.
+ *
+ * Sales Desk kept carrier keys in a `.env` beside the code; OMI serves many shops and keeps no
+ * data, so a key typed there is stored on the shop's own landing (`khung-nen-tang.settings`) and
+ * read here on every request. The environment stays as the fallback — a self-hosted shop that
+ * never opens the Kết nối screen keeps working exactly as before — and only a value the owner
+ * actually filled in overrides it, so a half-filled form cannot blank out a working carrier.
+ */
+export async function effectiveConfig(ctx: Ctx): Promise<Config> {
+  const read = ctx.services["khung-nen-tang"]?.settings;
+  if (read === undefined) return ctx.config;
+  let shop: Record<string, string>;
+  try {
+    shop = await read();
+  } catch {
+    return ctx.config;                                   // a settings read must never stop a shipment
+  }
+  const pick = (key: string, fallback?: string): string => text(shop[key]) || text(fallback);
+  const base = ctx.config;
+  return {
+    defaultCarrier: pick("van_chuyen_mac_dinh", base.defaultCarrier) || "spx",
+    sender: {
+      name: pick("kho_ten", base.sender?.name),
+      phone: pick("kho_dien_thoai", base.sender?.phone),
+      province: pick("kho_tinh", base.sender?.province),
+      district: pick("kho_huyen", base.sender?.district),
+      ward: pick("kho_xa", base.sender?.ward),
+      addressDetail: pick("kho_dia_chi", base.sender?.addressDetail)
+    },
+    spx: {
+      ...(base.spx ?? {}),
+      appId: pick("spx_app_id", base.spx?.appId),
+      appSecret: pick("spx_app_secret", base.spx?.appSecret),
+      userId: pick("spx_user_id", base.spx?.userId),
+      userSecret: pick("spx_user_secret", base.spx?.userSecret)
+    },
+    vtp: {
+      ...(base.vtp ?? {}),
+      token: pick("vtp_token", base.vtp?.token),
+      username: pick("vtp_tai_khoan", base.vtp?.username),
+      password: pick("vtp_mat_khau", base.vtp?.password),
+      groupAddressId: pick("vtp_ma_kho", base.vtp?.groupAddressId)
+    }
+  };
+}
+
 /** Picks the carrier strategy by name (the slip's, else the configured default, else SPX). */
-export function carrierFor(ctx: Ctx, name?: string): Carrier {
-  const chosen = String(name || ctx.config.defaultCarrier || "spx").toLowerCase();
+export function carrierFor(ctx: Ctx, config: Config, name?: string): Carrier {
+  const chosen = String(name || config.defaultCarrier || "spx").toLowerCase();
   const deps = { http: ctx.ports.http, clock: ctx.ports.clock };
-  if (chosen === "spx") return new SpxCarrier(deps, ctx.config.spx ?? {});
-  if (chosen === "vtp" || chosen === "viettelpost") return new ViettelPostCarrier(deps, ctx.config.vtp ?? {});
+  if (chosen === "spx") return new SpxCarrier(deps, config.spx ?? {});
+  if (chosen === "vtp" || chosen === "viettelpost") return new ViettelPostCarrier(deps, config.vtp ?? {});
   throw new Error(`Chua co hang van chuyen "${chosen}".`);
 }
 
@@ -166,7 +215,7 @@ export function buildSlipFromOrder(
 async function createShipment(ctx: Ctx, slip: ShippingSlip = {}): Promise<CreateShipmentResult & { hang: CarrierName }> {
   if (!text(slip.maPhieu)) throw new Error("Phieu gui thieu `maPhieu`.");
   const slipRef = text(slip.maPhieu);
-  const carrier = carrierFor(ctx, slip.hang);
+  const carrier = carrierFor(ctx, await effectiveConfig(ctx), slip.hang);
   const result = await carrier.createShipment(slip);
 
   if (result.daGoi && result.ok) {
@@ -188,16 +237,17 @@ async function track(ctx: Ctx, { maPhieu, maVanDon, hang }: TrackInput = {}): Pr
   const trackingNumber = text(maVanDon || known?.maVanDon);
   if (!trackingNumber) return { ok: false, loiNhan: "Chưa có mã vận đơn cho đơn này." };
 
-  const carrier = carrierFor(ctx, hang || known?.hang);
+  const carrier = carrierFor(ctx, await effectiveConfig(ctx), hang || known?.hang);
   const result = await carrier.track(trackingNumber);
   const duongTra = (result.ok ? result.duongTra : "") || known?.duongTra || "";
   return { ...result, maVanDon: trackingNumber, hang: carrier.name, duongTra };
 }
 
-function checkSlip(ctx: Ctx, slip: ShippingSlip = {}): { thieu: string[]; luuY?: string } {
-  const carrier = carrierFor(ctx, slip.hang);
+async function checkSlip(ctx: Ctx, slip: ShippingSlip = {}): Promise<{ thieu: string[]; luuY?: string }> {
+  const config = await effectiveConfig(ctx);
+  const carrier = carrierFor(ctx, config, slip.hang);
   if (carrier.name !== "spx") return { thieu: [], luuY: "Chỉ SPX kiểm trước được ở bản này." };
-  return { thieu: buildSpxPayload({ slip, config: ctx.config.spx ?? {} }).thieu };
+  return { thieu: buildSpxPayload({ slip, config: config.spx ?? {} }).thieu };
 }
 
 /** Turns a create result into the HTTP reply: 200 created, 400 not even called, 502 carrier refused. */
@@ -217,7 +267,7 @@ export const manifest = defineModule<Config, Services>({
   ports: ["store", "logger", "clock", "http", "bus", "config"],
   // Creating a shipment FROM AN ORDER needs to read that order. Optional because the merchant may
   // not have bought Orders — shipping still runs, only without the "from order" door.
-  requiresOptional: ["don-khach.read"],
+  requiresOptional: ["don-khach.read", "khung-nen-tang.settings"],
 
   events: {
     emits: [EVENTS.shipmentCreated, EVENTS.shipmentStatusChanged],
@@ -252,7 +302,7 @@ export const manifest = defineModule<Config, Services>({
         const order = await readOrder(orderId);
         if (!order) return { status: 404, body: { ok: false, error: "khong_thay_don" } };
 
-        const { slip, missing } = buildSlipFromOrder(ctx.config, order, {
+        const { slip, missing } = buildSlipFromOrder(await effectiveConfig(ctx), order, {
           carrier: String(body["hang"] ?? ""), weightKg: Number(body["canNangKg"] ?? 0), instruction: String(body["danDo"] ?? "")
         });
         if (missing.length > 0) {

@@ -10,10 +10,10 @@
 
 import fs from "node:fs";
 import path from "node:path";
-import { ROLE, type AuthPort, type DataStore, type HttpClient, type Logger } from "./contract";
+import { ROLE, type AuthPort, type DataStore, type HttpClient, type Logger, type Mailer } from "./contract";
 import {
-  ConsoleLogger, DiskStaticFilePort, FetchHttpClient, FixedWindowRateLimiter, JsonFileStore, Kernel, SystemClock,
-  TokenAuth, TrialModeHttpClient, openMysqlStore, selectModules, unsplitModules
+  ConsoleLogger, DiskStaticFilePort, FetchHttpClient, FixedWindowRateLimiter, JsonFileStore, Kernel, SmtpMailer, SystemClock,
+  TokenAuth, TrialModeHttpClient, TrialModeMailer, UnconfiguredMailer, openMysqlStore, selectModules, smtpConfigured, unsplitModules
 } from "./kernel";
 import { BUILTIN_MODULES } from "./modules";
 import {
@@ -66,6 +66,14 @@ export function moduleConfigFromEnv(env: Env, { siteUrl, xeonAddress }: { siteUr
       // Links the bot hands to customers must be the shop's public address.
       siteUrl
     },
+    "don-khach": {
+      // Customer accounts: links in e-mails point at the shop's site; the session cookie is
+      // `Secure` on HTTPS; lifetimes as on the running site (30-day session, 30-minute links).
+      siteUrl: siteUrl || "https://toprun.site",
+      https: text(env["PHIEN_HTTPS"]) === "1",
+      sessionDays: Number(env["PHIEN_KHACH_NGAY"] || 30),
+      resetMinutes: Number(env["LINK_KHACH_PHUT"] || 30)
+    },
     "tien-doi-soat": {
       // Deposit percent / shipping fee / transfer prefix: with the platform module present these
       // come from PAGE CONTENT (the owner edits them in the admin screen). These are fallbacks.
@@ -110,6 +118,10 @@ export function moduleConfigFromEnv(env: Env, { siteUrl, xeonAddress }: { siteUr
         groupAddressId: text(env["VTP_GROUP_ADDRESS_ID"])
       }
     },
+    "xuong-noi-dung": {
+      // Links in the first comment must point at the shop's own site — Desk had `toprun.site` in a regex.
+      siteUrl: siteUrl || "https://toprun.site"
+    },
     "khung-nen-tang": {
       deployId: text(env["DEPLOY_ID"]) || "chua-dat",
       xeonAddress,
@@ -132,6 +144,7 @@ export function disabledFeatures(env: Env, registered: boolean): string[] {
   if (text(env["BI_MAT_PHIEN_DOI_TAC"]).length < 16) off.push("cổng đối tác mua hộ (thiếu BI_MAT_PHIEN_DOI_TAC dài >= 16 ký tự)");
   if (text(env["BI_MAT_PHIEN_CTV"] || env["BI_MAT_PHIEN_DOI_TAC"]).length < 16) off.push("đăng nhập cộng tác viên (thiếu BI_MAT_PHIEN_CTV dài >= 16 ký tự)");
   if (!text(env["SPX_APP_ID"]) && !text(env["VTP_TOKEN"])) off.push("tạo vận đơn (thiếu khoá SPX và Viettel Post)");
+  if (!text(env["SMTP_HOST"]) || !text(env["SMTP_USER"]) || !text(env["SMTP_PASS"])) off.push("e-mail cho khách: quên mật khẩu, xác thực đổi hồ sơ (thiếu SMTP_HOST / SMTP_USER / SMTP_PASS; link vẫn tạo và in ra nhật ký)");
   if (!text(env["KHO_TEN"]) || !text(env["KHO_DIEN_THOAI"])) off.push("tạo vận đơn từ đơn (thiếu địa chỉ kho: KHO_TEN, KHO_DIEN_THOAI, KHO_TINH, KHO_HUYEN, KHO_XA, KHO_DIA_CHI)");
   if (!text(env["FACEBOOK_VERIFY_TOKEN"])) off.push("nhận tin Fanpage (thiếu FACEBOOK_VERIFY_TOKEN)");
   return off;
@@ -166,13 +179,17 @@ export async function buildLandingApp(options: BuildOptions): Promise<LandingApp
   // Decided 12/09: customer data lives in MySQL. Files remain only for machines without MySQL
   // (personal trial) — and the log says so, never silently.
   const mysqlUrl = text(env["TOPRUN_MYSQL_URL"]);
-  if (mysqlUrl && /:3306\//.test(mysqlUrl)) throw new Error("TOPRUN_MYSQL_URL trỏ vào cổng 3306 — đó là dữ liệu thật của landing đang chạy.");
+  const realMode = text(env["CHE_DO_THAT"]) === "1";
+  // Port 3306 is where real data lives — on a shop's hosting it is the normal port. Only a TRIAL run
+  // (no CHE_DO_THAT=1) is kept off it, so a test machine never writes into the running landing's data.
+  if (mysqlUrl && !realMode && /:3306\//.test(mysqlUrl)) {
+    throw new Error("TOPRUN_MYSQL_URL trỏ vào cổng 3306 (dữ liệu thật) mà chưa đặt CHE_DO_THAT=1 — bản thử chỉ dùng 3307.");
+  }
   const store: DataStore = mysqlUrl
     ? await openMysqlStore({ url: mysqlUrl, logger })
     : new JsonFileStore(options.dataDirectory, logger);
   if (!mysqlUrl) logger.warn("[chay] CHƯA có TOPRUN_MYSQL_URL — đang chạy bằng tệp JSON, chỉ dùng để thử.");
 
-  const realMode = text(env["CHE_DO_THAT"]) === "1";
   logger.warn(realMode
     ? "[chay] CHẾ ĐỘ THẬT: mọi lời gọi ra ngoài là THẬT. Kiểm lại trước khi chạy trên dữ liệu thật."
     : "[chay] CHẾ ĐỘ THỬ: không gửi tin cho khách, không tạo vận đơn thật, không báo Telegram.");
@@ -188,6 +205,14 @@ export async function buildLandingApp(options: BuildOptions): Promise<LandingApp
   // TRIAL MODE IS THE DEFAULT. Only an explicit `CHE_DO_THAT=1` lets calls out. Forgetting the
   // variable must be "safe", not "convenient": nobody gets messaged by mistake.
   const http: HttpClient = realMode ? realHttp : new TrialModeHttpClient({ real: realHttp, logger, allowAlso });
+
+  // E-MAIL to customers (password reset, change verification) follows the same rule: real only
+  // in real mode; unconfigured SMTP = "link created, mail not sent" with the text in the log.
+  const smtp = {
+    host: text(env["SMTP_HOST"]), port: Number(env["SMTP_PORT"] || 587), secure: /^(1|true|yes|on)$/i.test(text(env["SMTP_SECURE"])),
+    user: text(env["SMTP_USER"]), pass: text(env["SMTP_PASS"]), from: text(env["SMTP_FROM"])
+  };
+  const mail: Mailer = !realMode ? new TrialModeMailer(logger) : smtpConfigured(smtp) ? new SmtpMailer(smtp, logger) : new UnconfiguredMailer(logger);
 
   const auth = new TokenAuth({
     // Long-lived NAMED keys — TopRun's internal tools (Desk, Image Tool). Not feature-gated.
@@ -206,7 +231,7 @@ export async function buildLandingApp(options: BuildOptions): Promise<LandingApp
 
   const kernel = new Kernel({
     ports: {
-      store, logger, clock, http, auth,
+      store, logger, clock, http, auth, mail,
       rateLimiter: new FixedWindowRateLimiter(clock),
       // The storefront: a module sees only its own `goc/`, and only the declared file extensions.
       staticFiles: new DiskStaticFilePort(STATIC_ROOT, logger)

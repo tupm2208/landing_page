@@ -60,7 +60,7 @@ interface PageMoneySettings {
 
 interface Services {
   "don-khach": Pick<OrderServices, "read" | "readByLookupToken" | "recordPayment">;
-  "khung-nen-tang"?: Pick<PlatformServices, "moneySettings">;
+  "khung-nen-tang"?: Pick<PlatformServices, "moneySettings" | "settings">;
 }
 
 type Ctx = ModuleContext<Config, Services>;
@@ -101,7 +101,20 @@ export interface MoneyServices {
   orderMoney(orderId: string): Promise<(OrderMoney & { maDon: string | undefined }) | null>;
   choosePaymentMethod(input: ChoosePaymentInput): Promise<ChoosePaymentResult>;
   recordPaid(input: RecordPaidInput): Promise<RecordPaidResult>;
+  refund(input: RefundInput): Promise<RefundResult>;
 }
+
+/** Giving money BACK to a customer: which order, how much, and why. */
+export interface RefundInput {
+  maDon?: string;
+  soTien?: number | string;
+  lyDo?: string;
+  boi?: string;
+}
+
+export type RefundResult =
+  | { ok: true; maDon: string; daHoan: number; daTra: number; conPhaiTra: number }
+  | { ok: false; viSao: "thieu_ma_don_hoac_so_tien" | "khong_thay_don" | "hoan_qua_so_da_tra" | "thieu_ly_do"; daTra?: number };
 
 const TEN_MINUTES = 10 * 60 * 1000;
 
@@ -139,9 +152,25 @@ async function moneySettings(ctx: Ctx): Promise<MoneySettings> {
   };
 }
 
-/** The seller's alert channel. The token is read STRAIGHT from the machine's config, never from page content. */
-function alerts(ctx: Ctx): TelegramAlerts {
-  return new TelegramAlerts({ http: ctx.ports.http, logger: ctx.ports.logger }, ctx.config?.telegram ?? {});
+/**
+ * The seller's alert channel. The token comes from the SHOP'S OWN SETTINGS (what the owner typed
+ * in OMI's Kết nối screen, kept on this server) and falls back to the machine's environment —
+ * never from page content, which is public and would hand the bot token to the world.
+ */
+async function alerts(ctx: Ctx): Promise<TelegramAlerts> {
+  const deps = { http: ctx.ports.http, logger: ctx.ports.logger };
+  const read = ctx.services["khung-nen-tang"]?.settings;
+  const fallback = ctx.config?.telegram ?? {};
+  if (read === undefined) return new TelegramAlerts(deps, fallback);
+  try {
+    const shop = await read();
+    return new TelegramAlerts(deps, {
+      token: String(shop["telegram_bot_token"] ?? "").trim() || String(fallback.token ?? ""),
+      chatId: String(shop["telegram_chat_bao_dong"] ?? "").trim() || String(fallback.chatId ?? "")
+    });
+  } catch {
+    return new TelegramAlerts(deps, fallback);            // an alert must never block the money path
+  }
 }
 
 /** The money numbers of an order — through the kit, never derived. */
@@ -178,7 +207,7 @@ async function choosePaymentMethod(ctx: Ctx, { maDon = "", maTra = "", luaChon =
     note: PAYMENT_NOTES[luaChon]
   });
 
-  alerts(ctx).notify(`💰 Đơn <b>${maDon}</b>: khách chọn <b>${luaChon}</b> — cần thu <b>${vnd(amountDue)}đ</b>`);
+  (await alerts(ctx)).notify(`💰 Đơn <b>${maDon}</b>: khách chọn <b>${luaChon}</b> — cần thu <b>${vnd(amountDue)}đ</b>`);
   return { ok: true, maDon, luaChon, phuongThuc: PAYMENT_METHODS[luaChon], soPhaiTra: amountDue, phiShip: fee, maChuyenKhoan: reference };
 }
 
@@ -202,10 +231,47 @@ async function recordPaid(ctx: Ctx, { maDon = "", soTien = 0, boi = "nguoi-that"
   });
 
   ctx.bus.emit(EVENTS.paymentReceived, { maDon, soTien: amount, daTra: paidNow, traDu: paidInFull });
-  alerts(ctx).notify(`✅ Đơn <b>${maDon}</b>: đã nhận <b>${vnd(amount)}đ</b>` +
+  (await alerts(ctx)).notify(`✅ Đơn <b>${maDon}</b>: đã nhận <b>${vnd(amount)}đ</b>` +
     (paidInFull ? " — <b>đủ tiền</b>" : ` — còn <b>${vnd(Math.max(0, before.tong - paidNow))}đ</b>`));
 
   return { ok: true, maDon, daTra: paidNow, conPhaiTra: Math.max(0, before.tong - paidNow), traDu: paidInFull };
+}
+
+/**
+ * REFUND — money going back to the customer.
+ *
+ * A refund is not "a payment with a minus in front": it is the one money move a shop makes that
+ * nobody can undo by talking to the bank. So it is admin-only (never a bot tool, RULE 2), it
+ * REQUIRES a written reason — a refund with no reason is indistinguishable from a mistake three
+ * months later — and it can never exceed what the customer actually paid. Refunding more than was
+ * received would leave the order's "đã trả" negative and every later number wrong.
+ *
+ * It does NOT cancel the order and does NOT return stock: those are separate decisions a person
+ * makes on the order screen (a refunded deposit on an order that still ships is a real case).
+ */
+async function refund(ctx: Ctx, { maDon = "", soTien = 0, lyDo = "", boi = "quan-tri" }: RefundInput = {}): Promise<RefundResult> {
+  const amount = Math.max(0, Math.round(Number(soTien) || 0));
+  if (!maDon || amount <= 0) return { ok: false, viSao: "thieu_ma_don_hoac_so_tien" };
+  if (String(lyDo || "").trim() === "") return { ok: false, viSao: "thieu_ly_do" };
+
+  const order = await ctx.services["don-khach"].read(maDon);
+  if (!order) return { ok: false, viSao: "khong_thay_don" };
+
+  const before = moneyOf(order);
+  if (amount > before.daTra) return { ok: false, viSao: "hoan_qua_so_da_tra", daTra: before.daTra };
+
+  const paidNow = before.daTra - amount;
+  await ctx.services["don-khach"].recordPayment({
+    id: maDon,
+    paymentStatus: paidNow <= 0 ? "refunded" : paidNow >= before.tong ? "paid" : "partially_paid",
+    paymentAmount: paidNow,
+    note: `Hoàn ${vnd(amount)}đ cho khách (${boi}): ${String(lyDo).trim()}`
+  });
+
+  ctx.bus.emit(EVENTS.paymentRefunded, { maDon, soTien: amount, daTra: paidNow, lyDo: String(lyDo).trim(), boi });
+  (await alerts(ctx)).notify(`↩️ Đơn <b>${maDon}</b>: đã hoàn <b>${vnd(amount)}đ</b> — ${String(lyDo).trim()}`);
+
+  return { ok: true, maDon, daHoan: amount, daTra: paidNow, conPhaiTra: Math.max(0, before.tong - paidNow) };
 }
 
 async function orderMoney(ctx: Ctx, orderId: string): Promise<(OrderMoney & { maDon: string | undefined }) | null> {
@@ -224,14 +290,15 @@ export const manifest = defineModule<Config, Services>({
   ports: ["logger", "clock", "http", "bus", "config"],
   requires: ["don-khach.read", "don-khach.readByLookupToken", "don-khach.recordPayment"],
   // Deposit % / shipping fee / transfer prefix: read from page content when the platform is present.
-  requiresOptional: ["khung-nen-tang.moneySettings"],
+  requiresOptional: ["khung-nen-tang.moneySettings", "khung-nen-tang.settings"],
 
-  events: { emits: [EVENTS.paymentReceived], listens: {} },
+  events: { emits: [EVENTS.paymentReceived, EVENTS.paymentRefunded], listens: {} },
 
   provides: {
     "tien-doi-soat.orderMoney": (ctx, orderId: string) => orderMoney(ctx, orderId),
     "tien-doi-soat.choosePaymentMethod": (ctx, input: ChoosePaymentInput) => choosePaymentMethod(ctx, input),
-    "tien-doi-soat.recordPaid": (ctx, input: RecordPaidInput) => recordPaid(ctx, input)
+    "tien-doi-soat.recordPaid": (ctx, input: RecordPaidInput) => recordPaid(ctx, input),
+    "tien-doi-soat.refund": (ctx, input: RefundInput) => refund(ctx, input)
   },
 
   routes: [
@@ -262,6 +329,21 @@ export const manifest = defineModule<Config, Services>({
           ghiChu: String(body["ghiChu"] || "")
         });
         return result.ok ? { status: 200, body: result } : { status: 400, body: { ok: false, error: result.viSao } };
+      }
+    },
+    {
+      // Giving money back. Admin only, a reason is required, never more than the customer paid.
+      method: "POST", path: "/api/tien/hoan", access: ACCESS.admin,
+      rateLimit: { calls: 60, windowMs: TEN_MINUTES },
+      handle: async (ctx, request) => {
+        const body = asRecord(await request.json());
+        const result = await refund(ctx, {
+          maDon: String(body["maDon"] || body["orderId"] || ""),
+          soTien: Number(body["soTien"] ?? body["amount"] ?? 0),
+          lyDo: String(body["lyDo"] || body["reason"] || ""),
+          boi: String(body["boi"] || "quan-tri")
+        });
+        return result.ok ? { status: 200, body: result } : { status: 400, body: { ok: false, error: result.viSao, daTra: result.daTra } };
       }
     },
     {

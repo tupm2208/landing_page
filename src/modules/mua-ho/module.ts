@@ -274,6 +274,28 @@ export const manifest = defineModule<Config, Services>({
       }
     },
     {
+      // OMI's "Sản phẩm cần mua": what still has to be bought, what was bought, and what a partner
+      // said it could not get. One door, three lists — they are always read together.
+      method: "GET", path: "/api/admin/mua-ho", access: ACCESS.admin,
+      rateLimit: { calls: 120, windowMs: TEN_MINUTES },
+      handle: async (ctx, request) => {
+        const partnerId = text(request.query["doiTac"]);
+        const limit = Number(request.query["limit"] || 0);
+        const repo = repository(ctx);
+        return {
+          status: 200,
+          headers: { "Cache-Control": "no-store" },
+          body: {
+            ok: true,
+            doiTac: partnerId,
+            canMua: await needsPurchase(ctx, partnerId),
+            daMua: await repo.recentPurchases(partnerId, limit),
+            baoHet: await repo.recentStockOuts(partnerId, limit)
+          }
+        };
+      }
+    },
+    {
       // The shop manages its partners.
       method: "GET", path: "/api/admin/partners", access: ACCESS.admin,
       handle: async (ctx) => ({ status: 200, headers: { "Cache-Control": "no-store" }, body: await repository(ctx).listPartners() })

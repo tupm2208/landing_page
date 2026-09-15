@@ -12,6 +12,16 @@
 /** Channels OMI feeds and drains — the landing cannot send on these itself. Values are wire. */
 export const OMI_CHANNELS: readonly string[] = ["zalo", "fb-ca-nhan"];
 
+/**
+ * Channel of a PUBLIC COMMENT on a Fanpage post.
+ *
+ * A comment is not a message and must not be treated as one: it is public, anyone reading the
+ * post sees the answer, and the reply goes to the comment rather than to the person's inbox. Its
+ * own channel keeps that difference visible everywhere — in the thread list, in what the brain is
+ * told, and in which Graph endpoint the reply takes.
+ */
+export const COMMENT_CHANNEL = "facebook-binh-luan";
+
 /** A customer message as every channel delivers it. Field names are wire (the brain and OMI read them). */
 export interface InboundMessage {
   kenh: string;
@@ -23,8 +33,10 @@ export interface InboundMessage {
   luc: string;
   /** The Fanpage id (Meta line only). */
   trang?: string;
-  /** Display name OMI read from the screen (OMI line only). */
+  /** Display name OMI read from the screen (OMI line only), or the commenter's name Meta sent. */
   tenNguoi?: string;
+  /** Comment line only: the post the comment sits under, so the seller sees WHAT is being asked about. */
+  baiViet?: string;
 }
 
 /** One Meta webhook delivery, stored raw. */

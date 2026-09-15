@@ -10,7 +10,7 @@
  */
 
 /** Names a manifest may list under `ports`. `bus` and `config` are always handed over separately. */
-export const PORT_NAMES = ["store", "logger", "clock", "http", "bus", "auth", "config", "staticFiles"] as const;
+export const PORT_NAMES = ["store", "logger", "clock", "http", "bus", "auth", "config", "staticFiles", "mail"] as const;
 export type PortName = (typeof PORT_NAMES)[number];
 
 // ---------------------------------------------------------------------------------------------
@@ -54,6 +54,34 @@ export interface HttpResponse {
  */
 export interface HttpClient {
   fetch(url: string, init?: HttpRequestInit): Promise<HttpResponse>;
+}
+
+// ---------------------------------------------------------------------------------------------
+// Outbound e-mail
+// ---------------------------------------------------------------------------------------------
+
+/** One e-mail to a customer (password reset, change verification, order confirmation). */
+export interface MailMessage {
+  to: string;
+  subject: string;
+  text: string;
+  html?: string;
+}
+
+/**
+ * The result of sending. `configured: false` means the shop has no SMTP set up — the running site
+ * treated that as "link created, mail not sent" and printed the link in the log, so the owner can
+ * still help a customer by hand. Callers surface that difference to the user.
+ */
+export interface MailResult {
+  ok: boolean;
+  configured: boolean;
+  reason?: string;
+}
+
+/** E-mail out of the server. A real SMTP adapter in production; a memory adapter in tests. */
+export interface Mailer {
+  send(message: MailMessage): Promise<MailResult>;
 }
 
 // ---------------------------------------------------------------------------------------------

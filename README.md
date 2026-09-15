@@ -21,7 +21,9 @@ npm run install-wizard   # bộ cài: hỏi vài câu, viết .env, đăng ký v
 npm start                # = node dist/main.js (phải build trước; npm test đã build sẵn)
 ```
 
-Biến môi trường đọc từ `.env` cạnh gói (bộ cài viết ra); biến đặt sẵn trong môi trường đè lên.
+Biến môi trường đọc từ **`.env` ở gốc repo này** (`server-khach/.env`; bộ cài viết ra, hoặc chép
+từ `.env.example`) — repo chạy độc lập nên giữ tệp riêng, không vào git. Biến đặt sẵn trong môi
+trường đè lên.
 Bảng biến đầy đủ ở `../HUONG-DAN-CHAY.md`. **Chế độ thử bật mặc định**: không gửi tin cho
 khách, không tạo vận đơn thật, không báo Telegram — chỉ `CHE_DO_THAT=1` mới cho gọi thật.
 Cổng MySQL 3306 là dữ liệu thật của landing đang chạy: mọi công cụ ở đây tự ném nếu trỏ vào đó.
@@ -45,7 +47,7 @@ module import giá trị từ module khác, import khung, hay tự mở `fs`/`ht
 | Module | Mảnh | Việc |
 |---|---|---|
 | `hang-kho` | hang-kho | Danh mục ba nguồn hàng, tồn theo kho, giữ chỗ có khoá dòng |
-| `don-khach` | don-khach | Đặt đơn (giữ chỗ trước, giá lấy từ kho), tra đơn, đổi trạng thái, báo cáo |
+| `don-khach` | don-khach | Đặt đơn (giữ chỗ rồi chốt thành bán, huỷ trả tồn), tra đơn, đổi trạng thái, báo cáo; tài khoản khách (`/api/account/*`); chủ shop tạo đơn thủ công / sửa / xoá; Desk `manual-orders/sync`; danh sách khách |
 | `tien-doi-soat` | tien | Bốn cách trả, tiền qua order-money-kit, báo Telegram cho người bán |
 | `van-chuyen` | van-chuyen | Vận đơn SPX / Viettel Post (Strategy), sổ vận đơn, địa chỉ |
 | `mua-ho` | mua-ho | Cổng đối tác phiên cookie, phiếu mua, báo hết theo mã dòng |

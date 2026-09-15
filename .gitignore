@@ -1,0 +1,24 @@
+# Cấu hình có bí mật — mỗi shop một tệp, bộ cài viết hoặc chép từ .env.example
+.env
+.env.*
+!.env.example
+
+# Thư viện tải về
+node_modules/
+
+# Bản dịch TypeScript (sinh lại bằng `npm run build`)
+dist/
+*.tsbuildinfo
+.tsconfig.*.json
+
+# Dữ liệu chạy thử trên máy cá nhân
+du-lieu/
+*.sqlite
+*.log
+
+# Ảnh sản phẩm (7,6 GB): junction trỏ sang thư mục ảnh của máy chạy, không vào git
+modules/gian-hang/goc/assets/products
+modules/gian-hang/goc/assets/thumbnails
+
+# Bảng địa chỉ gộp 2025 là dữ liệu đi kèm mã, không phải dữ liệu chạy thử
+!src/modules/van-chuyen/du-lieu/

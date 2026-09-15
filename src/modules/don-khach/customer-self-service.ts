@@ -9,7 +9,7 @@
  * (profile only, first 15 minutes, never lines or prices) live here, the views in `public-orders.ts`.
  */
 
-import { EVENTS, type ReplyDraft } from "../../contract";
+import type { ReplyDraft } from "../../contract";
 import type { OrderContext, OrderMoneySummary } from "./context";
 import { repositoryOf } from "./context";
 import type { CustomerProfile, Order } from "./order-repository";
@@ -94,11 +94,9 @@ export async function editCustomerProfile(ctx: OrderContext, { id = "", token = 
 /**
  * The customer cancels within the first 15 minutes.
  *
- * ONE THING STILL OPEN (stated so nobody assumes it is done): cancelling does NOT yet return stock.
- * On the running site, placing an order deducts real stock, so cancelling adds it back. In the
- * split build, placing only RESERVES for 30 minutes and the reservation ticket is not written on
- * the order — so here we only emit `don-khach.da-huy`; the Inventory module will listen to it and
- * release once reservations are persisted. See "reservation after placing" in KIEM-KE-TINH-NANG.md.
+ * Stock goes back to the shelf inside `changeStatus` (order-service.ts, `returnStock`): the same
+ * path serves the owner cancelling from OMI, so there is exactly one place that gives pairs back
+ * and exactly one place that emits `don-khach.da-huy`. Closed 14/09/2026 ("Lỗ 1").
  */
 export async function cancelByCustomer(ctx: OrderContext, { id = "", token = "" }: { id?: string; token?: string } = {}): Promise<ReplyDraft> {
   if (!id || !token) return MISSING_TOKEN();
@@ -109,7 +107,6 @@ export async function cancelByCustomer(ctx: OrderContext, { id = "", token = "" 
 
   const outcome = await changeStatus(ctx, { id: order.id, status: "cancelled", note: "Khách tự hủy đơn", actor: "khach" });
   if (!outcome.ok) return refuse(409, outcome.reason, "Chưa hủy được đơn hàng.");
-  ctx.bus.emit(EVENTS.orderCancelled, { maDon: order.id, boi: "khach" });
 
   const fresh = await readOrder(ctx, order.id);
   return detailReply(ctx, fresh ?? order, ctx.ports.clock.now());

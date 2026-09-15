@@ -10,6 +10,9 @@
 
 import { ACCESS, defineModule, reply, type Caller, type ModuleContext } from "../../contract";
 import { defaultPageContent, moneySettingsFrom, normalisePageContent, type MoneySettings, type PageContent } from "./page-content";
+import {
+  SHOP_SETTINGS_DOCUMENT, forScreen, mergeSettings, settingsOf, type ShopSettingsDocument
+} from "./shop-settings";
 import { readXeonRegistration, registerWithXeon, saveXeonRegistration, summariseXeonRegistration } from "./xeon-registration";
 
 /** Document name — on-disk contract. */
@@ -32,11 +35,16 @@ export interface XeonInboxTarget {
   maNhanTin: string;
 }
 
-/** Services this module provides (`khung-nen-tang.content` / `.moneySettings` / `.xeon`). */
+/** Services this module provides (`khung-nen-tang.content` / `.moneySettings` / `.xeon` / `.settings`). */
 export interface PlatformServices {
   content(): Promise<PageContent>;
   moneySettings(): Promise<MoneySettings>;
   xeon(): Promise<XeonInboxTarget | null>;
+  /**
+   * The shop's own keys and addresses — what used to be Sales Desk's `.env`. Secrets in the
+   * clear: this is a module-to-module service, never an HTTP reply (see `shop-settings.ts`).
+   */
+  settings(): Promise<Record<string, string>>;
 }
 
 type Ctx = ModuleContext<Config>;
@@ -44,6 +52,10 @@ type Ctx = ModuleContext<Config>;
 async function readPageContent(ctx: Ctx): Promise<PageContent> {
   const stored = await ctx.ports.store.document<Partial<PageContent>>(PAGE_CONTENT_DOCUMENT).read(null);
   return stored ? normalisePageContent(stored, stored.updatedAt || ctx.ports.clock.now()) : defaultPageContent();
+}
+
+async function readShopSettings(ctx: Ctx): Promise<Record<string, string>> {
+  return settingsOf(await ctx.ports.store.document<Partial<ShopSettingsDocument>>(SHOP_SETTINGS_DOCUMENT).read(null));
 }
 
 function asObject(value: unknown): Record<string, unknown> | null {
@@ -77,7 +89,10 @@ export const manifest = defineModule<Config>({
     "khung-nen-tang.xeon": async (ctx): Promise<XeonInboxTarget | null> => {
       const doc = await readXeonRegistration(ctx.ports.store);
       return doc ? { shop: doc.shop, diaChiXeon: doc.diaChiXeon, maNhanTin: doc.maNhanTin } : null;
-    }
+    },
+    // Shipping reads its carrier keys here, Money its Telegram bot: one place the owner edits in
+    // OMI, no `.env` on the shop's server to hand-edit and no redeploy to pick a key up.
+    "khung-nen-tang.settings": (ctx): Promise<Record<string, string>> => readShopSettings(ctx)
   },
 
   routes: [
@@ -143,6 +158,32 @@ export const manifest = defineModule<Config>({
         await ctx.ports.store.document<PageContent>(PAGE_CONTENT_DOCUMENT).write(next);
         ctx.ports.logger.info("[khung-nen-tang] noi dung trang da doi");
         return reply.json({ ok: true, noiDung: next }, 200, NO_STORE);
+      }
+    },
+    {
+      // THE SHOP'S CONFIGURATION, as OMI's "Kết nối" screen draws it: groups of fields, each
+      // saying whether it is set. Secrets come back masked — see rule 1 of `shop-settings.ts`.
+      method: "GET", path: "/api/admin/cau-hinh", access: ACCESS.admin,
+      rateLimit: { calls: 120, windowMs: TEN_MINUTES },
+      handle: async (ctx) => reply.json({ ok: true, nhom: forScreen(await readShopSettings(ctx)) }, 200, NO_STORE)
+    },
+    {
+      // Save. An empty secret means "unchanged" and `__xoa__` means "erase" (rule 3); an unknown
+      // key is dropped (rule 2). The log names the keys that changed, never their values.
+      method: "POST", path: "/api/admin/cau-hinh", access: ACCESS.admin,
+      rateLimit: { calls: 60, windowMs: TEN_MINUTES },
+      bodyLimit: 64 * 1024,
+      handle: async (ctx, request) => {
+        const body = asObject(await request.json());
+        if (!body) return reply.json({ ok: false, error: "can_mot_doi_tuong" }, 400);
+        const incoming = asObject(body["giaTri"]) ?? body;
+        const current = await readShopSettings(ctx);
+        const { next, changed } = mergeSettings(current, incoming);
+        if (changed.length > 0) {
+          await ctx.ports.store.document<ShopSettingsDocument>(SHOP_SETTINGS_DOCUMENT).write({ giaTri: next, updatedAt: ctx.ports.clock.now().toISOString() });
+          ctx.ports.logger.info(`[khung-nen-tang] cấu hình shop đã đổi: ${changed.join(", ")}`);
+        }
+        return reply.json({ ok: true, daDoi: changed, nhom: forScreen(next) }, 200, NO_STORE);
       }
     },
     {

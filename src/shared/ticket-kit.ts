@@ -55,8 +55,9 @@ interface SharedTicketKit {
 }
 
 const requireShared = createRequire(__filename);
-// From `server-khach/dist/shared/` (or `src/shared/`) up to the repository root, then `chung/ve-may.js`.
-const kit: SharedTicketKit = requireShared(path.join(__dirname, "..", "..", "..", "chung", "ve-may.js"));
+// From `dist/shared/` (or `src/shared/`) up to the package root, then `kit/ve-may.js` — a byte-identical
+// copy of `chung/ve-may.js` kept inside this repo, because the landing deploys on its own (cPanel).
+const kit: SharedTicketKit = requireShared(path.join(__dirname, "..", "..", "kit", "ve-may.js"));
 
 export const TICKET_PREFIX: string = kit.TIEN_TO;
 

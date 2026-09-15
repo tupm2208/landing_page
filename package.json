@@ -15,7 +15,8 @@
     "test:mysql": "npm run build && node --test --test-concurrency=1 --test-timeout=90000 --test-force-exit \"test-mysql/*.test.mts\""
   },
   "dependencies": {
-    "mysql2": "^3.24.4"
+    "mysql2": "^3.24.4",
+    "nodemailer": "^7.0.13"
   },
   "devDependencies": {
     "@types/node": "^24.3.0",

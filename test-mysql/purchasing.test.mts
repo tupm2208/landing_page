@@ -313,6 +313,31 @@ test("The partner portal on real MySQL", { ...skipWithoutDb }, async (t) => {
     assert.equal(await store.table(STOCK_OUTS_TABLE).count(), 0);
   });
 
+  await t.test("the SHOP's screen sees the work, the slips WITH cost price, and what was reported out of stock", async () => {
+    await cleanUp(); await addPartner();
+    const orderId = placeOrder();
+    const cookie = await login();
+    const task = body(await call("GET", "/api/partner-portal", { cookie })).canMua?.[0];
+    assert.ok(task);
+    await call("POST", "/api/partner-portal/purchases", { cookie, payload: { maDong: task.maDong, soLuong: 1, giaVon: 2000000, maLenh: "l-shop" } });
+
+    const second = placeOrder();
+    const left = body(await call("GET", "/api/partner-portal", { cookie })).canMua?.find((x) => x.maDon === second);
+    assert.ok(left);
+    await call("POST", "/api/partner-portal/out-of-stock", { cookie, payload: { maDong: left.maDong, lyDo: "hết size" } });
+
+    const r = await call("GET", "/api/admin/mua-ho", { headers: admin });
+    assert.equal(r.status, 200, JSON.stringify(r.body));
+    const shop = r.body as { canMua: { maDon: string }[]; daMua: { maDon: string; giaVon: number }[]; baoHet: { maDon: string; lyDo: string }[] };
+    assert.ok(!shop.canMua.some((x) => x.maDon === orderId), "a line already bought is off the list");
+    assert.equal(shop.daMua[0]?.maDon, orderId);
+    assert.equal(shop.daMua[0]?.giaVon, 2000000, "the cost price IS the shop's — this is where it belongs");
+    assert.equal(shop.baoHet[0]?.maDon, second);
+    assert.equal(shop.baoHet[0]?.lyDo, "hết size");
+
+    assert.equal((await call("GET", "/api/admin/mua-ho")).status, 401, "the shop's screen is admin only");
+  });
+
   await t.test("the partner list is admin only", async () => {
     await cleanUp(); await addPartner();
     assert.equal((await call("GET", "/api/admin/partners")).status, 401);

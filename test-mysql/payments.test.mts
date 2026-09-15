@@ -153,6 +153,9 @@ const choose = (kernel: Kernel, payload: unknown) => kernel.handle({
 const recordPaid = (kernel: Kernel, payload: unknown, headers: IncomingRequest["headers"] = admin) => kernel.handle({
   method: "POST", path: "/api/tien/da-tra", headers, ip: "1.1.1.1", json: async () => payload
 });
+const refund = (kernel: Kernel, payload: unknown, headers: IncomingRequest["headers"] = admin) => kernel.handle({
+  method: "POST", path: "/api/tien/hoan", headers, ip: "1.1.1.1", json: async () => payload
+});
 const askMoney = (kernel: Kernel, orderId: string, token = SERVICE) => kernel.handle({
   method: "GET", path: `/api/tien/don/${orderId}`, headers: { authorization: `Bearer ${token}` }, ip: "1.1.1.1"
 });
@@ -293,5 +296,70 @@ test("Money & reconciliation through the kernel", async (t) => {
     const r = await recordPaid(kernel, { maDon: order.id, soTien: 500000 });
     assert.equal(r.status, 200, "a failed alert must not block recording");
     assert.equal(body(r).daTra, 500000);
+  });
+
+  await t.test("a refund can never exceed what the customer actually paid", async () => {
+    const { kernel } = fresh({ telegram: {} });
+    const order = placeOrder(orders);
+    await recordPaid(kernel, { maDon: order.id, soTien: 500000 });
+
+    const tooMuch = await refund(kernel, { maDon: order.id, soTien: 600000, lyDo: "khách đổi ý" });
+    assert.equal(tooMuch.status, 400);
+    assert.equal(body(tooMuch).error, "hoan_qua_so_da_tra");
+    assert.equal(body(tooMuch).daTra, 500000, "the reply says what really was paid");
+    assert.equal(orders.get(order.id)?.paymentAmount, 500000, "nothing was written");
+  });
+
+  await t.test("a refund without a reason is refused — three months later nobody could tell it from a mistake", async () => {
+    const { kernel } = fresh({ telegram: {} });
+    const order = placeOrder(orders);
+    await recordPaid(kernel, { maDon: order.id, soTien: 500000 });
+
+    const noReason = await refund(kernel, { maDon: order.id, soTien: 100000 });
+    assert.equal(noReason.status, 400);
+    assert.equal(body(noReason).error, "thieu_ly_do");
+    assert.equal(orders.get(order.id)?.paymentAmount, 500000);
+  });
+
+  await t.test("a partial refund leaves the order partly paid; a full one marks it refunded, and both say why in the log", async () => {
+    const { kernel } = fresh({ telegram: {} });
+    const order = placeOrder(orders);
+    await recordPaid(kernel, { maDon: order.id, soTien: 500000 });
+
+    const part = await refund(kernel, { maDon: order.id, soTien: 200000, lyDo: "giao thiếu một đôi" });
+    assert.equal(part.status, 200, JSON.stringify(part.body));
+    assert.equal(body(part).daHoan, 200000);
+    assert.equal(orders.get(order.id)?.paymentAmount, 300000);
+    assert.equal(orders.get(order.id)?.paymentStatus, "partially_paid");
+    assert.ok(orders.get(order.id)?.notes.some((n) => /giao thiếu một đôi/.test(n)), "the reason is in the order log");
+
+    const rest = await refund(kernel, { maDon: order.id, soTien: 300000, lyDo: "khách huỷ" });
+    assert.equal(rest.status, 200);
+    assert.equal(orders.get(order.id)?.paymentAmount, 0);
+    assert.equal(orders.get(order.id)?.paymentStatus, "refunded");
+  });
+
+  await t.test("refunding is a real person's job: no ticket, no refund", async () => {
+    const { kernel } = fresh({ telegram: {} });
+    const order = placeOrder(orders);
+    await recordPaid(kernel, { maDon: order.id, soTien: 500000 });
+
+    const asNobody = await refund(kernel, { maDon: order.id, soTien: 100000, lyDo: "thử" }, {});
+    assert.equal(asNobody.status, 401);
+    const asBrain = await refund(kernel, { maDon: order.id, soTien: 100000, lyDo: "thử" }, { authorization: `Bearer ${SERVICE}` });
+    assert.equal(asBrain.status, 401, "the bot may read money, never move it");
+    assert.equal(orders.get(order.id)?.paymentAmount, 500000);
+  });
+
+  await t.test("the shop's Telegram group is told about a refund, with the reason", async () => {
+    const { kernel } = fresh({ telegram: { token: "t", chatId: "-100" } });
+    const order = placeOrder(orders);
+    await recordPaid(kernel, { maDon: order.id, soTien: 500000 });
+    net.calls.length = 0;
+
+    await refund(kernel, { maDon: order.id, soTien: 100000, lyDo: "ship chậm" });
+    await new Promise((done) => setTimeout(done, 20));
+    const sent = net.calls.map((c) => JSON.stringify(c)).join(" | ");
+    assert.ok(/ship ch/.test(sent), `the alert must carry the reason: ${sent}`);
   });
 });

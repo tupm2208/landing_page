@@ -60,6 +60,20 @@ export interface StockOutReport {
   lyDo: string;
 }
 
+/** A purchase slip as the SHOP's screen reads it — carries the cost price (rule 4 is about partners). */
+export interface PurchaseSlip {
+  maPhieu: string;
+  maDoiTac: string;
+  maDon: string;
+  maDong: string;
+  maMon: string;
+  size: string;
+  soLuong: number;
+  giaVon: number;
+  ghiChu: string;
+  taoLuc: string;
+}
+
 const s = (v: unknown): string => String(v ?? "");
 
 export class PurchaseRepository {
@@ -71,10 +85,17 @@ export class PurchaseRepository {
     return row ? { id: s(row["ma"]), name: s(row["ten"]), portalCode: s(row["ma_cong"]) } : null;
   }
 
-  /** Line ids this partner has already dealt with — bought or reported out of stock. */
+  /**
+   * Line ids already dealt with — bought or reported out of stock.
+   *
+   * An EMPTY partner id means "by anybody", which is what the shop's own screen asks: a line one
+   * partner already bought is not still waiting just because a second partner never touched it.
+   * The portal always passes a real partner id, so a partner still sees only their own work.
+   */
   async settledLineIds(partnerId: string): Promise<Set<string>> {
-    const bought = await this.store.table(PURCHASES_TABLE).find({ where: { ma_doi_tac: partnerId }, columns: ["ma_dong"] });
-    const out = await this.store.table(STOCK_OUTS_TABLE).find({ where: { ma_doi_tac: partnerId }, columns: ["ma_dong"] });
+    const where = partnerId === "" ? {} : { where: { ma_doi_tac: partnerId } };
+    const bought = await this.store.table(PURCHASES_TABLE).find({ ...where, columns: ["ma_dong"] });
+    const out = await this.store.table(STOCK_OUTS_TABLE).find({ ...where, columns: ["ma_dong"] });
     return new Set([...bought, ...out].map((r) => s(r["ma_dong"])));
   }
 
@@ -87,6 +108,38 @@ export class PurchaseRepository {
   /** Inserts a purchase slip. Throws the store's duplicate-key error when the command id was written meanwhile. */
   async insertPurchase(row: PurchaseRow): Promise<void> {
     await this.store.table(PURCHASES_TABLE).insert(row as unknown as Row);
+  }
+
+  /**
+   * Purchase slips for the shop's own screen, newest first.
+   *
+   * RULE 4 runs the other way here: the cost price IS the shop's, so the shop's screen is exactly
+   * where it belongs. It never leaves through a partner door (`partner-session.ts` decides that).
+   */
+  async recentPurchases(partnerId = "", limit = 200): Promise<PurchaseSlip[]> {
+    const rows = await this.store.table(PURCHASES_TABLE).find({
+      ...(partnerId ? { where: { ma_doi_tac: partnerId } } : {}),
+      orderBy: ["tao_luc desc"],
+      limit: Math.min(Math.max(1, Number(limit) || 200), 1000)
+    });
+    return rows.map((r) => ({
+      maPhieu: s(r["ma_phieu"]), maDoiTac: s(r["ma_doi_tac"]), maDon: s(r["ma_don"]), maDong: s(r["ma_dong"]),
+      maMon: s(r["ma_mon"]), size: s(r["size"]), soLuong: Number(r["so_luong"] || 0), giaVon: Number(r["gia_von"] || 0),
+      ghiChu: s(r["ghi_chu"]), taoLuc: s(r["tao_luc"])
+    }));
+  }
+
+  /** Every line a partner reported out of stock, newest first — the shop must re-source these. */
+  async recentStockOuts(partnerId = "", limit = 200): Promise<(StockOutReport & { maDoiTac: string; maDon: string; baoLuc: string })[]> {
+    const rows = await this.store.table(STOCK_OUTS_TABLE).find({
+      ...(partnerId ? { where: { ma_doi_tac: partnerId } } : {}),
+      orderBy: ["bao_luc desc"],
+      limit: Math.min(Math.max(1, Number(limit) || 200), 1000)
+    });
+    return rows.map((r) => ({
+      maDong: s(r["ma_dong"]), maDoiTac: s(r["ma_doi_tac"]), maDon: s(r["ma_don"]),
+      maMon: s(r["ma_mon"]), size: s(r["size"]), lyDo: s(r["ly_do"]), baoLuc: s(r["bao_luc"])
+    }));
   }
 
   /** Writes or overwrites the out-of-stock report of a line (keyed by LINE ID). */

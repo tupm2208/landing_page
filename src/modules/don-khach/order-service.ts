@@ -16,8 +16,11 @@ import { EVENTS } from "../../contract";
 import type { OrderContext, ReserveResult } from "./context";
 import { repositoryOf } from "./context";
 import {
-  isDuplicateKeyError, normaliseLine, type CustomerProfile, type NormalisedLine, type Order, type OrderDraft, type SearchFilter
+  isDuplicateKeyError, normaliseLine, type CustomerProfile, type NormalisedLine, type Order, type OrderDraft, type SearchFilter,
+  type StockTaken
 } from "./order-repository";
+
+const CANCELLED = "cancelled";
 
 const text = (v: unknown): string => String(v ?? "").trim();
 
@@ -79,6 +82,56 @@ function profileFromBody(body: Record<string, unknown>): CustomerProfile {
   };
 }
 
+/** A stock hold on one line: the ticket plus what it covers. */
+export interface Hold { ticket: string; variantId: string; quantity: number }
+
+export type HoldOutcome =
+  | { ok: true; held: Hold[]; missing: { code: string; size: string }[] }
+  | { ok: false; code: string; size: string };
+
+/**
+ * Reserves stock for lines, in order.
+ *
+ * `strict` (the storefront): the first line out of stock releases every earlier hold and fails.
+ * Not strict (the owner's manual order): a line out of stock is kept WITHOUT a hold and reported
+ * in `missing` — a partner's pair that is not in the catalogue is still a real sale.
+ * `trustClientPrice`: keep a positive price sent by the caller (the OWNER, from OMI or Desk);
+ * otherwise the price is the stock line's (the CUSTOMER can edit anything they send).
+ */
+export async function holdLines(ctx: OrderContext, lines: NormalisedLine[], opts: { strict: boolean; trustClientPrice: boolean }): Promise<HoldOutcome> {
+  const inventory = ctx.services["hang-kho"];
+  const held: Hold[] = [];
+  const missing: { code: string; size: string }[] = [];
+  for (const line of lines) {
+    const r: ReserveResult = await inventory.reserve({ code: line.code, size: line.size, quantity: line.quantity, heldBy: "dat-don" });
+    if (!r.ok) {
+      if (opts.strict) {
+        for (const h of held) await inventory.release({ ticket: h.ticket });
+        return { ok: false, code: line.code, size: line.size };
+      }
+      missing.push({ code: line.code, size: line.size });
+      continue;
+    }
+    if (!opts.trustClientPrice || !(line.unitPrice > 0)) line.unitPrice = Math.max(0, Number(r.price || 0));
+    if (!line.variantId) line.variantId = r.variantId || "";
+    if (!line.warehouseId) line.warehouseId = r.warehouseId || "";
+    if (!line.size) line.size = r.size || "";
+    held.push({ ticket: r.ticket, variantId: r.variantId || line.variantId, quantity: line.quantity });
+  }
+  return { ok: true, held, missing };
+}
+
+/** Turns holds into sales and returns what was taken (written on the order). A failed commit is logged, not fatal. */
+export async function commitHolds(ctx: OrderContext, held: Hold[], orderId: string): Promise<StockTaken[]> {
+  const taken: StockTaken[] = [];
+  for (const hold of held) {
+    const committed = await ctx.services["hang-kho"].commit({ ticket: hold.ticket });
+    if (committed.ok) taken.push({ maBienThe: committed.variantId || hold.variantId, soLuong: hold.quantity });
+    else ctx.ports.logger.warn(`[don-khach] khong chot duoc phieu giu cua don ${orderId}: ${committed.reason}`);
+  }
+  return taken;
+}
+
 /**
  * Places an order. Reserves stock FIRST, then writes the whole order in ONE transaction.
  * If the reservation succeeded but the write failed, the reservation is released — stock is
@@ -91,28 +144,14 @@ export async function placeOrder(ctx: OrderContext, rawBody: unknown): Promise<P
   if (!text(body["customerName"])) return { ok: false, reason: "thieu_ten_khach" };
   if (!text(body["phone"])) return { ok: false, reason: "thieu_dien_thoai" };
 
-  const inventory = ctx.services["hang-kho"];
-  const releaseAll = async (held: Extract<ReserveResult, { ok: true }>[]) => {
-    for (const h of held) await inventory.release({ ticket: h.ticket });
-  };
-
   // RULE 1: reserve before writing.
   // AND: THE PRICE COMES FROM STOCK, NOT FROM THE CUSTOMER. The order route is public — the
   // customer can edit anything they send. Trusting the client's `price` sells a pair of shoes
   // for 1 dong. The right price is the price of the stock line just reserved, as Inventory returns it.
-  const held: Extract<ReserveResult, { ok: true }>[] = [];
-  for (const line of lines) {
-    const r = await inventory.reserve({ code: line.code, size: line.size, quantity: line.quantity, heldBy: "dat-don" });
-    if (!r.ok) {
-      await releaseAll(held);
-      return { ok: false, reason: "het_hang", code: line.code, size: line.size };
-    }
-    line.unitPrice = Math.max(0, Number(r.price || 0));
-    if (!line.variantId) line.variantId = r.variantId || "";
-    if (!line.warehouseId) line.warehouseId = r.warehouseId || "";
-    if (!line.size) line.size = r.size || "";
-    held.push(r);
-  }
+  const hold = await holdLines(ctx, lines, { trustClientPrice: false, strict: true });
+  if (!hold.ok) return { ok: false, reason: "het_hang", code: hold.code, size: hold.size };
+  const held = hold.held;
+  const releaseAll = async (holds: Hold[]) => { for (const h of holds) await ctx.services["hang-kho"].release({ ticket: h.ticket }); };
 
   const placedAt = ctx.ports.clock.now();
   const lookupToken = crypto.randomBytes(16).toString("hex");
@@ -147,8 +186,30 @@ export async function placeOrder(ctx: OrderContext, rawBody: unknown): Promise<P
     throw lastError;
   }
 
+  // RULE 1, SECOND HALF: THE HOLD BECOMES A SALE. Until 14/09/2026 nothing did this — the
+  // 30-minute hold expired and the sold pair showed up as available again ("Lỗ 1"). Every ticket
+  // is committed now, and what was taken is written on the order so a cancellation can put it
+  // back. A commit that fails is logged, not fatal: the order is real, the shelf is corrected by hand.
+  const taken = await commitHolds(ctx, held, id);
+  if (taken.length > 0) await repository.recordStockTaken({ id, lines: taken, at: placedAt });
+
   ctx.bus.emit(EVENTS.orderCreated, { maDon: id, tong: total, soMon: lines.length, dienThoai: text(body["phone"]) });
   return { ok: true, id, token: lookupToken, total };
+}
+
+/**
+ * Puts the pairs of a cancelled order back on the shelf — ONCE, whichever path cancelled it
+ * (the customer within 15 minutes, the owner from OMI, Sales Desk). The repository hands the
+ * lines out only the first time; a repeated cancel returns nothing.
+ */
+export async function returnStock(ctx: OrderContext, id: string): Promise<void> {
+  const taken = await repositoryOf(ctx).markStockRestored({ id, at: ctx.ports.clock.now() });
+  if (taken === null) return;
+  for (const line of taken) {
+    const r = await ctx.services["hang-kho"].restock({ variantId: line.maBienThe, quantity: line.soLuong });
+    if (!r.ok) ctx.ports.logger.warn(`[don-khach] khong tra lai duoc ton cho don ${id} (${line.maBienThe}): ${r.reason}`);
+  }
+  ctx.ports.logger.info(`[don-khach] don ${id} huy: tra lai ${taken.length} dong ton kho`);
 }
 
 /** Sets a new status, logs it and announces it on the bus. `khong_co_don` when the id is unknown. */
@@ -158,6 +219,37 @@ export async function changeStatus(ctx: OrderContext, { id, status, note = "", a
   });
   if (changed === 0) return { ok: false, reason: "khong_co_don" };
   ctx.bus.emit(EVENTS.orderStatusChanged, { maDon: id, trangThai: status, boi: actor });
+  if (String(status).toLowerCase() === CANCELLED) {
+    await returnStock(ctx, String(id));
+    ctx.bus.emit(EVENTS.orderCancelled, { maDon: id, boi: actor });
+  }
+  return { ok: true };
+}
+
+/**
+ * A shipment was created for an order: remember its tracking number.
+ *
+ * Shipping does not know what an order is, and only this module writes the orders table, so the
+ * two meet on the bus. Before this, a waybill created from OMI existed at the carrier and nowhere
+ * else: the order screen still showed "chưa có vận đơn" and the customer's status page could not
+ * show the journey.
+ *
+ * It deliberately does NOT move the order to "shipped". Handing the parcel over is a separate,
+ * human act — the same invariant that keeps an Excel export from marking orders shipped.
+ */
+export async function recordShipment(ctx: OrderContext, { id, trackingCode, carrier = "" }: { id: string; trackingCode: string; carrier?: string }): Promise<WriteOutcome> {
+  const orderId = text(id);
+  const code = text(trackingCode);
+  if (orderId === "" || code === "") return { ok: false, reason: "thieu_ma_don_hoac_ma_van_don" };
+  const changed = await repositoryOf(ctx).updateHead({
+    id: orderId,
+    patch: { trackingCode: code, ...(text(carrier) === "" ? {} : { shippingProvider: text(carrier) }) },
+    actor: "he-thong",
+    note: `Đã tạo vận đơn ${code}${text(carrier) ? ` (${text(carrier)})` : ""}.`,
+    at: ctx.ports.clock.now()
+  });
+  if (changed === 0) return { ok: false, reason: "khong_co_don" };
+  ctx.ports.logger.info(`[don-khach] don ${orderId} nhan ma van don ${code}`);
   return { ok: true };
 }
 

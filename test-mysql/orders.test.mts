@@ -15,10 +15,13 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { ROLE, defineModule, type Reply, type Row } from "../dist/contract/index.js";
-import { FakeHttpClient, FixedWindowRateLimiter, Kernel, ManualClock, MemoryLogger, TokenAuth, openMysqlStore } from "../dist/kernel/index.js";
-import { manifest, type ReleaseInput, type ReserveInput, type ReserveResult } from "../dist/modules/don-khach/module.js";
+import { FakeHttpClient, FakeStaticFilePort, FixedWindowRateLimiter, Kernel, ManualClock, MemoryLogger, MemoryMailer, TokenAuth, jsonResponse, openMysqlStore } from "../dist/kernel/index.js";
+import {
+  manifest, type CommitInput, type CommitResult, type ReleaseInput, type ReserveInput, type ReserveResult, type RestockInput, type RestockResult
+} from "../dist/modules/don-khach/module.js";
 import type { Order } from "../dist/modules/don-khach/order-repository.js";
 import type { DetailView, StatusView } from "../dist/modules/don-khach/public-orders.js";
+import { manifest as shipping } from "../dist/modules/van-chuyen/module.js";
 
 const ADMIN = "ma-quan-tri";
 const URL = String(process.env["TOPRUN_MYSQL_URL"] || "").trim();
@@ -59,6 +62,19 @@ const fakeInventory = defineModule({
       const line = stock.get(held.key);
       if (line) line.qty += held.quantity;
       return { ok: true };
+    },
+    // The hold becomes a sale: the fake already took the pairs off at reserve, so only the ticket goes.
+    "hang-kho.commit": (_ctx, input: CommitInput): CommitResult => {
+      const held = tickets.get(input.ticket);
+      if (!held) return { ok: false, reason: "khong_co_phieu" };
+      tickets.delete(input.ticket);
+      return { ok: true, variantId: stock.get(held.key)?.variantId ?? "", quantity: held.quantity };
+    },
+    "hang-kho.restock": (_ctx, input: RestockInput): RestockResult => {
+      for (const line of stock.values()) {
+        if (line.variantId === input.variantId) { line.qty += input.quantity; return { ok: true }; }
+      }
+      return { ok: false, reason: "khong_co_bien_the" };
     }
   }
 });
@@ -74,6 +90,14 @@ test("Orders on real MySQL", { ...skip }, async (t) => {
   const clock = new ManualClock();
   const store = await openMysqlStore({ url: URL, logger });
 
+  // A test database created by an OLDER schema (before 12/09/2026 the orders table was born from
+  // a test, with fewer columns) keeps its old shape — `CREATE TABLE IF NOT EXISTS` does not add
+  // columns. The test database is disposable, so start it over rather than debug "unknown column".
+  const columns = await store.rows("SELECT COLUMN_NAME AS c FROM information_schema.COLUMNS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'orders'");
+  if (columns.length > 0 && !columns.some((r) => r["c"] === "stock_reservation_json")) {
+    for (const table of ["order_status_logs", "order_items", "orders"]) await store.execute(`DROP TABLE IF EXISTS \`${table}\``);
+    await store.execute("DELETE FROM lich_su_luoc_do WHERE module = ?", [manifest.id]);
+  }
   // The module's own schema creates the three inherited tables on a fresh database.
   await store.runSchema(manifest.id, manifest.schema ?? [], { inheritedTables: manifest.inheritedTables ?? [] });
 
@@ -92,9 +116,10 @@ test("Orders on real MySQL", { ...skip }, async (t) => {
     ports: {
       store, logger, clock, http: new FakeHttpClient(),
       auth: new TokenAuth({ keys: [{ token: ADMIN, name: "quan-tri", role: ROLE.admin }], clock }),
-      rateLimiter: new FixedWindowRateLimiter(clock)
+      rateLimiter: new FixedWindowRateLimiter(clock),
+      staticFiles: new FakeStaticFilePort({}), mail: new MemoryMailer()
     },
-    logger, modules: [fakeInventory, manifest], config: { "hang-kho": {}, "don-khach": {} }
+    logger, modules: [fakeInventory, manifest], config: { "hang-kho": {}, "don-khach": { siteUrl: "https://shop.test" } }
   });
 
   const admin = { authorization: `Bearer ${ADMIN}` };
@@ -283,6 +308,161 @@ test("Orders on real MySQL", { ...skip }, async (t) => {
     assert.equal((await cancel({ orderId: placed.id, token: "sai" })).status, 404);
   });
 
+  await t.test("Lỗ 1 closed: placing TAKES the pair for good; cancelling gives it BACK — once, from any path", async () => {
+    await cleanUp(); stockUp(1);
+    const placed = body<PlacedBody>(await place(SAMPLE_ORDER));
+    assert.equal(stock.get("DV1234|42")?.qty, 0, "sold: off the shelf");
+    assert.equal(tickets.size, 0, "the hold was turned into a sale — no ticket left to expire after 30 minutes");
+    const head = await store.table("orders").one({ id: placed.id });
+    assert.match(String(head?.["stock_reservation_json"]), /DV1234-42/, "the order remembers what it took");
+    assert.ok(head?.["stock_reserved_at"], "and when");
+
+    const cancel = await kernel.handle({ method: "POST", path: "/api/orders/public/cancel", headers: {}, ip: "1.1.1.1", json: async () => ({ orderId: placed.id, token: placed.token }) });
+    assert.equal(cancel.status, 200, JSON.stringify(cancel.body));
+    assert.equal(stock.get("DV1234|42")?.qty, 1, "cancelled: back on the shelf");
+    const after = await store.table("orders").one({ id: placed.id });
+    assert.ok(after?.["stock_restored_at"], "the order remembers its stock was returned");
+
+    // The owner cancels the SAME order again from OMI: the pair must not come back twice.
+    const again = await kernel.handle({ method: "PATCH", path: `/api/orders/${placed.id}`, headers: admin, ip: "1.1.1.1", json: async () => ({ status: "cancelled" }) });
+    assert.equal(again.status, 200, JSON.stringify(again.body));
+    assert.equal(stock.get("DV1234|42")?.qty, 1, "never restocked twice");
+
+    // The owner cancelling a FRESH order from OMI restores too — one path for every canceller.
+    const second = body<PlacedBody>(await place(SAMPLE_ORDER));
+    assert.equal(stock.get("DV1234|42")?.qty, 0);
+    const heard: { maDon?: string; boi?: string }[] = [];
+    kernel.bus.on("don-khach.da-huy", "bai-huy-quan-tri", (d) => { heard.push(d as { maDon?: string; boi?: string }); });
+    await kernel.handle({ method: "PATCH", path: `/api/orders/${second.id}`, headers: admin, ip: "1.1.1.1", json: async () => ({ status: "cancelled" }) });
+    assert.equal(stock.get("DV1234|42")?.qty, 1);
+    await new Promise((r) => setImmediate(r));
+    assert.equal(heard.filter((h) => h.maDon === second.id).length, 1, "the owner's cancel is announced exactly once");
+    assert.equal(heard.find((h) => h.maDon === second.id)?.boi, "quan-tri");
+  });
+
+  // ---------- the owner's doors (OMI) and Sales Desk's sync ----------
+
+  const asAdmin = (method: string, path: string, json?: unknown) => kernel.handle({ method, path, headers: admin, ip: "1.1.1.1", json: async () => json ?? {} });
+  interface ManualBody { ok: boolean; orderId: string; lookupUrl: string; lookupSecret: string; created: boolean; stock: { ok: boolean; thieu: { code: string; size: string }[] }; error?: string }
+
+  await t.test("OWNER: a manual order (MAN-) takes stock where the catalogue has it, keeps the rest, and gets a lookup secret the customer can type", async () => {
+    await cleanUp(); stockUp(1);
+    const r = await asAdmin("POST", "/api/orders/thu-cong", {
+      customerName: "Khách gọi điện", phone: "0933333333", address: "5 Lý Thường Kiệt, Hà Nội", paymentMethod: "cod",
+      items: [
+        { productCode: "DV1234", size: "42", qty: 1, price: 2500000 },                     // in the catalogue, owner's price
+        { productCode: "HOKA-MACH", productName: "Hoka Mach 6", size: "44", qty: 1, price: 3900000 } // a partner's pair, not in stock
+      ]
+    });
+    assert.equal(r.status, 200, JSON.stringify(r.body));
+    const made = body<ManualBody>(r);
+    assert.match(made.orderId, /^MAN-\d+$/);
+    assert.equal(made.created, true);
+    assert.match(made.lookupSecret, /^TR-[0-9A-F]{4}-[0-9A-F]{4}-[0-9A-F]{4}$/);
+    assert.match(made.lookupUrl, /^https:\/\/shop\.test\/order-status\.html\?order=MAN-/);
+    assert.deepEqual(made.stock.thieu, [{ code: "HOKA-MACH", size: "44" }], "the line the catalogue lacks is reported, not dropped");
+    assert.equal(stock.get("DV1234|42")?.qty, 0, "the catalogue pair was taken");
+    const order = await readAsAdmin(made.orderId);
+    assert.equal(order.items.length, 2, "both lines are on the order");
+    assert.equal(order.items[0]?.price, 2500000, "THE OWNER's price is kept (the customer's would not be)");
+    assert.equal(order.total, 6400000);
+
+    // The customer types the secret with dashes, or without: both open the order.
+    for (const typed of [made.lookupSecret, made.lookupSecret.replace(/-/g, "").toLowerCase()]) {
+      const look = await kernel.handle({ method: "POST", path: "/api/orders/lookup", headers: {}, ip: "1.1.1.1", json: async () => ({ orderId: made.orderId, lookupSecret: typed }) });
+      assert.equal(look.status, 200, `secret typed as ${typed}: ${JSON.stringify(look.body)}`);
+    }
+  });
+
+  await t.test("OWNER: editing lines gives the old pair back and takes the new one; editing the recipient leaves stock alone", async () => {
+    await cleanUp(); stockUp(1);
+    const made = body<ManualBody>(await asAdmin("POST", "/api/orders/thu-cong", { customerName: "A", phone: "0911111111", items: [{ productCode: "DV1234", size: "42", qty: 1, price: 2500000 }] }));
+    assert.equal(stock.get("DV1234|42")?.qty, 0);
+
+    const renamed = await asAdmin("PUT", `/api/orders/${made.orderId}`, { customerName: "Nguyễn Văn Sửa", trackingCode: "SPX-1" });
+    assert.equal(renamed.status, 200, JSON.stringify(renamed.body));
+    assert.equal(stock.get("DV1234|42")?.qty, 0, "recipient edit must not touch stock");
+    let order = await readAsAdmin(made.orderId);
+    assert.equal(order.customerName, "Nguyễn Văn Sửa");
+    assert.equal(order.trackingCode, "SPX-1");
+    assert.ok(order.statusLogs.some((n) => n.actorType === "quan-tri" && /Sửa đơn/.test(n.note)), "every owner edit leaves a log line");
+
+    const swapped = await asAdmin("PUT", `/api/orders/${made.orderId}`, { items: [{ productCode: "DV1234", size: "43", qty: 1, price: 2500000 }] });
+    assert.equal(swapped.status, 200, JSON.stringify(swapped.body));
+    assert.equal(stock.get("DV1234|42")?.qty, 1, "the old pair went back");
+    assert.deepEqual(body<{ stock: ManualBody["stock"] }>(swapped).stock.thieu, [{ code: "DV1234", size: "43" }], "size 43 is not in the fake stock");
+    order = await readAsAdmin(made.orderId);
+    assert.equal(order.items[0]?.size, "43");
+
+    const back = await asAdmin("PUT", `/api/orders/${made.orderId}`, { items: [{ productCode: "DV1234", size: "42", qty: 1, price: 2500000 }] });
+    assert.equal(back.status, 200);
+    assert.equal(stock.get("DV1234|42")?.qty, 0, "taken again");
+    // …and a cancel after the edit still returns exactly what the edited order took.
+    await asAdmin("PATCH", `/api/orders/${made.orderId}`, { status: "cancelled" });
+    assert.equal(stock.get("DV1234|42")?.qty, 1);
+  });
+
+  await t.test("OWNER: deleting an order gives its pair back and removes head, lines and history", async () => {
+    await cleanUp(); stockUp(1);
+    const placed = body<PlacedBody>(await place(SAMPLE_ORDER));
+    assert.equal(stock.get("DV1234|42")?.qty, 0);
+    const gone = await asAdmin("DELETE", `/api/orders/${placed.id}`);
+    assert.equal(gone.status, 200, JSON.stringify(gone.body));
+    assert.equal(stock.get("DV1234|42")?.qty, 1, "deleting returns the pair");
+    assert.equal(await store.table("orders").count({ id: placed.id }), 0);
+    assert.equal(await store.table("order_items").count({ order_id: placed.id }), 0);
+    assert.equal(await store.table("order_status_logs").count({ order_id: placed.id }), 0);
+    assert.equal((await asAdmin("DELETE", `/api/orders/${placed.id}`)).status, 404);
+    assert.equal((await asAdmin("PUT", `/api/orders/${placed.id}`, { customerName: "X" })).status, 404);
+  });
+
+  await t.test("SALES DESK: POST /api/admin/manual-orders/sync creates a MAN- order the first time and updates it after, with the running site's reply", async () => {
+    await cleanUp(); stockUp(2);
+    const first = await asAdmin("POST", "/api/admin/manual-orders/sync", {
+      order: { id: "MAN-1757800000000", customerName: "Khách Desk", phone: "0944444444", status: "processing", total: 2890000, paidAmount: 500000,
+        items: [{ productCode: "DV1234", productName: "Pegasus 40", size: "42", qty: 1, price: 2890000 }] }
+    });
+    assert.equal(first.status, 200, JSON.stringify(first.body));
+    const made = body<ManualBody>(first);
+    assert.equal(made.orderId, "MAN-1757800000000");
+    assert.equal(made.created, true);
+    assert.match(made.lookupSecret, /^TR-/);
+    let order = await readAsAdmin("MAN-1757800000000");
+    assert.equal(order.status, "processing");
+    assert.equal(order.paidAmount, 500000, "money through the kit: paidAmount from the paid amount Desk sent");
+    assert.equal(order.remainingAmount, 2390000);
+    assert.equal(stock.get("DV1234|42")?.qty, 1);
+
+    const second = await asAdmin("POST", "/api/admin/manual-orders/sync", { order: { id: "MAN-1757800000000", status: "shipped", trackingCode: "VTP-9" } });
+    assert.equal(second.status, 200, JSON.stringify(second.body));
+    assert.equal(body<ManualBody>(second).created, false);
+    assert.equal(body<ManualBody>(second).lookupSecret, "", "the stored secret is a hash — it is never handed out again");
+    order = await readAsAdmin("MAN-1757800000000");
+    assert.equal(order.status, "shipped");
+    assert.equal(order.trackingCode, "VTP-9");
+    assert.equal(order.items.length, 1, "no items sent = lines untouched");
+    assert.equal(stock.get("DV1234|42")?.qty, 1, "no items sent = stock untouched");
+
+    assert.equal((await asAdmin("POST", "/api/admin/manual-orders/sync", { order: { id: "ORD-123" } })).status, 422, "only MAN- ids");
+  });
+
+  await t.test("OWNER: GET /api/admin/khach lists customers as the orders know them, one row per phone", async () => {
+    await cleanUp(); stockUp(3);
+    await place(SAMPLE_ORDER);
+    await place(SAMPLE_ORDER);
+    await place({ ...SAMPLE_ORDER, customerName: "Người khác", phone: "0988888888" });
+    const r = await asAdmin("GET", "/api/admin/khach");
+    assert.equal(r.status, 200, JSON.stringify(r.body));
+    const list = body<{ ok: boolean; theoDon: { dienThoai: string; ten: string; soDon: number; tongTien: number }[]; taiKhoan: unknown[] }>(r);
+    const a = list.theoDon.find((k) => k.dienThoai === "0911111111");
+    assert.equal(a?.soDon, 2);
+    assert.equal(a?.tongTien, 2 * 2890000);
+    assert.equal(list.theoDon.find((k) => k.dienThoai === "0988888888")?.ten, "Người khác");
+    assert.equal(list.taiKhoan.length, 0, "no accounts registered in this test");
+    const filtered = body<{ theoDon: unknown[] }>(await kernel.handle({ method: "GET", path: "/api/admin/khach", query: { q: "0988" }, headers: admin, ip: "1.1.1.1" }));
+    assert.equal(filtered.theoDon.length, 1);
+  });
+
   await t.test("lookup by phone number: only how far the order got, NO address", async () => {
     await cleanUp();
     const placed = body<PlacedBody>(await place(SAMPLE_ORDER));
@@ -404,6 +584,50 @@ test("Orders on real MySQL", { ...skip }, async (t) => {
     assert.equal(order.items[0]?.productCode, "DV1234");
     assert.equal(order.items[0]?.size, "42");
     assert.ok("paidAmount" in order && "remainingAmount" in order, "clients only read the fields, never derive them");
+  });
+
+  await t.test("creating a waybill writes the tracking number ONTO the order — and does not mark it shipped", async () => {
+    // Before this, a waybill made from OMI existed at the carrier and nowhere else: the order
+    // screen still said "chưa có vận đơn". Shipping and Orders meet on the bus, not in code.
+    await cleanUp();
+    const placed = body<PlacedBody>(await place(SAMPLE_ORDER));
+    assert.ok(placed.ok);
+
+    const withShipping = new Kernel({
+      ports: {
+        store, logger, clock,
+        http: new FakeHttpClient(() => jsonResponse({ ret_code: 0, message: "success", data: { orders: [{ tracking_no: "SPXVN000111", order_id: placed.id, estimated_shipping_fee: 25000 }] } })),
+        auth: new TokenAuth({ keys: [{ token: ADMIN, name: "quan-tri", role: ROLE.admin }], clock }),
+        rateLimiter: new FixedWindowRateLimiter(clock),
+        staticFiles: new FakeStaticFilePort({}), mail: new MemoryMailer()
+      },
+      logger, modules: [fakeInventory, manifest, shipping],
+      config: {
+        "hang-kho": {}, "don-khach": { siteUrl: "https://shop.test" },
+        "van-chuyen": {
+          defaultCarrier: "spx",
+          sender: { name: "Kho TopRun", phone: "0900000000", province: "Hà Nội", district: "Quận Ba Đình", ward: "Phường Giảng Võ", addressDetail: "Số 1 ngõ 2" },
+          spx: { appId: "app", appSecret: "secret", userId: "user", userSecret: "user-secret" }
+        }
+      }
+    });
+
+    const made = await withShipping.handle({
+      method: "POST", path: "/api/van-chuyen/tao-tu-don", headers: admin, ip: "1.1.1.1", json: async () => ({ maDon: placed.id })
+    });
+    assert.equal(made.status, 200, JSON.stringify(made.body));
+
+    // The bus is fire-and-forget on purpose (a listener must never hold up the emitter), so the
+    // tracking number lands a tick after the reply — wait for it rather than read too early.
+    let order = await readAsAdmin(placed.id);
+    for (let i = 0; i < 40 && order.trackingCode === ""; i += 1) {
+      await new Promise((done) => setTimeout(done, 25));
+      order = await readAsAdmin(placed.id);
+    }
+    assert.equal(order.trackingCode, "SPXVN000111", "the order must remember its waybill");
+    assert.equal(order.shippingProvider, "spx");
+    assert.notEqual(order.status, "shipped", "handing the parcel over is a separate, human act");
+    assert.ok(order.statusLogs.some((l) => /SPXVN000111/.test(String(l.note ?? ""))), "the log says which waybill was created");
   });
 
   await t.test("BREAKS when the write fails after the reservation: the reservation is released", async () => {

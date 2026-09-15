@@ -6,7 +6,7 @@
  * adapter that could be swapped (Express, serverless) without touching a module.
  */
 
-import type { AuthPort, Clock, DataStore, HttpClient, Logger, ModuleBus, StaticFilePort } from "./ports";
+import type { AuthPort, Clock, DataStore, HttpClient, Logger, Mailer, ModuleBus, StaticFilePort } from "./ports";
 
 /** Headers as the kernel presents them: lower-cased names, one string per header. */
 export type Headers = Record<string, string | undefined>;
@@ -79,6 +79,7 @@ export interface ModulePorts {
   http: HttpClient;
   auth: AuthPort;
   staticFiles: StaticFilePort;
+  mail: Mailer;
 }
 
 /** Services other modules provide, keyed by module id then service name (`ctx.services["hang-kho"].reserve`). */

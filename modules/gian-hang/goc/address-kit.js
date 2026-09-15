@@ -360,6 +360,18 @@
     form.__addrKitBound = true;
     var settings = options || {};
     var allowTwoTier = settings.allowTwoTier !== false;
+    // 13/09/2026 (anh chot): form co the chon he MAC DINH — phieu dat hang m-order mo san 2 cap (moi),
+    // khach van doi sang 3 cap (cu) bang radio. Khong truyen thi giu nhu cu (3 cap) cho cac form khac.
+    var defaultScheme = settings.defaultScheme === "two_tier" ? "two_tier" : "legacy";
+    // Nhan cua o nhap: uu tien <label> bao ngoai; khong bao thi lay <label> dung NGAY TRUOC o (m-order.html).
+    // Truoc day chi nhan label bao ngoai → m-order khong hien radio chon he, khach bi ep 3 cap.
+    function fieldLabelOf(input) {
+      if (!input) return null;
+      var wrapped = input.closest("label");
+      if (wrapped) return wrapped;
+      var prev = input.previousElementSibling;
+      return prev && prev.tagName === "LABEL" ? prev : null;
+    }
 
     Promise.all([loadLandingUnitsLegacy(), allowTwoTier ? loadLandingUnitsV2() : Promise.resolve([])]).then(function (loaded) {
       var unitsLegacy = loaded[0] || [];
@@ -374,12 +386,16 @@
         schemeInput = document.createElement("input");
         schemeInput.type = "hidden";
         schemeInput.name = "addressScheme";
-        schemeInput.value = "legacy";
+        schemeInput.value = defaultScheme;
         form.appendChild(schemeInput);
+      } else if (settings.defaultScheme) {
+        schemeInput.value = defaultScheme;
       }
+      if (!allowTwoTier || !unitsV2.length) schemeInput.value = "legacy";
 
-      var provinceLabel = provinceInput.closest("label");
-      var districtLabel = districtInput ? districtInput.closest("label") : null;
+      var provinceLabel = fieldLabelOf(provinceInput);
+      var districtLabel = fieldLabelOf(districtInput);
+      var districtWrapped = Boolean(districtLabel && districtInput && districtLabel.contains(districtInput));
 
       // Radio chon he: giu markup/class cu (.address-scheme-row) de CSS 2 he hien co van an.
       if (allowTwoTier && unitsV2.length && provinceLabel && !form.querySelector(".address-scheme-row")) {
@@ -387,8 +403,8 @@
         schemeRow.className = "address-scheme-row";
         schemeRow.style.cssText = "display:flex;gap:14px;align-items:center;flex-wrap:wrap;padding:6px 10px;";
         schemeRow.innerHTML = '<span>Kiểu địa chỉ:</span>'
-          + '<label style="display:flex;gap:6px;align-items:center;margin:0"><input type="radio" name="addrKitScheme" value="legacy" checked> 3 cấp (cũ)</label>'
-          + '<label style="display:flex;gap:6px;align-items:center;margin:0"><input type="radio" name="addrKitScheme" value="two_tier"> 2 cấp (mới)</label>';
+          + '<label style="display:flex;gap:6px;align-items:center;margin:0"><input type="radio" name="addrKitScheme" value="legacy"' + (schemeInput.value === "two_tier" ? "" : " checked") + '> 3 cấp (cũ)</label>'
+          + '<label style="display:flex;gap:6px;align-items:center;margin:0"><input type="radio" name="addrKitScheme" value="two_tier"' + (schemeInput.value === "two_tier" ? " checked" : "") + '> 2 cấp (mới)</label>';
         provinceLabel.before(schemeRow);
         schemeRow.querySelectorAll('input[name="addrKitScheme"]').forEach(function (radio) {
           radio.addEventListener("change", function () {
@@ -421,6 +437,7 @@
           });
         }
         if (districtLabel) districtLabel.hidden = isTwoTier();
+        if (districtInput && !districtWrapped) districtInput.hidden = isTwoTier();   // label dung rieng thi phai an ca o nhap
         if (districtInput) districtInput.required = !isTwoTier();
         provinceInput.placeholder = isTwoTier() ? "Tìm Tỉnh/TP (34 tỉnh mới)" : "Tìm Tỉnh/TP";
         wardInput.placeholder = "Tìm Phường/Xã";
@@ -437,7 +454,7 @@
   // Site dasbui goi qua alias DasbuiAddressKit (khong lo thuong hieu TopRun trong code goi) —
   // van la CUNG MOT bo kit, file copy y het giua 3 repo, dinh nghia alias o cuoi file.
   global.TopRunAddressKit = {
-    version: "20260808-3",
+    version: "20260913-4",
     normalizeText: normalizeText,
     searchOptions: searchOptions,
     findOption: findOption,

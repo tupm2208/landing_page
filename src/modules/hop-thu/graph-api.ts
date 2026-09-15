@@ -18,6 +18,32 @@ export class GraphApiClient {
     private readonly version: string = GRAPH_VERSION
   ) {}
 
+  /**
+   * Replies UNDER a public comment. A different endpoint from `sendText` on purpose: answering a
+   * public question in a private inbox leaves the question looking unanswered to everyone else
+   * reading the post — which is the whole reason a shop answers comments at all.
+   */
+  async replyToComment(commentId: string, text: string): Promise<Record<string, unknown>> {
+    if (!this.pageToken) throw new Error("Chua co token trang — khong tra loi binh luan duoc.");
+    const target = String(commentId ?? "").trim();
+    if (!target) throw new Error("Thieu ma binh luan can tra loi.");
+    const content = String(text ?? "").trim();
+    if (!content) throw new Error("Tin rong — khong gui.");
+
+    const url = `https://graph.facebook.com/${this.version}/${encodeURIComponent(target)}/comments?access_token=${encodeURIComponent(this.pageToken)}`;
+    const response = await this.http.fetch(url, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ message: content })
+    });
+    if (!response.ok) {
+      const detail = await response.text().catch(() => "");
+      throw new Error(`Meta tu choi tra loi binh luan (${response.status}): ${detail.slice(0, 300)}`);
+    }
+    const parsed: unknown = await response.json();
+    return parsed !== null && typeof parsed === "object" ? (parsed as Record<string, unknown>) : {};
+  }
+
   /** Sends one text message. THROWS when Meta refuses (the caller reports, never swallows). Returns Meta's reply (`message_id`...). */
   async sendText(recipientId: string, text: string): Promise<Record<string, unknown>> {
     if (!this.pageToken) throw new Error("Chua co token trang — khong gui tin duoc.");

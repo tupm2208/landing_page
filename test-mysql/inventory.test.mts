@@ -48,9 +48,9 @@ interface StockBody { co: boolean; viSao?: string; ma?: string; ten?: string; ca
 const body = <T,>(r: Reply): T => r.body as T;
 
 // TEST MODULE: calls hang-kho's real services the way the kernel wires them.
-const TEST_MODULE = defineModule<Record<string, never>, { "hang-kho": Pick<InventoryServices, "reserve" | "release"> }>({
+const TEST_MODULE = defineModule<Record<string, never>, { "hang-kho": Pick<InventoryServices, "reserve" | "release" | "commit" | "restock"> }>({
   id: "thu-giu-cho", name: "Thử giữ chỗ", tier: "van-hanh", runsOn: "server-khach", version: "0.0.1",
-  requires: ["hang-kho.reserve", "hang-kho.release"],
+  requires: ["hang-kho.reserve", "hang-kho.release", "hang-kho.commit", "hang-kho.restock"],
   routes: [
     {
       method: "POST", path: "/thu/giu", access: ACCESS.admin,
@@ -59,6 +59,14 @@ const TEST_MODULE = defineModule<Record<string, never>, { "hang-kho": Pick<Inven
     {
       method: "POST", path: "/thu/tra", access: ACCESS.admin,
       handle: async (ctx, request) => reply.json(await ctx.services["hang-kho"].release((await request.json()) as ReleaseInput))
+    },
+    {
+      method: "POST", path: "/thu/chot", access: ACCESS.admin,
+      handle: async (ctx, request) => reply.json(await ctx.services["hang-kho"].commit((await request.json()) as { ticket: string }))
+    },
+    {
+      method: "POST", path: "/thu/tra-lai", access: ACCESS.admin,
+      handle: async (ctx, request) => reply.json(await ctx.services["hang-kho"].restock((await request.json()) as { variantId: string; quantity: number }))
     }
   ]
 });
@@ -105,6 +113,51 @@ test("Catalogue on real MySQL", unlessMysql, async (t) => {
   const hold = (code: string, size: string, quantity: number): ReserveInput => ({ code, size, quantity, heldBy: "bai-thu" });
   const publicItems = async (query?: Record<string, string>) => body<PublicItem[]>(await readPublic(query));
   const stockOf = async (code: string, size?: string) => body<StockBody>(await askStock(code, size));
+
+  await t.test("every import is remembered: what ran, from which source, how many items — newest first", async () => {
+    await clean();
+    await upload([ITEM]);
+    await upload([{ ...ITEM, code: "THEM01", name: "Giày nạp thêm", sizes: [{ size: "40", qty: 1, price: 900000 }] }], "/api/hang-kho/nap-them");
+
+    const book = body<{ lan: Record<string, unknown>[] }>(await call({ method: "GET", path: "/api/hang-kho/lich-su-nap", headers: admin }));
+    assert.ok(book.lan.length >= 2, "both imports are in the book");
+    assert.match(String(book.lan[0]?.["viec"]), /nạp thêm/, "newest first");
+    assert.equal(book.lan[0]?.["nguon"], "own");
+    assert.equal(Number(book.lan[0]?.["soMon"]), 1);
+    assert.ok(String(book.lan[0]?.["luc"]).length > 0, "each entry says when");
+    assert.equal((await call({ method: "GET", path: "/api/hang-kho/lich-su-nap" })).status, 401, "needs the admin token");
+  });
+
+  await t.test("SỬA NHANH: bulk edit changes only price/discount/shown — never stock, sizes or names", async () => {
+    await clean();
+    await upload([ITEM, { ...ITEM, code: "KHAC01", name: "Giày khác", sizes: [{ size: "40", qty: 2, price: 1000000 }] }]);
+    const quick = (mon: unknown) => call({ method: "POST", path: "/api/hang-kho/sua-nhanh", headers: admin, json: async () => ({ mon }) });
+
+    const r = await quick([
+      { ma: ITEM.code, giaNiemYet: 3500000, giamGia: 30 },
+      { ma: "KHAC01", trangThai: "hidden" },
+      { ma: "KHONG-CO", giaNiemYet: 1 }
+    ]);
+    assert.equal(r.status, 200, JSON.stringify(r.body));
+    const done = body<{ daSua: string[]; khongThay: string[] }>(r);
+    assert.deepEqual(done.daSua.sort(), [ITEM.code, "KHAC01"].sort());
+    assert.deepEqual(done.khongThay, ["KHONG-CO"], "a typo is reported, never quietly created");
+    assert.equal(await store.table("hang_kho_mon").count(), 2, "a code nobody knows does not become an item");
+
+    const row = await store.table("hang_kho_mon").one({ ma: ITEM.code });
+    assert.equal(Number(row?.["gia_niem_yet"]), 3500000);
+    assert.equal(Number(row?.["phan_tram_giam"]), 30);
+    assert.equal(String(row?.["ten"]), ITEM.name, "the name is not a field of the fast screen");
+    assert.equal(await store.table("hang_kho_bien_the").count({ ma_mon: ITEM.code }), 3, "sizes untouched");
+    assert.equal((await stockOf(ITEM.code, "42")).co, true, "stock untouched");
+    assert.equal(String((await store.table("hang_kho_mon").one({ ma: "KHAC01" }))?.["trang_thai"]), "hidden");
+
+    // A bulk screen with no ceiling is a bulk mistake.
+    const tooMany = await quick(Array.from({ length: 1001 }, (_v, i) => ({ ma: `M${i}`, giamGia: 5 })));
+    assert.equal(tooMany.status, 400);
+    assert.equal(body<{ error: string }>(tooMany).error, "qua_nhieu_mon");
+    assert.equal((await call({ method: "POST", path: "/api/hang-kho/sua-nhanh", json: async () => ({ mon: [] }) })).status, 401, "needs the admin token");
+  });
 
   await t.test("one item becomes one item row plus several variant rows", async () => {
     await clean();
@@ -402,5 +455,58 @@ test("Catalogue on real MySQL", unlessMysql, async (t) => {
 
     clock.advance(30 * 60 * 1000 + 1000);
     assert.equal((await publicItems())[0]!.sizes[0]!.available, true, "after 30 minutes the pair must be given back");
+  });
+
+  // ---------- Lỗ 1 (found 12/09/2026, closed 14/09): a hold that became a SALE never comes back by itself ----------
+
+  await t.test("committing a reservation takes the pair off the shelf FOR GOOD — 30 minutes later it is still sold", async () => {
+    await clean();
+    await upload([{ ...ITEM, sizes: [{ size: "42", qty: 1, price: 100000, warehouseId: "wh_yen" }] }]);
+    const held = body<ReserveResult>(await reserve(hold("DV1234", "42", 1)));
+    assert.equal(held.ok, true);
+    const committed = body<{ ok: boolean; variantId?: string; quantity?: number }>(await call({ method: "POST", path: "/thu/chot", headers: admin, json: async () => ({ ticket: held.ok ? held.ticket : "" }) }));
+    assert.equal(committed.ok, true);
+    assert.equal(committed.quantity, 1);
+    assert.equal(await store.table("hang_kho_giu_cho").count(), 0, "the ticket is gone — nothing left to expire");
+    assert.equal(Number((await store.table("hang_kho_bien_the").one({ ma_bien_the: committed.variantId ?? "" }))?.["ton"]), 0, "real stock went down");
+
+    clock.advance(31 * 60 * 1000);
+    assert.equal((await publicItems())[0]!.sizes[0]!.available, false, "THIS was the hole: the sold pair reappeared after the hold expired");
+    assert.equal((await stockOf("DV1234", "42")).co, false, "the brain sees it sold out too");
+
+    // A ticket that does not exist (already committed, or made up) is refused, not silently "ok".
+    const again = body<{ ok: boolean; reason?: string }>(await call({ method: "POST", path: "/thu/chot", headers: admin, json: async () => ({ ticket: held.ok ? held.ticket : "" }) }));
+    assert.equal(again.ok, false);
+    assert.equal(again.reason, "khong_co_phieu");
+  });
+
+  await t.test("restocking puts the pair back and announces 'back in stock' only when it crossed zero", async () => {
+    await clean();
+    await upload([{ ...ITEM, sizes: [{ size: "42", qty: 1, price: 100000, warehouseId: "wh_yen" }] }]);
+    const held = body<ReserveResult>(await reserve(hold("DV1234", "42", 1)));
+    const variantId = held.ok ? held.variantId : "";
+    await call({ method: "POST", path: "/thu/chot", headers: admin, json: async () => ({ ticket: held.ok ? held.ticket : "" }) });
+    const heard: { size?: string; maBienThe?: string }[] = [];
+    kernel.bus.on(EVENTS.stockBack, "bai-thu-ve-lai", (payload) => { heard.push(payload as { size?: string; maBienThe?: string }); });
+
+    const back = body<{ ok: boolean; before?: number; after?: number }>(await call({ method: "POST", path: "/thu/tra-lai", headers: admin, json: async () => ({ variantId, quantity: 1 }) }));
+    assert.equal(back.ok, true);
+    assert.equal(back.before, 0);
+    assert.equal(back.after, 1);
+    assert.equal((await publicItems())[0]!.sizes[0]!.available, true, "cancelled order = pair on sale again");
+    await new Promise((resolve) => setImmediate(resolve));
+    assert.equal(heard.length, 1, "crossed zero -> one 'back in stock' event");
+    assert.equal(heard[0]!.maBienThe, variantId);
+
+    // Restocking when there already was stock: no second announcement.
+    await call({ method: "POST", path: "/thu/tra-lai", headers: admin, json: async () => ({ variantId, quantity: 2 }) });
+    await new Promise((resolve) => setImmediate(resolve));
+    assert.equal(heard.length, 1);
+    assert.equal(Number((await store.table("hang_kho_bien_the").one({ ma_bien_the: variantId }))?.["ton"]), 3);
+
+    // An unknown variant is refused.
+    const missing = body<{ ok: boolean; reason?: string }>(await call({ method: "POST", path: "/thu/tra-lai", headers: admin, json: async () => ({ variantId: "khong-co", quantity: 1 }) }));
+    assert.equal(missing.ok, false);
+    assert.equal(missing.reason, "khong_co_bien_the");
   });
 });

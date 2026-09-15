@@ -43,6 +43,20 @@ export const CATALOG_CAP = 20000;
 /** A MySQL DATETIME(3) string of a moment. */
 export const mysqlTime = (moment: Date | string | number): string => toMysqlDateTime(moment, { ms: true });
 
+/** One line of the bulk "Sửa nhanh web" screen: the code plus only the fields being changed. */
+export interface QuickEditPatch {
+  code: string;
+  listPrice?: number | undefined;
+  discountPercent?: number | undefined;
+  status?: string | undefined;
+}
+
+/** What the bulk edit did: the codes really written, and the ones nothing matched. */
+export interface QuickEditResult {
+  changed: string[];
+  missing: string[];
+}
+
 function parseJson(value: unknown, fallback: unknown): unknown {
   if (value === null || value === undefined || value === "") return fallback;
   try { return JSON.parse(String(value)); } catch { return fallback; }
@@ -283,6 +297,16 @@ export type ReserveOutcome =
     /** What is left after this reservation — 0 or less means the variant just sold out. */
     remaining: number;
   };
+
+/** Result of turning a reservation into a sale. Reason VALUES are wire. */
+export type CommitOutcome =
+  | { ok: false; reason: "khong_co_phieu" }
+  | { ok: true; variantId: string; code: string; size: string; quantity: number };
+
+/** Result of putting pairs back. `before`/`after` let the caller announce "back in stock". */
+export type RestockOutcome =
+  | { ok: false; reason: "thieu_bien_the" | "khong_co_bien_the" }
+  | { ok: true; variantId: string; code: string; size: string; before: number; after: number };
 
 export interface CatalogRepositoryDeps {
   store: DataStore;
@@ -585,6 +609,64 @@ export class CatalogRepository {
   }
 
   /**
+   * Every item that has stock FROM ONE SOURCE — ready stock, or a partner campaign.
+   *
+   * The three sources share one variant table (see the module header), so "show me the ready
+   * stock" is a question about VARIANTS, not about items: an item can hold house sizes and ready
+   * sizes at once. It therefore starts from the variant rows of that source and reads back the
+   * items they belong to, rather than filtering items by `nguon` — which would miss exactly the
+   * mixed items a seller most wants to see.
+   */
+  async itemsBySource(source: Source, limit = 500): Promise<StoredItem[]> {
+    const cap = Math.min(Math.max(1, Number(limit) || 500), 2000);
+    const codes = await this.store.rows(
+      `SELECT DISTINCT ma_mon FROM \`${TABLES.variants}\` WHERE nguon = ? ORDER BY ma_mon ASC LIMIT ?`,
+      [source, cap]
+    );
+    if (codes.length === 0) return [];
+    const blocked = await this.blockedCodes();
+    const reserved = await this.reservedByVariant();
+    const out: StoredItem[] = [];
+    for (const row of codes) {
+      const code = String(row["ma_mon"]);
+      if (blocked.has(code.toLowerCase())) continue;
+      const itemRow = await this.store.table(TABLES.items).one({ ma: code });
+      if (!itemRow) continue;
+      out.push(rowsToItem(itemRow, await this.variantsOf(this.store, code), reserved));
+    }
+    return out;
+  }
+
+  /**
+   * QUICK EDIT of many items at once — Sales Desk's "Sửa nhanh web" screen.
+   *
+   * It writes only the THREE fields a seller changes in bulk (list price, discount, shown/hidden)
+   * and never touches stock, sizes, images or names. That is the whole point: the fast screen is
+   * the one where a mistake is cheapest, so it is given the smallest possible reach. A code that
+   * does not exist is reported back rather than created — a typo must not invent a product.
+   *
+   * Prices land on the ITEM row. Per-size prices live on the variants and are edited one item at
+   * a time; mixing the two here would let one careless bulk save flatten a whole size ladder.
+   */
+  async quickEdit(patches: QuickEditPatch[], at: Date): Promise<QuickEditResult> {
+    const changed: string[] = [];
+    const missing: string[] = [];
+    const blocked = await this.blockedCodes();
+    for (const patch of patches) {
+      const code = String(patch.code || "").trim();
+      if (!code || blocked.has(code.toLowerCase())) { missing.push(code); continue; }
+      const columns: Row = {};
+      if (patch.listPrice !== undefined) columns["gia_niem_yet"] = Math.max(0, Math.round(Number(patch.listPrice) || 0));
+      if (patch.discountPercent !== undefined) columns["phan_tram_giam"] = Math.min(99, Math.max(0, Math.round(Number(patch.discountPercent) || 0)));
+      if (patch.status !== undefined) columns["trang_thai"] = String(patch.status) === "hidden" ? "hidden" : "orderable";
+      if (Object.keys(columns).length === 0) continue;
+      const done = await this.store.table(TABLES.items).update({ ma: code }, { ...columns, sua_luc: mysqlTime(at) });
+      if (done > 0) changed.push(code); else missing.push(code);
+    }
+    return { changed, missing };
+  }
+
+  /**
    * DELETES an item from one source: drops that source's variants; the item row goes only when
    * NO variant (of any source) still points at it — deleting early orphans another source's stock.
    */
@@ -648,5 +730,47 @@ export class CatalogRepository {
   async release(ticket: unknown): Promise<boolean> {
     const removed = await this.store.table(TABLES.reservations).delete({ ma_phieu: String(ticket || "") });
     return removed > 0;
+  }
+
+  /**
+   * Turns a reservation into a SALE: the pairs leave the shelf for good and the ticket is dropped.
+   *
+   * The order flow calls this right after the order is written. Before 14/09/2026 nothing did:
+   * the 30-minute hold simply expired and the sold pair reappeared as available (hole found on
+   * 12/09/2026, KIEM-KE-TINH-NANG.md "Lỗ 1"). Ticket row and variant row are both locked in one
+   * transaction so a concurrent reserve on the same variant sees the new quantity.
+   */
+  async commit(ticket: unknown): Promise<CommitOutcome> {
+    const id = String(ticket || "");
+    if (id === "") return { ok: false, reason: "khong_co_phieu" };
+    return this.store.transaction(async (tx): Promise<CommitOutcome> => {
+      const held = await tx.rows(`SELECT ma_bien_the, ma_mon, size, so_luong FROM ${TABLES.reservations} WHERE ma_phieu = ? FOR UPDATE`, [id]);
+      const row = held[0];
+      if (!row) return { ok: false, reason: "khong_co_phieu" };
+      const variantId = String(row["ma_bien_the"]);
+      const quantity = Math.max(0, Number(row["so_luong"] || 0));
+      // GREATEST(0, …): a hold written against stock that was later re-uploaded lower must not go negative.
+      await tx.execute(`UPDATE ${TABLES.variants} SET ton = GREATEST(0, ton - ?), sua_luc = ? WHERE ma_bien_the = ?`, [quantity, this.now(), variantId]);
+      await tx.table(TABLES.reservations).delete({ ma_phieu: id });
+      return { ok: true, variantId, code: String(row["ma_mon"]), size: String(row["size"]), quantity };
+    });
+  }
+
+  /**
+   * Puts pairs back on the shelf — a cancelled order. Returns the quantity before and after so the
+   * caller can announce "back in stock" when it crossed zero.
+   */
+  async restock(variantId: unknown, quantity: unknown): Promise<RestockOutcome> {
+    const id = String(variantId || "");
+    const qty = Math.max(0, Math.trunc(Number(quantity) || 0));
+    if (id === "" || qty === 0) return { ok: false, reason: "thieu_bien_the" };
+    return this.store.transaction(async (tx): Promise<RestockOutcome> => {
+      const locked = await tx.rows(`SELECT ton, ma_mon, size FROM ${TABLES.variants} WHERE ma_bien_the = ? FOR UPDATE`, [id]);
+      const row = locked[0];
+      if (!row) return { ok: false, reason: "khong_co_bien_the" };
+      const before = Number(row["ton"] || 0);
+      await tx.execute(`UPDATE ${TABLES.variants} SET ton = ton + ?, sua_luc = ? WHERE ma_bien_the = ?`, [qty, this.now(), id]);
+      return { ok: true, variantId: id, code: String(row["ma_mon"]), size: String(row["size"]), before, after: before + qty };
+    });
   }
 }

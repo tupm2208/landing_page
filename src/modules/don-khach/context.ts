@@ -18,6 +18,14 @@ import { OrderRepository } from "./order-repository";
 export interface Config {
   /** Minutes east of UTC used to split the report by the seller's local day. Default 420 (+07:00). */
   timezoneOffsetMinutes?: number;
+  /** Public address of the shop's site — links in customer e-mails. */
+  siteUrl?: string;
+  /** Session cookie carries `Secure` (HTTPS only). */
+  https?: boolean;
+  /** Customer session life in days; default 30 (as the running site). */
+  sessionDays?: number;
+  /** Password-reset and change-verification links live this long; default 30 minutes. */
+  resetMinutes?: number;
 }
 
 /** What placing an order asks Inventory to hold. */
@@ -57,11 +65,28 @@ export interface OrderMoneySummary {
   [extra: string]: unknown;
 }
 
+/** The reservation ticket to turn into a sale (the order was written). */
+export interface CommitInput {
+  ticket: string;
+}
+
+export type CommitResult = { ok: true; variantId: string; quantity: number } | { ok: false; reason: string };
+
+/** Pairs to put back on the shelf (the order was cancelled). */
+export interface RestockInput {
+  variantId: string;
+  quantity: number;
+}
+
+export type RestockResult = { ok: true } | { ok: false; reason: string };
+
 /** Services this module consumes. Money is optional: a shop may not have bought that feature. */
 export interface Services {
   "hang-kho": {
     reserve(input: ReserveInput): Promise<ReserveResult>;
     release(input: ReleaseInput): Promise<ReleaseResult>;
+    commit(input: CommitInput): Promise<CommitResult>;
+    restock(input: RestockInput): Promise<RestockResult>;
   };
   "tien-doi-soat"?: {
     orderMoney(orderId: string): Promise<OrderMoneySummary | null>;

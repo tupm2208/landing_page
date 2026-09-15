@@ -15,3 +15,4 @@ export * from "./ports/auth";
 export * from "./ports/rate-limiter";
 export * from "./ports/trial-mode";
 export * from "./ports/static-files";
+export * from "./ports/mailer";
