@@ -26,7 +26,9 @@ cpanel_node_env "$ROOT"
 echo "[build] node $(node -v), npm $(npm -v)"
 
 # Application mode "Production" đặt NODE_ENV=production: npm sẽ bỏ devDependencies và thiếu typescript.
-npm install --include=dev --no-audit --no-fund
+# --no-save: npm must not rewrite package-lock.json here. A tracked file changed on the hosting makes
+# cPanel's "Update from Remote" refuse to pull (seen on the brain's hosting, 15/09/2026).
+npm install --include=dev --no-audit --no-fund --no-save
 npm run build
 test -f dist/main.js
 
