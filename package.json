@@ -13,6 +13,8 @@
     "install-wizard": "node dist/tools/install.js",
     "chuyen-du-lieu:thu": "node scripts/cpanel/chuyen-du-lieu.mjs thu",
     "chuyen-du-lieu:that": "node scripts/cpanel/chuyen-du-lieu.mjs that",
+    "tien-trinh:xem": "node scripts/cpanel/tien-trinh.mjs xem",
+    "tien-trinh:tat": "node scripts/cpanel/tien-trinh.mjs tat",
     "test": "npm run build && node --test --test-timeout=60000 --test-force-exit \"test/*.test.mts\"",
     "test:mysql": "npm run build && node --test --test-concurrency=1 --test-timeout=90000 --test-force-exit \"test-mysql/*.test.mts\""
   },
