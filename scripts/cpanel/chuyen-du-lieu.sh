@@ -38,7 +38,17 @@ echo "[chuyen] bản cũ: $OLD"
 echo "[chuyen] bản mới: $ROOT"
 cd "$ROOT" || exit 1
 
-env_value() { grep -m1 "^$1=" .env 2>/dev/null | cut -d= -f2- | tr -d '\r'; }
+# Đọc giống `loadEnvFile` của app: bỏ \r, khoảng trắng hai đầu, cặp ngoặc "..." hoặc '...' bao quanh.
+env_value() {
+  local v
+  v="$(grep -m1 -E "^[[:space:]]*$1[[:space:]]*=" .env 2>/dev/null | cut -d= -f2- | tr -d '\r')"
+  v="${v#"${v%%[![:space:]]*}"}"
+  v="${v%"${v##*[![:space:]]}"}"
+  case "$v" in
+    \"*\"|\'*\') v="${v:1:${#v}-2}" ;;
+  esac
+  printf '%s' "$v"
+}
 
 problems=0
 [ -f .env ] || { echo "LỖI: thiếu $ROOT/.env"; problems=1; }
