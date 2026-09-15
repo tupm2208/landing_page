@@ -96,7 +96,9 @@ const toolEnv = {
   CHE_DO_THAT: "1",
   TOPRUN_MYSQL_URL: env.TOPRUN_MYSQL_URL,
   MA_QUAN_TRI: env.LANDING_ADMIN_TOKEN,
-  DIA_CHI: env.LANDING_SITE_BASE_URL.replace(/\/+$/, "")
+  // Nạp danh mục thẳng vào app dựng trong tiến trình: hosting không gọi được tên miền của chính nó
+  // (15/09/2026: `fetch failed` khi đẩy tới https://toprun.site từ bên trong).
+  DIA_CHI: "noi-bo"
 };
 if (mode === "thu") toolEnv.CHI_XEM = "1";
 else delete toolEnv.CHI_XEM;
@@ -120,7 +122,7 @@ if (catalog && catalog.size > 16 * 1024 * 1024) {
   say();
   say(`  CẢNH BÁO: published-products.json nặng ${catalog.size} byte, quá 16 MB — /api/products sẽ từ chối (413).`);
 }
-runTool(`4. Danh mục hàng + nội dung trang (qua ${toolEnv.DIA_CHI})`, "import-catalog");
+runTool("4. Danh mục hàng + nội dung trang (nạp thẳng vào app, không qua mạng)", "import-catalog");
 
 say();
 if (failed === 0) {
