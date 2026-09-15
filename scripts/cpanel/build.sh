@@ -3,7 +3,8 @@
 # .cpanel.yml gọi script này khi bấm Git Version Control -> Manage -> Pull or Deploy -> "Deploy HEAD Commit".
 # Làm: npm install (cả devDependencies — cần typescript) -> npm run build -> báo app khởi động lại.
 # Nhật ký: ~/landing-logs/build-<giờ>.log (mở bằng File Manager).
-set -eo pipefail
+# -E: trap ERR chạy cả trong hàm (vd cpanel_node_env), không thì hỏng trong hàm là thoát câm.
+set -Eeo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 if [ -z "${BUILD_LOG:-}" ]; then
