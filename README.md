@@ -48,7 +48,7 @@ tải lên bằng File Manager, không đặt `PORT`.
 | Giao kèo | Cổng (`DataStore`, `AuthPort`, `HttpClient`…), request/reply, tờ khai module + bộ kiểm (`ManifestValidator`), mã lỗi, tên sự kiện | `src/contract` |
 | Khung | `Kernel` (nạp module, phát cổng, chuỗi canh cửa: khớp đường → chặn gọi dồn → quyền → mảnh → hạn thân), `Router`, `EventBus`, HTTP adapter, luật kiến trúc, adapter cổng thật + giả | `src/kernel` |
 | Dùng chung | Bọc kiểu lên `../chung/ve-may.js` và `../chung/order-money-kit.js`; giờ MySQL; cookie phiên | `src/shared` |
-| Module | 10 module, mỗi cái một thư mục với `module.ts` là tờ khai; `index.ts` là sổ đăng ký | `src/modules` |
+| Module | 11 module, mỗi cái một thư mục với `module.ts` là tờ khai; `index.ts` là sổ đăng ký | `src/modules` |
 | Composition root | `app.ts` đọc env, cắm adapter, dựng kernel, chạy lược đồ, đăng ký Xeon; `main.ts` nghe cổng | `src` |
 | Công cụ | Bộ cài, nạp danh mục / đơn / cộng tác viên thật (chỉ đọc máy cũ, chỉ ghi 3307) | `src/tools` |
 | Mặt web cũ | Tệp trình duyệt/PHP chép nguyên từ bản đang chạy, module Gian hàng trả qua cổng tệp tĩnh | `modules/<id>/goc` |
@@ -68,6 +68,7 @@ module import giá trị từ module khác, import khung, hay tự mở `fs`/`ht
 | `cong-bo-nao` | chatbot-cskh | Cửa công cụ cho bộ não (`/api/bo-nao/cong-cu`), trí nhớ hội thoại, mã kho mù |
 | `gian-hang` | gian-hang | Mặt web (`goc/`), thẻ OG, link chia sẻ |
 | `ctv` | gian-hang | Cộng tác viên: mật khẩu PBKDF2 (giữ nguyên định dạng cũ), thiết bị duyệt, tải ảnh |
+| `thong-ke` | gian-hang | Đếm lượt xem web: cửa công khai cho trình duyệt bắn sự kiện, báo cáo cho Desk/OMI; bảng `analytics_events` kế thừa từ bản đang chạy |
 | `khung-nen-tang` | — | Nội dung trang, phiên bản đang chạy, đăng ký Xeon, màn "landing này là shop nào" |
 
 ## Test

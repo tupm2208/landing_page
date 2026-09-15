@@ -17,12 +17,13 @@ import { manifest as hangKho } from "./hang-kho/module";
 import { manifest as hopThu } from "./hop-thu/module";
 import { manifest as khungNenTang } from "./khung-nen-tang/module";
 import { manifest as muaHo } from "./mua-ho/module";
+import { manifest as thongKe } from "./thong-ke/module";
 import { manifest as tienDoiSoat } from "./tien-doi-soat/module";
 import { manifest as vanChuyen } from "./van-chuyen/module";
 import { manifest as xuongNoiDung } from "./xuong-noi-dung/module";
 
 export const BUILTIN_MODULES: AnyManifest[] = [
-  congBoNao, ctv, donKhach, gianHang, hangKho, hopThu, khungNenTang, muaHo, tienDoiSoat, vanChuyen, xuongNoiDung
+  congBoNao, ctv, donKhach, gianHang, hangKho, hopThu, khungNenTang, muaHo, thongKe, tienDoiSoat, vanChuyen, xuongNoiDung
 ];
 
-export { congBoNao, ctv, donKhach, gianHang, hangKho, hopThu, khungNenTang, muaHo, tienDoiSoat, vanChuyen, xuongNoiDung };
+export { congBoNao, ctv, donKhach, gianHang, hangKho, hopThu, khungNenTang, muaHo, thongKe, tienDoiSoat, vanChuyen, xuongNoiDung };

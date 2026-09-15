@@ -134,6 +134,12 @@ export function moduleConfigFromEnv(env: Env, { siteUrl, xeonAddress }: { siteUr
       sessionSecret: text(env["BI_MAT_PHIEN_CTV"] || env["BI_MAT_PHIEN_DOI_TAC"]),
       sessionHours: Number(env["PHIEN_CTV_GIO"] || 24 * 30),
       https: text(env["PHIEN_HTTPS"]) === "1"
+    },
+    "thong-ke": {
+      // Signs the `tr_sig` on comment links, so a click can only be credited to a post the shop
+      // itself signed. Falls back to the orders token, as the running site did. Missing = visits
+      // and products are still counted, but nothing is attributed to a Facebook post.
+      attributionSecret: text(env["TOPRUN_ATTRIBUTION_SECRET"] || env["LANDING_ORDERS_TOKEN"])
     }
   };
 }

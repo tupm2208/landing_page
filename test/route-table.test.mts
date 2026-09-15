@@ -64,6 +64,10 @@ test("THE LIST OF OPEN DOORS — this test fails whenever someone opens a new pu
   //     self-signed session cookie + PBKDF2 password + owner-approved devices; the image route lists images only
   //   - five partner-portal routes: partners log in with a SESSION COOKIE, not a Bearer token, which the
   //     auth port does not read; so they are public and check the session themselves (401 before reading anything)
+  //   - the analytics event door: a customer's browser has no token and reports what it did. It only
+  //     WRITES one counted row and reads nothing; the event name must be on an allow-list; and
+  //     `order_success` is refused here and written by the server when an order really exists, so
+  //     nobody can inflate the shop's own sales figures from a browser
   const open = realKernel().routes().filter((r) => r.access === "cong-khai").map((r) => `${r.method} ${r.path}`).sort();
   //   - customer ACCOUNTS (two pages + eleven doors of the running site): customers are PEOPLE with no
   //     machine token; protected by a session cookie (token hashed in the table), PBKDF2 passwords, tight
@@ -102,6 +106,7 @@ test("THE LIST OF OPEN DOORS — this test fails whenever someone opens a new pu
     "POST /api/account/request-change",
     "POST /api/account/reset-password",
     "POST /api/account/verify-change",
+    "POST /api/analytics/event",
     "POST /api/ctv/login",
     "POST /api/ctv/logout",
     "POST /api/facebook/webhook",
