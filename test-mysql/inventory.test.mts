@@ -253,11 +253,15 @@ test("Catalogue on real MySQL", unlessMysql, async (t) => {
 
   await t.test("opening one item by code or by slug both work", async () => {
     await clean(); await upload();
+    // The old site's envelope: the storefront's product.js reads `ok` and `data`.
     const byCode = await call({ method: "GET", path: "/api/products/DV1234" });
     assert.equal(byCode.status, 200);
-    const bySlug = await call({ method: "GET", path: `/api/products/${body<PublicItem>(byCode).slug}` });
-    assert.equal(body<PublicItem>(bySlug).code, "DV1234");
-    assert.equal((await call({ method: "GET", path: "/api/products/khong-co" })).status, 404);
+    assert.equal(body<{ ok: boolean }>(byCode).ok, true);
+    const bySlug = await call({ method: "GET", path: `/api/products/${body<{ data: PublicItem }>(byCode).data.slug}` });
+    assert.equal(body<{ ok: boolean; data: PublicItem }>(bySlug).data.code, "DV1234");
+    const missing = await call({ method: "GET", path: "/api/products/khong-co" });
+    assert.equal(missing.status, 404);
+    assert.deepEqual(body(missing), { ok: false, error: "product_not_found" });
   });
 
   await t.test("search by name: exact code first, then name matches", async () => {

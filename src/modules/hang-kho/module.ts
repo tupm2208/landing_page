@@ -63,6 +63,9 @@ export const CATALOG_ERRORS = {
   notFound: "khong_thay"
 } as const;
 
+/** The public product page's 404 code — the old site's, which the storefront was written against. */
+export const PUBLIC_PRODUCT_NOT_FOUND = "product_not_found";
+
 /**
  * `ctx.config` for this module. The composition root currently hands it `{}`; every key is
  * optional so that stays valid. The keys carry over hooks the old code read (`khoHangCoSan`,
@@ -294,9 +297,11 @@ export const manifest = defineModule<Config>({
       whyPublic: "Trang sản phẩm công khai. Cùng bản đã bỏ giá vốn như danh mục.",
       rateLimit: { calls: 600, windowMs: TEN_MINUTES_MS },
       handle: async (ctx, request) => {
+        // Envelope of the old site, kept byte for byte: `product.js` reads `payload.ok` / `payload.data`.
+        // Returning the bare item (15/09/2026) left every product page on "Không tìm thấy sản phẩm".
         const item = await repository(ctx).readItem(request.params["khoa"]);
-        if (!item) return reply.json({ ok: false, error: CATALOG_ERRORS.notFound }, 404);
-        return reply.json(publicView(item), 200, { "Cache-Control": "public, max-age=300" });
+        if (!item) return reply.json({ ok: false, error: PUBLIC_PRODUCT_NOT_FOUND }, 404);
+        return reply.json({ ok: true, data: publicView(item) }, 200, { "Cache-Control": "public, max-age=300, stale-while-revalidate=3600" });
       }
     },
     {
