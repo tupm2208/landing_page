@@ -11,7 +11,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { EVENTS, ROLE } from "../dist/contract/index.js";
-import { FakeHttpClient, FixedWindowRateLimiter, JsonFileStore, Kernel, ManualClock, MemoryLogger, TokenAuth, jsonResponse } from "../dist/kernel/index.js";
+import { FakeHttpClient, FixedWindowRateLimiter, MemoryUploadPort, JsonFileStore, Kernel, ManualClock, MemoryLogger, TokenAuth, jsonResponse } from "../dist/kernel/index.js";
 import { generateSigningKey, signTicket } from "../dist/shared/ticket-kit.js";
 import { OUTBOX_DOCUMENT, manifest as inbox } from "../dist/modules/hop-thu/module.js";
 import { Outbox, type OutboxBook } from "../dist/modules/hop-thu/outbox.js";
@@ -35,7 +35,7 @@ function build() {
     clock, logger
   });
   const kernel = new Kernel({
-    ports: { store, logger, clock, http, auth, rateLimiter: new FixedWindowRateLimiter(clock) },
+    ports: { store, logger, clock, http, auth, rateLimiter: new FixedWindowRateLimiter(clock), uploads: new MemoryUploadPort() },
     logger, modules: [inbox],
     config: { "hop-thu": { verifyToken: "v", appSecret: "s", pageToken: "tk", brain: { address: "https://xeon.test", token: "nt-thu", tenant: SHOP } } }
   });
@@ -79,6 +79,25 @@ test("OMI pushes Zalo messages in: stored, announced, pushed to the brain; dupli
   assert.equal(box.tin[0].kenh, "zalo");
   assert.equal(box.tin[0].tenNguoi, "Anh Nam");
   assert.equal(box.tin[0].daXacMinh, true);
+});
+
+test("personal Facebook: a new conversation starts with the bot off (filed, not pushed); the shop's bot switch turns it on", async () => {
+  const { call, wait, pushedToXeon } = build();
+  const fb = (n: number) => MESSAGE(n, { kenh: "fb-ca-nhan", nguoi: "fb-khach-1", maTin: `f-${n}` });
+  const r1 = (await call("POST", "/api/hop-thu/tin-vao", { body: fb(1) })).body as Body;
+  assert.equal(r1.daNhan, 1);
+  assert.equal(r1.dayBoNao, 0, "bot is off by default on a personal account");
+  await wait();
+  assert.equal(pushedToXeon().length, 0);
+  const thread = ((await call("GET", "/api/hop-thu/hoi-thoai/fb-ca-nhan:fb-khach-1")).body as Body);
+  assert.equal(thread.hoiThoai.bot, "off", "the switch in OMI shows the bot as off");
+
+  assert.equal((await call("POST", "/api/hop-thu/hoi-thoai/fb-ca-nhan:fb-khach-1/thong-tin", { body: { bot: "auto" } })).status, 200);
+  const r2 = (await call("POST", "/api/hop-thu/tin-vao", { body: fb(2) })).body as Body;
+  assert.equal(r2.dayBoNao, 1, "switched on, the bot answers");
+
+  // Zalo is unchanged: a new group is answered as before.
+  assert.equal(((await call("POST", "/api/hop-thu/tin-vao", { body: MESSAGE(9) })).body as Body).dayBoNao, 1);
 });
 
 test("a message older than the threshold (default 24 hours) is not pushed to the brain but stays in the inbox; the shop can change the threshold", async () => {

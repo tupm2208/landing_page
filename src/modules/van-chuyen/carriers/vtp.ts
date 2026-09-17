@@ -9,8 +9,8 @@
  */
 
 import {
-  errorMessage, isAbortError, itemPrice, itemQuantity, slipItems, slipTotals,
-  type Carrier, type CarrierDeps, type CreateShipmentResult, type ShippingSlip, type TrackResult
+  deliveryStateFromStatus, errorMessage, firstMoney, isAbortError, itemPrice, itemQuantity, slipItems, slipTotals,
+  type Carrier, type CarrierAnswer, type CarrierDeps, type CreateShipmentResult, type LabelResult, type ShippingSlip, type TrackResult, type TrackSnapshot
 } from "./carrier";
 
 const DEFAULT_BASE_URL = "https://partner.viettelpost.vn";
@@ -18,7 +18,10 @@ const DEFAULT_BASE_URL = "https://partner.viettelpost.vn";
 export const VTP_PATHS = {
   login: "/v2/user/login-from-web",
   createOrder: "/v2/order/createOrderNlp",
-  track: "/v2/order/getOrderByTrackingNumber"
+  track: "/v2/order/getOrderByTrackingNumber",
+  // Đ3 (17/09/2026), from Sales Desk's `viettelpost_shipping.js`: TYPE 4 = cancel; printing link.
+  updateOrder: "/v2/order/UpdateOrder",
+  printingCode: "/v2/order/printing-code"
 } as const;
 
 /** Viettel Post credentials. A `token` alone is enough; otherwise username + password. */
@@ -222,5 +225,40 @@ export class ViettelPostCarrier implements Carrier {
     const r = await this.call(`${VTP_PATHS.track}?orderNumber=${encodeURIComponent(trackingNumber)}`, { token: login.token });
     if (!r.ok) return { ok: false, loiNhan: r.message };
     return { ok: true, don: r.data ?? null, duongTra: vtpTrackingUrl(trackingNumber) };
+  }
+
+  /** Desk `vtpExtractStatus` + `vtpExtractFinance`. */
+  readTrack(record: unknown): TrackSnapshot {
+    const d = asRecord(record);
+    const status = text(d["ORDER_STATUS_NAME"] || d["orderStatusName"] || d["STATUS_NAME"] || d["statusName"] || d["ORDER_STATUS"] || d["status"]);
+    return {
+      trangThai: status,
+      trangThaiGiao: deliveryStateFromStatus(status),
+      codDuKien: firstMoney(d, ["MONEY_COLLECTION", "moneyCollection", "COD_AMOUNT", "codAmount"]),
+      codDaThu: firstMoney(d, ["MONEY_COLLECTION_ACTUAL", "moneyCollectionActual", "COD_COLLECTED_AMOUNT", "codCollectedAmount", "MONEY_COLLECTED", "moneyCollected"]),
+      phi: firstMoney(d, ["MONEY_TOTALFEE", "moneyTotalFee", "TOTAL_FEE", "totalFee", "fee"])
+    };
+  }
+
+  async cancel(trackingNumber: string): Promise<CarrierAnswer> {
+    const login = await this.token();
+    if (!login.ok) return { ok: false, loiNhan: login.message };
+    const r = await this.call(VTP_PATHS.updateOrder, { method: "POST", token: login.token, body: { TYPE: 4, ORDER_NUMBER: text(trackingNumber) } });
+    return r.ok ? { ok: true, loiNhan: `Đã huỷ vận đơn ViettelPost ${text(trackingNumber)}.` } : { ok: false, loiNhan: `ViettelPost không huỷ được vận đơn: ${r.message}` };
+  }
+
+  async label(trackingNumber: string): Promise<LabelResult> {
+    const login = await this.token();
+    if (!login.ok) return { ok: false, loiNhan: login.message };
+    const r = await this.call(VTP_PATHS.printingCode, { method: "POST", token: login.token, body: { TYPE: 1, ORDER_ARRAY: [text(trackingNumber)] } });
+    if (!r.ok) return { ok: false, loiNhan: `ViettelPost không trả phiếu in: ${r.message}` };
+    const data: unknown = r.raw["data"];
+    const link = typeof data === "string" ? data.trim() : text(asRecord(data)["url"] || asRecord(data)["URL"] || asRecord(data)["link"] || asRecord(data)["file"]);
+    return link ? { ok: true, duongDan: link, loiNhan: "Đã lấy phiếu in ViettelPost." } : { ok: false, loiNhan: "ViettelPost không trả link phiếu in." };
+  }
+
+  async verify(): Promise<CarrierAnswer> {
+    const login = await this.token();
+    return login.ok ? { ok: true, loiNhan: "Kết nối ViettelPost OK: đăng nhập được." } : { ok: false, loiNhan: login.message };
   }
 }

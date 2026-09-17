@@ -74,6 +74,45 @@ export class UnconfiguredMailer implements Mailer {
   }
 }
 
+/** The SMTP fields of one shop's settings (`khung-nen-tang` catalogue keys `smtp_*`). */
+export function smtpFromShopSettings(values: Record<string, string>): SmtpSettings {
+  return {
+    host: String(values["smtp_host"] ?? "").trim(), port: Number(values["smtp_port"] || 587) || 587,
+    secure: /^(1|true|yes|on)$/i.test(String(values["smtp_secure"] ?? "").trim()),
+    user: String(values["smtp_user"] ?? "").trim(), pass: String(values["smtp_pass"] ?? ""), from: String(values["smtp_from"] ?? "").trim()
+  };
+}
+
+/**
+ * Đ9: SMTP PER SHOP. The shop's own settings (typed in OMI) win; the `.env` mailer is the fallback.
+ * Settings are read on every send, so a changed password works on the next e-mail without a restart;
+ * the transporter is rebuilt only when the settings changed.
+ */
+export class ShopSettingsMailer implements Mailer {
+  private cached: { key: string; mailer: Mailer } | null = null;
+
+  constructor(
+    private readonly readSettings: () => Promise<Record<string, string>>,
+    private readonly fallback: Mailer,
+    logger: Logger,
+    private readonly build: (settings: SmtpSettings) => Mailer = (s) => new SmtpMailer(s, logger)
+  ) {}
+
+  /** Which SMTP a send would use right now: the shop's, the .env one, or none. */
+  async source(): Promise<"shop" | "env"> {
+    const s = smtpFromShopSettings(await this.readSettings().catch(() => ({})));
+    return smtpConfigured(s) ? "shop" : "env";
+  }
+
+  async send(message: MailMessage): Promise<MailResult> {
+    const settings = smtpFromShopSettings(await this.readSettings().catch(() => ({})));
+    if (!smtpConfigured(settings)) return this.fallback.send(message);
+    const key = JSON.stringify(settings);
+    if (this.cached?.key !== key) this.cached = { key, mailer: this.build(settings) };
+    return this.cached.mailer.send(message);
+  }
+}
+
 /** Keeps every message in memory. Tests read `sent`. */
 export class MemoryMailer implements Mailer {
   readonly sent: MailMessage[] = [];

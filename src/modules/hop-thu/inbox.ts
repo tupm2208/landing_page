@@ -37,6 +37,8 @@ export interface InboundMessage {
   tenNguoi?: string;
   /** Comment line only: the post the comment sits under, so the seller sees WHAT is being asked about. */
   baiViet?: string;
+  /** Đ6: image addresses (Meta's CDN for the Fanpage line). Absent when there are none. */
+  anh?: string[];
 }
 
 /** One Meta webhook delivery, stored raw. */

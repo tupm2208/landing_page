@@ -50,7 +50,7 @@ function setMessage(text, isError = false) {
 }
 
 function initialPortalToken() {
-  const match = location.pathname.match(/^\/partner-([A-Za-z0-9_-]{8,})$/);
+  const match = location.pathname.match(/^\/partner\/([A-Za-z0-9_-]{8,})$/);
   return match ? match[1] : "";
 }
 
@@ -139,9 +139,17 @@ function fixedDisplayText(value = "") {
 }
 
 function partnerDisplayName(partner = {}) {
-  return fixedDisplayText(partner.id)
-    || fixedDisplayText(partner.login)
+  // fixedDisplayText hands back its input when there is no fix, so the id always "won" and a partner
+  // missing from the list (Khanh HD, MaxxSport...) showed "partner_wh_khanh_hd". Known fixes first,
+  // then the real name.
+  const known = (value) => {
+    const text = String(value || "").trim();
+    return text ? fixedDisplayText(text) !== text ? fixedDisplayText(text) : "" : "";
+  };
+  return known(partner.id)
+    || known(partner.login)
     || fixedDisplayText(partner.name)
+    || String(partner.login || partner.id || "").trim()
     || "Đối tác mua hàng";
 }
 
@@ -906,7 +914,7 @@ async function loginPortal(event) {
     if (!response.ok || !payload.ok) throw new Error(payload.message || "Không đăng nhập được.");
     applyPortalPayload(payload);
     sessionStorage.removeItem("partnerLoginMessage");
-    location.replace(`/partner-${state.token}`);
+    location.replace(`/partner/${state.token}`);
   } catch (error) {
     setMessage(error.message || "Không đăng nhập được.", true);
   } finally {

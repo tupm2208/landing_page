@@ -38,6 +38,16 @@ export interface Config {
  */
 export interface Services {
   "hang-kho"?: Pick<InventoryServices, "read">;
+  /** Collaborators: a `?ref=CODE` landing sets the 30-day referral cookie (running site's rule). */
+  "ctv"?: { referralCookieFor(code: unknown): Promise<Record<string, string> | null> };
+}
+
+/** A storefront page, with the referral cookie added when the address carries a valid `?ref=`. */
+async function withReferral(ctx: Ctx, request: KernelRequest, page: Promise<ReplyDraft>): Promise<ReplyDraft> {
+  const reply = await page;
+  const code = request.query["ref"];
+  const set = code ? await ctx.services["ctv"]?.referralCookieFor(code).catch(() => null) : null;
+  return set ? { ...reply, headers: { ...(reply.headers ?? {}), ...set } } : reply;
 }
 
 type Ctx = ModuleContext<Config, Services>;
@@ -88,7 +98,9 @@ async function serveFile(ctx: Ctx, path: string, extraHeaders: Record<string, st
   if (!file) {
     const elsewhere = realImageUrl(ctx, path);
     if (elsewhere) return { redirect: elsewhere, status: 302, headers: { "Cache-Control": "public, max-age=86400" } };
-    return reply.json({ ok: false, error: ERROR_CODES.notFound }, 404);
+    // /api/... khong co tuyen roi vao day (tuyen GET /* cua gian hang): noi ro la thieu chuc nang, khong phai thieu tep.
+    if (path.startsWith("/api/")) return reply.json({ ok: false, error: ERROR_CODES.notFound, khongCoDuong: true, message: `Landing chưa có chức năng này (GET ${path}) — landing đang chạy bản cũ hơn OMI, hoặc chưa bật mảnh chứa nó. Cập nhật mã landing, build lại và bật lại landing.` }, 404);
+    return reply.json({ ok: false, error: ERROR_CODES.notFound, message: "Không có tệp này." }, 404);
   }
   return reply.file(file.data, file.type, 200, { "Cache-Control": file.cacheControl, ...extraHeaders });
 }
@@ -136,7 +148,7 @@ export const manifest = defineModule<Config, Services>({
   ports: ["staticFiles", "logger", "config"],
 
   // With the inventory module the product page carries OG tags; without it the page still works.
-  requiresOptional: ["hang-kho.read"],
+  requiresOptional: ["hang-kho.read", "ctv.referralCookieFor"],
 
   routes: [
     {
@@ -149,14 +161,14 @@ export const manifest = defineModule<Config, Services>({
           const query = new URLSearchParams(request.query).toString();
           return { redirect: `/mobile${query ? `?${query}` : ""}`, status: 302 };
         }
-        return serveFile(ctx, "/index.html");
+        return withReferral(ctx, request, serveFile(ctx, "/index.html"));
       }
     },
     {
       method: "GET", path: "/mobile", access: ACCESS.public,
       whyPublic: "Ban web cho dien thoai. Chi tra tep tinh, khong doc du lieu khach.",
       rateLimit: { calls: 600, windowMs: MINUTES_10 },
-      handle: async (ctx) => serveFile(ctx, "/mobile.html")
+      handle: async (ctx, request) => withReferral(ctx, request, serveFile(ctx, "/mobile.html"))
     },
     {
       // The collaborator pages navigate to these friendly paths (ctv-login.js, ctv-account.js); the
@@ -176,13 +188,13 @@ export const manifest = defineModule<Config, Services>({
       method: "GET", path: "/product.html", access: ACCESS.public,
       whyPublic: "Trang san pham cong khai, kem the OG de share ra Facebook.",
       rateLimit: { calls: 600, windowMs: MINUTES_10 },
-      handle: productPage
+      handle: (ctx, request) => withReferral(ctx, request, productPage(ctx, request))
     },
     {
       method: "GET", path: "/product/:khoa", access: ACCESS.public,
       whyPublic: "Trang san pham cong khai theo duong dan dep, kem the OG.",
       rateLimit: { calls: 600, windowMs: MINUTES_10 },
-      handle: productPage
+      handle: (ctx, request) => withReferral(ctx, request, productPage(ctx, request))
     },
     {
       method: "GET", path: "/l/:token", access: ACCESS.public,
@@ -199,7 +211,14 @@ export const manifest = defineModule<Config, Services>({
       method: "GET", path: "/*", access: ACCESS.public,
       whyPublic: "Tep cua mat web (CSS, JS, anh). Cong tepTinh chi tra duoi tep da khai, trong dung thu muc goc/ cua module.",
       rateLimit: { calls: 6000, windowMs: MINUTES_10 },
-      handle: async (ctx, request) => serveFile(ctx, request.path)
+      handle: async (ctx, request) => {
+        // The running site's partner links were `/partner-<code>`; the router matches whole path
+        // segments, so the portal moved to `/partner/<code>`. Links already sent to partners (and
+        // bookmarked on their phones) must still arrive — this is the only route that sees them.
+        const oldPartnerLink = /^\/partner-([A-Za-z0-9_-]{8,})$/.exec(request.path);
+        if (oldPartnerLink) return { redirect: `/partner/${oldPartnerLink[1]}`, status: 301, headers: { "Cache-Control": "no-store" } };
+        return serveFile(ctx, request.path);
+      }
     }
   ]
 });

@@ -1,0 +1,121 @@
+<!DOCTYPE html>
+<html lang="vi">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no">
+  <title>Quét tem kho — OMI</title>
+  <link rel="stylesheet" href="/scan.css">
+</head>
+<body>
+  <header class="scan-topbar">
+    <div>
+      <h1>📷 Quét tem kho</h1>
+      <p id="scan-status" class="muted">Đang kết nối OMI...</p>
+    </div>
+    <a class="ghost-button" href="/admin" id="scan-desk-link">Quản trị</a>
+  </header>
+
+  <section id="scan-token-gate" class="panel hidden">
+    <h2>Đăng nhập thiết bị</h2>
+    <p class="muted">Điện thoại/máy khác cần mã truy cập (ADMIN_ACCESS_TOKEN trong .env của Sales Desk). Chỉ cần nhập một lần.</p>
+    <input id="scan-token-input" type="password" placeholder="Dán mã truy cập" autocomplete="off">
+    <button id="scan-token-save" class="primary-button">Kết nối</button>
+    <p id="scan-token-error" class="error hidden"></p>
+  </section>
+
+  <section id="scan-ios-hint" class="panel ios-hint hidden">
+    <h2>📱 iPhone / iPad: cài chứng chỉ một lần</h2>
+    <p class="muted">iOS chỉ cho phép mở camera trên trang có chứng chỉ được tin cậy. Bấm "tiếp tục" ở cảnh báo là <b>chưa đủ</b> — camera sẽ không bật. Làm 1 lần duy nhất:</p>
+    <ol class="ios-steps">
+      <li>Bấm <a id="scan-cert-link" href="/scan-cert.crt">Tải chứng chỉ TopRun</a> → Cho phép → Đóng.</li>
+      <li>Mở <b>Cài đặt → Đã tải hồ sơ</b> (hoặc Cài đặt → Cài đặt chung → VPN &amp; Quản lý thiết bị) → bấm hồ sơ <b>TopRun Sales Desk quet tem</b> → <b>Cài đặt</b>.</li>
+      <li>Vào <b>Cài đặt → Cài đặt chung → Giới thiệu → Cài đặt tin cậy chứng chỉ</b> → gạt bật dòng <b>TopRun Sales Desk quet tem</b>.</li>
+      <li>Quay lại trang này, tải lại trang rồi bấm <b>Bật camera</b>.</li>
+    </ol>
+    <p class="muted">Không muốn cài: vẫn dùng được nút <b>Chụp / chọn ảnh</b> — chụp từng tem một, không rà liên tục.</p>
+    <button id="scan-ios-hint-close" class="ghost-button">Đã hiểu, ẩn đi</button>
+  </section>
+
+  <main id="scan-main" class="hidden">
+    <section class="panel setup-row">
+      <label>Kho / chi nhánh
+        <select id="scan-branch"></select>
+      </label>
+      <div class="mode-toggle" role="tablist">
+        <button id="mode-import" class="mode-button active">📥 Nhập kho</button>
+        <button id="mode-audit" class="mode-button">📋 Kiểm kho</button>
+      </div>
+    </section>
+
+    <section class="panel camera-panel">
+      <div class="camera-stage">
+        <video id="scan-video" playsinline muted></video>
+        <div class="camera-guide"><span>Rà camera vào tem hộp / tag sản phẩm</span></div>
+        <div id="scan-flash" class="scan-flash hidden"></div>
+      </div>
+      <div class="camera-controls">
+        <button id="scan-camera-toggle" class="primary-button">Bật camera</button>
+        <label class="ghost-button file-button">Chụp / chọn ảnh
+          <input id="scan-file-input" type="file" accept="image/*" capture="environment">
+        </label>
+        <span id="scan-engine-note" class="muted"></span>
+      </div>
+    </section>
+
+    <section id="scan-result-card" class="panel result-card hidden"></section>
+
+    <section class="panel">
+      <div class="list-header">
+        <h2 id="scan-list-title">Phiên nhập kho</h2>
+        <button id="scan-clear" class="ghost-button">Xóa phiên</button>
+      </div>
+      <div id="scan-lines" class="scan-lines"></div>
+      <div id="scan-import-footer" class="session-footer">
+        <div id="scan-import-total" class="muted"></div>
+        <button id="scan-import-submit" class="primary-button">Ghi phiếu nhập</button>
+      </div>
+      <div id="scan-audit-footer" class="session-footer hidden">
+        <label class="check-row"><input id="scan-audit-full" type="checkbox" checked> So cả mã chưa quét trong chi nhánh</label>
+        <button id="scan-audit-run" class="primary-button">Đối soát tồn</button>
+      </div>
+    </section>
+
+    <section id="scan-audit-result" class="panel hidden">
+      <h2>Kết quả đối soát</h2>
+      <div id="scan-audit-table"></div>
+      <div class="session-footer">
+        <div id="scan-audit-summary" class="muted"></div>
+        <button id="scan-audit-apply" class="danger-button">Áp dụng điều chỉnh</button>
+      </div>
+    </section>
+
+    <p id="scan-lan-hint" class="muted lan-hint hidden"></p>
+  </main>
+
+  <div id="scan-edit-modal" class="modal-backdrop hidden">
+    <div class="modal">
+      <h2>Sửa dòng quét</h2>
+      <p class="muted">Sửa mã/size sai giúp máy học lại vị trí đọc trên tem (sửa-là-học).</p>
+      <label>Mã sản phẩm<input id="edit-code"></label>
+      <label>Tên (mã mới)<input id="edit-name" placeholder="Bỏ trống nếu mã đã có trên web"></label>
+      <label>Size<input id="edit-size"></label>
+      <div class="grid-2">
+        <label>Số lượng<input id="edit-qty" type="number" min="1" value="1"></label>
+        <label>Giá bán<input id="edit-sale" type="number" min="0" placeholder="đ"></label>
+      </div>
+      <div class="grid-2">
+        <label>Giá vốn<input id="edit-cost" type="number" min="0" placeholder="đ (tùy chọn)"></label>
+        <label>Giá niêm yết<input id="edit-list" type="number" min="0" placeholder="đ (tùy chọn)"></label>
+      </div>
+      <div class="modal-actions">
+        <button id="edit-cancel" class="ghost-button">Đóng</button>
+        <button id="edit-save" class="primary-button">Lưu dòng</button>
+      </div>
+    </div>
+  </div>
+
+  <canvas id="scan-canvas" class="hidden"></canvas>
+  <script src="/scan-api.js"></script>
+  <script src="/scan.js"></script>
+</body>
+</html>

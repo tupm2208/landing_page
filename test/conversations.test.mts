@@ -15,8 +15,8 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { ROLE, type IncomingRequest } from "../dist/contract/index.js";
-import { FakeHttpClient, FixedWindowRateLimiter, JsonFileStore, Kernel, ManualClock, MemoryLogger, TokenAuth, jsonResponse } from "../dist/kernel/index.js";
-import { manifest as inbox, type Config } from "../dist/modules/hop-thu/module.js";
+import { FakeHttpClient, FixedWindowRateLimiter, MemoryUploadPort, JsonFileStore, Kernel, ManualClock, MemoryLogger, TokenAuth, jsonResponse } from "../dist/kernel/index.js";
+import { absoluteImageUrl, manifest as inbox, type Config } from "../dist/modules/hop-thu/module.js";
 import { parseWebhookComments } from "../dist/modules/hop-thu/webhook.js";
 import {
   MESSAGE_KEEP_MAX, THREAD_KEEP_MAX, conversationId, defaultConversationBook, fileIncoming, fileOutgoing,
@@ -53,6 +53,23 @@ test("a customer message opens a thread and counts as unread; ours never does", 
     ["den", "còn size 42 không", "khach"],
     ["di", "dạ còn ạ", "bo-nao"]
   ], "both sides, oldest first — this is the whole point of the book");
+});
+
+test("an uploaded image is sent to Meta with the shop's public origin — Meta cannot fetch a relative path", () => {
+  assert.equal(absoluteImageUrl("/api/fanpage-media/a.jpg", "https://shop.vn/"), "https://shop.vn/api/fanpage-media/a.jpg");
+  assert.equal(absoluteImageUrl("https://cdn.vn/x.png", ""), "https://cdn.vn/x.png", "an absolute URL passes as it is");
+  assert.equal(absoluteImageUrl("", "https://shop.vn"), "");
+  assert.throws(() => absoluteImageUrl("/api/fanpage-media/a.jpg", ""), /LANDING_SITE_BASE_URL/, "no origin known = say so, do not send a broken link");
+});
+
+test("the page filter keeps only the chosen fanpages; empty means every thread", () => {
+  let book = fileIncoming(defaultConversationBook(), { kenh: "facebook", nguoi: "k1", maTin: "m1", chu: "a", luc: AT, trang: "p1" }, AT);
+  book = fileIncoming(book, { kenh: "facebook", nguoi: "k2", maTin: "m2", chu: "b", luc: AT, trang: "p2" }, AT);
+  book = fileIncoming(book, { kenh: "zalo", nguoi: "k3", maTin: "m3", chu: "c", luc: AT }, AT);
+  assert.equal(listThreads(book).length, 3);
+  assert.deepEqual(listThreads(book, { trang: "p1" }).map((t) => t.nguoi), ["k1"]);
+  assert.deepEqual(listThreads(book, { trang: "p1,p2" }).map((t) => t.nguoi).sort(), ["k1", "k2"]);
+  assert.deepEqual(listThreads(book, { trang: ["p2"] }).map((t) => t.nguoi), ["k2"], "an array works too");
 });
 
 test("messages are ordered by WHEN THEY WERE SENT, not by when they were filed", () => {
@@ -147,7 +164,7 @@ function build() {
     ports: {
       store: new JsonFileStore(directory, logger), logger, clock, http,
       auth: new TokenAuth({ keys: [{ token: ADMIN, name: "quan-tri", role: ROLE.admin }], clock }),
-      rateLimiter: new FixedWindowRateLimiter(clock)
+      rateLimiter: new FixedWindowRateLimiter(clock), uploads: new MemoryUploadPort()
     },
     logger, modules: [inbox], config: { "hop-thu": config }
   });
@@ -287,4 +304,63 @@ test("a message OMI pushed in lands in a thread the same way", async () => {
   const list = (await threads({ kenh: "zalo" })).body as Body;
   assert.equal(list["hoiThoai"][0]["ma"], "zalo:nhom-1");
   assert.equal(list["hoiThoai"][0]["tenNguoi"], "Chị Lan");
+});
+
+// ---------- the web admin's fanpage tools (16/09/2026) ----------
+
+const PNG_1PX = "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==";
+
+test("an IMAGE goes to Messenger as an attachment by its https address, and the thread shows it", async () => {
+  const { kernel, admin, thread, http } = build();
+  await kernel.handle(webhookRequest("gửi mình mã QR"));
+  await tick();
+
+  const sent = await kernel.handle({
+    method: "POST", path: "/api/hop-thu/gui", query: {}, headers: admin, ip: "1.1.1.1",
+    json: async () => ({ kenh: "facebook", nguoi: "khach-1", chu: "Dạ QR đây ạ", anhUrl: "https://shop.vn/api/fanpage-media/fbm-1.png", maHoiThoai: "facebook:khach-1" })
+  });
+  assert.equal(sent.status, 200, JSON.stringify(sent.body));
+  const bodies = http.calls.map((c) => JSON.parse(String(c.init.body ?? "{}")) as Body);
+  assert.equal(bodies[0]?.["message"]?.["text"], "Dạ QR đây ạ", "the text goes first");
+  assert.equal(bodies[1]?.["message"]?.["attachment"]?.["payload"]?.["url"], "https://shop.vn/api/fanpage-media/fbm-1.png");
+  const tin = ((await thread("facebook:khach-1")).body as Body)["hoiThoai"]["tin"] as Body[];
+  assert.equal(tin.at(-1)?.["soAnh"], 1);
+
+  const plainHttp = await kernel.handle({
+    method: "POST", path: "/api/hop-thu/gui", query: {}, headers: admin, ip: "1.1.1.1",
+    json: async () => ({ kenh: "facebook", nguoi: "khach-1", chu: "", anhUrl: "http://khong-an-toan/anh.png" })
+  });
+  assert.equal(plainHttp.status, 502, "BREAKS IF a non-https image is handed to Meta");
+});
+
+test("the shop notes a phone and address on the thread; an unknown thread is 404", async () => {
+  const { kernel, admin, thread } = build();
+  await kernel.handle(webhookRequest("số mình 0912 345 678"));
+  await tick();
+  const noted = await kernel.handle({
+    method: "POST", path: "/api/hop-thu/hoi-thoai/facebook:khach-1/lien-he", query: {}, headers: admin, ip: "1.1.1.1",
+    json: async () => ({ dienThoai: "0912 345 678", diaChi: "12 Lê Lợi, Hà Nội" })
+  });
+  assert.equal(noted.status, 200, JSON.stringify(noted.body));
+  const one = ((await thread("facebook:khach-1")).body as Body)["hoiThoai"];
+  assert.deepEqual([one["dienThoai"], one["diaChi"]], ["0912345678", "12 Lê Lợi, Hà Nội"]);
+  const missing = await kernel.handle({ method: "POST", path: "/api/hop-thu/hoi-thoai/facebook:ai-do/lien-he", query: {}, headers: admin, ip: "1.1.1.1", json: async () => ({ dienThoai: "0900000000" }) });
+  assert.equal(missing.status, 404);
+});
+
+test("an uploaded invoice image is kept and served back publicly; BREAKS IF a non-image is kept", async () => {
+  const { kernel, admin } = build();
+  const saved = await kernel.handle({ method: "POST", path: "/api/admin/fanpage/media", query: {}, headers: admin, ip: "1.1.1.1", json: async () => ({ imageData: PNG_1PX }) });
+  assert.equal(saved.status, 200, JSON.stringify(saved.body));
+  const url = String((saved.body as Body)["url"]);
+  assert.match(url, /^\/api\/fanpage-media\/fbm-[a-z0-9]+\.png$/);
+  const served = await kernel.handle({ method: "GET", path: url, query: {}, headers: {}, ip: "2.2.2.2" });
+  assert.equal(served.status, 200);
+  assert.equal(served.file?.type, "image/png");
+
+  const html = "data:image/png;base64," + Buffer.from("<script>alert(1)</script>").toString("base64");
+  const refused = await kernel.handle({ method: "POST", path: "/api/admin/fanpage/media", query: {}, headers: admin, ip: "1.1.1.1", json: async () => ({ imageData: html }) });
+  assert.equal(refused.status, 400);
+  assert.equal((refused.body as Body)["error"], "khong_phai_anh");
+  assert.equal((await kernel.handle({ method: "POST", path: "/api/admin/fanpage/media", query: {}, headers: {}, ip: "1.1.1.1", json: async () => ({ imageData: PNG_1PX }) })).status, 401);
 });

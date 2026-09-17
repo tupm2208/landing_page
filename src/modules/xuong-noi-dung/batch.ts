@@ -46,6 +46,43 @@ export interface ContentPost extends Post {
   canhBao: RuleNote[];
   /** Why a post was dropped from the day instead of published. */
   boQua: string;
+  /** Đ8: the buying angle (`priority.ts` BUY_ANGLES id). */
+  goc?: string;
+  /** Đ8: the small line under the big words on the cover. */
+  sub?: string;
+  /** Đ8: the three judges' verdict from Xeon (`/noi-dung/phan-bien`). */
+  phanBien?: PostReview | null;
+  /** Đ8: the publish job on `dang-bai` once scheduled — the post is locked then. */
+  maLenh?: string;
+  /** Đ8: the owner's topic this post was planned from. */
+  maChuDe?: string;
+  /** Đ8: the last write / review / optimise error for this post. */
+  loiAi?: string;
+  /** Đ8: codes the owner or the planner swapped ("thay A → B"). */
+  doiMa?: { from: string; to: string; reason: string }[];
+}
+
+/** What Xeon's three judges said, as the landing keeps it. */
+export interface PostReview {
+  dat: boolean;
+  chuyenMon: number;
+  giong: number;
+  dangBai: number;
+  ghiChu: string[];
+  /** The raw verdicts, handed back to Xeon when optimising. */
+  chiTiet: Record<string, unknown>;
+  luc: string;
+}
+
+/** Đ8: a background run over the batch ("Viết cả lô", "Phản biện", "Tối ưu", "Chạy cả chu trình"). */
+export interface BatchRun {
+  buoc: string;
+  dangChay: boolean;
+  xong: number;
+  tong: number;
+  thongBao: string;
+  loi: string;
+  capNhat: string;
 }
 
 export interface ContentBatch {
@@ -55,6 +92,11 @@ export interface ContentBatch {
   bai: ContentPost[];
   taoLuc: string;
   suaLuc: string;
+  /** Đ8: posts ticked for scheduling / keeping on rebuild. */
+  chon?: string[];
+  chay?: BatchRun | null;
+  /** Đ8: one step of undo (drop a post, rebuild). */
+  hoanTac?: { nhan: string; bai: ContentPost[] } | null;
 }
 
 export interface BatchBook {
@@ -85,6 +127,8 @@ export interface PlannableProduct {
   images?: number;
   /** ISO time this code was last posted, if ever. */
   dangLuc?: string;
+  /** Đ8: priority score from "Kho mã" — ties on `dangLuc` go to the higher score. */
+  priority?: number;
 }
 
 /**
@@ -111,7 +155,7 @@ export function sellableCodes(products: PlannableProduct[]): PlannableProduct[] 
 export function pickCodes(pool: PlannableProduct[], want: number, used: Set<string>): string[] {
   return pool
     .filter((p) => !used.has(p.code))
-    .sort((a, b) => text(a.dangLuc).localeCompare(text(b.dangLuc)) || a.code.localeCompare(b.code))
+    .sort((a, b) => text(a.dangLuc).localeCompare(text(b.dangLuc)) || Number(b.priority ?? 0) - Number(a.priority ?? 0) || a.code.localeCompare(b.code))
     .slice(0, Math.max(0, want))
     .map((p) => p.code);
 }
@@ -123,6 +167,8 @@ export interface PlanInput {
   khung: { page: string; time: string; format?: string }[];
   pool: PlannableProduct[];
   at: string;
+  /** Đ8: the owner's waiting topics, today first — one per post, in slot order. */
+  topics?: { id: string; text: string; page: string; angle: string }[];
 }
 
 /**
@@ -131,12 +177,15 @@ export interface PlanInput {
  * Formats are rotated rather than repeated: five posts a day in the same shape reads as a machine
  * wrote them, which is exactly what the shop is trying not to look like (chốt 07/09/2026).
  */
-export function planBatch({ ma, ngay, khung, pool, at }: PlanInput): ContentBatch {
+export function planBatch({ ma, ngay, khung, pool, at, topics = [] }: PlanInput): ContentBatch {
   const sellable = sellableCodes(pool);
   const used = new Set<string>();
   const rotation = Object.keys(POST_FORMATS);
+  const waiting = [...topics];
 
   const bai: ContentPost[] = khung.map((slot, index) => {
+    const topicIndex = waiting.findIndex((t) => t.page === "" || t.page === text(slot.page));
+    const topic = topicIndex >= 0 ? waiting.splice(topicIndex, 1)[0] : undefined;
     const format = text(slot.format) !== "" && POST_FORMATS[text(slot.format)] !== undefined
       ? text(slot.format)
       : rotation[index % rotation.length] ?? "gom_nhu_cau";
@@ -153,11 +202,12 @@ export function planBatch({ ma, ngay, khung, pool, at }: PlanInput): ContentBatc
       caption: "",
       main: "",
       comment: "",
-      chuDe: shape?.guide ?? "",
+      chuDe: topic?.text ?? shape?.guide ?? "",
       trangThai: codes.length === 0 ? "hong" : "nhap",
       loi: codes.length === 0 ? [{ id: "het_ma", message: "Không còn mã nào bán được để xếp vào bài này." }] : [],
       canhBao: [],
-      boQua: ""
+      boQua: "",
+      ...(topic ? { maChuDe: topic.id, goc: topic.angle } : {})
     };
   });
 
@@ -233,6 +283,8 @@ export interface PostPatch {
   format?: string;
   codes?: string[];
   boQua?: string;
+  goc?: string;
+  sub?: string;
 }
 
 /**
@@ -252,11 +304,15 @@ export function editPost(post: ContentPost, patch: PostPatch): ContentPost {
   if (patch.format !== undefined && POST_FORMATS[text(patch.format)] !== undefined) next.format = text(patch.format);
   if (Array.isArray(patch.codes)) next.codes = patch.codes.map((c) => text(c)).filter((c) => c !== "");
   if (patch.boQua !== undefined) next.boQua = String(patch.boQua);
+  if (patch.goc !== undefined) next.goc = text(patch.goc);
+  if (patch.sub !== undefined) next.sub = String(patch.sub);
   const judged = ["caption", "main", "comment", "time", "format", "codes"] as const;
   if (judged.some((k) => patch[k] !== undefined)) {
     next.trangThai = next.trangThai === "da-len-lich" ? next.trangThai : "nhap";
     next.loi = [];
     next.canhBao = [];
+    // A critique of the words before the edit is not a critique of these words.
+    if (patch.caption !== undefined || patch.main !== undefined) next.phanBien = null;
   }
   return next;
 }

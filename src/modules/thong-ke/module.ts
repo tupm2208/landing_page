@@ -31,6 +31,7 @@ import { EventRepository } from "./event-repository";
 import { analyticsReport, type ProductRange } from "./report";
 import { attributionKey, verifiedAttribution } from "./attribution";
 import { SCHEMA } from "./schema";
+import { CHANNELS_DOCUMENT, channelFrom, channelsOf, saveChannel, seoReadiness, storefrontTracking, type ChannelBook, type SeoItem } from "./website-channels";
 
 /** `ctx.config` as built by `moduleConfigFromEnv()` in app.ts. */
 export interface Config {
@@ -41,7 +42,16 @@ export interface Config {
   attributionSecret: string;
 }
 
-type Ctx = ModuleContext<Config, Record<string, never>>;
+/** Đ9: the catalogue, read for the SEO readiness score of Website Channels. */
+interface Services {
+  "hang-kho"?: { search(input: { query?: string; limit?: number }): Promise<SeoItem[]> };
+}
+
+type Ctx = ModuleContext<Config, Services>;
+
+async function channelList(ctx: Ctx) {
+  return channelsOf(await ctx.ports.store.document<ChannelBook>(CHANNELS_DOCUMENT).read(null), { name: "Website chính", siteUrl: "/" });
+}
 
 const TEN_MINUTES = 10 * 60 * 1000;
 const NO_STORE = { "Cache-Control": "no-store" };
@@ -162,7 +172,7 @@ async function readReport(ctx: Ctx, request: KernelRequest): Promise<ReplyDraft>
   return reply.json({ ok: true, data, generatedAt: ctx.ports.clock.now().toISOString() }, 200, NO_STORE);
 }
 
-export const manifest = defineModule<Config, Record<string, never>>({
+export const manifest = defineModule<Config, Services>({
   id: "thong-ke",
   name: "Thống kê web",
   tier: "van-hanh",
@@ -172,6 +182,7 @@ export const manifest = defineModule<Config, Record<string, never>>({
   feature: "gian-hang",
   version: "0.1.0",
   ports: ["store", "logger", "clock", "config"],
+  requiresOptional: ["hang-kho.search"],
 
   // The table predates this module (47,323 rows on the running site) and Image Tool reads it by
   // name, so it keeps its name instead of taking the `thong_ke_` prefix.
@@ -228,6 +239,39 @@ export const manifest = defineModule<Config, Record<string, never>>({
       method: "GET", path: "/api/admin/analytics", access: ACCESS.admin,
       rateLimit: { calls: 120, windowMs: TEN_MINUTES },
       handle: readReport
+    },
+    {
+      // Đ9 Website Channels (Desk `websiteChannelsTemplate`): channels + pixels + SEO readiness of the catalogue.
+      method: "GET", path: "/api/kenh-web", access: ACCESS.admin,
+      rateLimit: { calls: 120, windowMs: TEN_MINUTES },
+      handle: async (ctx: Ctx) => {
+        const search = ctx.services["hang-kho"]?.search;
+        const items = search ? await search({ query: "", limit: 0 }) : [];
+        return reply.json({ ok: true, kenh: await channelList(ctx), seo: seoReadiness(items), coDanhMuc: search !== undefined }, 200, NO_STORE);
+      }
+    },
+    {
+      method: "POST", path: "/api/kenh-web", access: ACCESS.admin,
+      rateLimit: { calls: 60, windowMs: TEN_MINUTES }, bodyLimit: 16 * 1024,
+      handle: async (ctx: Ctx, request: KernelRequest) => {
+        const body = asRecord(await request.json());
+        try {
+          const channel = channelFrom(body, ctx.ports.clock.now().toISOString());
+          const result = saveChannel(await channelList(ctx), channel, String(body["sua"] ?? "").trim());
+          await ctx.ports.store.document<ChannelBook>(CHANNELS_DOCUMENT).write({ version: 1, kenh: result.kenh });
+          ctx.ports.logger.info(`[thong-ke] website channel ${channel.id} ${result.created ? "tao" : "sua"}`);
+          return reply.json({ ok: true, kenh: result.kenh, message: result.created ? "Đã tạo website channel." : "Đã cập nhật website channel." }, 200, NO_STORE);
+        } catch (e) {
+          return reply.json({ ok: false, error: "kenh_khong_hop_le", message: e instanceof Error ? e.message : String(e) }, 400, NO_STORE);
+        }
+      }
+    },
+    {
+      method: "GET", path: "/api/kenh-web/theo-doi", access: ACCESS.public,
+      whyPublic: "Mã GA4 / Meta Pixel / TikTok Pixel của website chính — thứ vốn nằm công khai trong mã nguồn trang. "
+        + "Chỉ trả ba mã đã kiểm đúng dạng, không đọc gì khác của shop.",
+      rateLimit: { calls: 600, windowMs: TEN_MINUTES },
+      handle: async (ctx: Ctx) => reply.json({ ok: true, ...storefrontTracking(await channelList(ctx)) }, 200, { "Cache-Control": "public, max-age=300" })
     }
   ]
 });

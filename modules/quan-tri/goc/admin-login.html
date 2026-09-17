@@ -1,0 +1,29 @@
+<!doctype html>
+<html lang="vi">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>TopRun Admin Login</title>
+  <link rel="stylesheet" href="/admin.css?v=20260917-bo-cuc">
+</head>
+<body class="login-page">
+  <main class="login-shell">
+    <section class="login-panel">
+      <p class="eyebrow">TOPRUN ADMIN</p>
+      <h1>Dang nhap quan ly online</h1>
+      <p>Quan ly san pham, don hang, doi tac va fanpage tren toprun.site.</p>
+      <form id="admin-login-form">
+        <label>Tai khoan
+          <input id="admin-login" autocomplete="username" required>
+        </label>
+        <label>Mat khau
+          <input id="admin-password" type="password" autocomplete="current-password" required>
+        </label>
+        <button type="submit">Dang nhap</button>
+      </form>
+      <div id="login-message" class="message" hidden></div>
+    </section>
+  </main>
+  <script src="/admin-login.js?v=20260701-online-admin"></script>
+</body>
+</html>

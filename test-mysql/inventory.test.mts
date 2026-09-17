@@ -12,7 +12,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { ACCESS, EVENTS, ROLE, defineModule, reply, type IncomingRequest, type Reply } from "../dist/contract/index.js";
 import {
-  FakeHttpClient, FixedWindowRateLimiter, Kernel, ManualClock, MemoryLogger, TokenAuth, openMysqlStore
+  FakeHttpClient, FakeStaticFilePort, FixedWindowRateLimiter, Kernel, MemoryUploadPort, ManualClock, MemoryLogger, TokenAuth, openMysqlStore
 } from "../dist/kernel/index.js";
 import {
   manifest, type InventoryServices, type ReleaseInput, type ReleaseResult, type ReserveInput, type ReserveResult
@@ -95,7 +95,7 @@ test("Catalogue on real MySQL", unlessMysql, async (t) => {
     ports: {
       store, logger, clock, http: new FakeHttpClient(),
       auth: new TokenAuth({ keys: [{ token: ADMIN, name: "quan-tri", role: ROLE.admin }, { token: SERVICE, name: "bo-nao", role: ROLE.service }], clock }),
-      rateLimiter: new FixedWindowRateLimiter(clock)
+      rateLimiter: new FixedWindowRateLimiter(clock), uploads: new MemoryUploadPort(), staticFiles: new FakeStaticFilePort({})
     },
     logger, modules: [manifest, TEST_MODULE], config: { "hang-kho": {} }
   });

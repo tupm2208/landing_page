@@ -42,10 +42,13 @@ export const SETTING_GROUPS: readonly { id: string; name: string; note: string }
   { id: "facebook", name: "Facebook / Messenger", note: "Ứng dụng Meta và trang của shop. Webhook trỏ về địa chỉ landing này." },
   { id: "tiktok", name: "TikTok Shop", note: "Chỉ cần nếu shop bán và trả lời tin trên TikTok Shop." },
   { id: "telegram", name: "Telegram báo động", note: "Bot báo cho người trực: bot chuyển người, đơn hoàn tiền." },
-  { id: "sapo", name: "Sapo", note: "Đồng bộ tồn kho thời gian thực từ Sapo (nếu shop dùng Sapo)." },
+  { id: "sapo", name: "Sapo", note: "Tra tồn kho thời gian thực từ Sapo (nếu shop dùng Sapo): địa chỉ cửa hàng + khoá ứng dụng riêng của Sapo." },
+  { id: "kho-hang", name: "Kho hàng", note: "Kho nào được bán như hàng sẵn, và ai được sửa tồn bằng tin Zalo (tồn / hết / hoàn)." },
   { id: "site-doi", name: "Site sinh đôi", note: "Website bán lại thứ hai dùng chung kho: địa chỉ, khoá và phần trăm cộng giá." },
   { id: "mua-ho", name: "Mua hộ tự động", note: "Đặt hàng COD hộ trên web nhà cung cấp khi khách đã chuyển khoản." },
-  { id: "cong-cu", name: "Công cụ ngoài", note: "Địa chỉ các công cụ OMI mở trong cửa sổ riêng." }
+  { id: "cong-cu", name: "Công cụ ngoài", note: "Địa chỉ các công cụ OMI mở trong cửa sổ riêng." },
+  { id: "sao-luu", name: "Sao lưu Google Drive", note: "Web app Google Apps Script nhận bản sao lưu (đơn, khách, vận đơn) thành Google Sheet." },
+  { id: "email", name: "Email SMTP", note: "Hộp thư gửi email cho khách (xác nhận đơn, quên mật khẩu). Để trống thì landing dùng SMTP_* trong .env nếu có." }
 ];
 
 /**
@@ -66,6 +69,7 @@ export const CATALOGUE: readonly SettingSpec[] = [
   { key: "spx_user_id", label: "SPX User ID", group: "van-chuyen" },
   { key: "spx_user_secret", label: "SPX Secret Key", group: "van-chuyen", secret: true },
   { key: "spx_moi_truong", label: "SPX môi trường (live / test)", group: "van-chuyen", hint: "test = sandbox của SPX." },
+  { key: "spx_cach_giao", label: "SPX cách giao (1 = SPX đến lấy, 2 = shop mang ra bưu cục)", group: "van-chuyen", hint: "Bỏ trống = 2. Chọn 1 thì OMI tự xin khung giờ lấy hàng." },
   { key: "vtp_dia_chi", label: "ViettelPost địa chỉ API", group: "van-chuyen", hint: "Bỏ trống = địa chỉ chuẩn của hãng." },
   { key: "vtp_tai_khoan", label: "ViettelPost tài khoản", group: "van-chuyen" },
   { key: "vtp_mat_khau", label: "ViettelPost mật khẩu", group: "van-chuyen", secret: true },
@@ -97,8 +101,14 @@ export const CATALOGUE: readonly SettingSpec[] = [
   { key: "sapo_dia_chi", label: "Địa chỉ cửa hàng Sapo", group: "sapo" },
   { key: "sapo_api_key", label: "API key", group: "sapo" },
   { key: "sapo_api_secret", label: "API secret", group: "sapo", secret: true },
+  { key: "sapo_ten", label: "Tên nguồn hiển thị", group: "sapo", hint: "Bỏ trống = Sapo." },
+
+  // --- Kho hàng (Đ10) ---
+  { key: "kho_hang_san", label: "Kho được bán như hàng sẵn", group: "kho-hang", hint: "Mã kho, cách nhau dấu phẩy; đuôi * = mọi kho bắt đầu bằng. Chỉ áp cho gói hàng sẵn gửi từ ngoài vào (/api/ready-stock/sync). Bỏ trống = danh sách cấu hình máy chủ." },
+  { key: "lenh_ton_zalo", label: "Người được sửa tồn qua Zalo", group: "kho-hang", hint: "Tên Zalo hoặc mã người, cách nhau dấu phẩy. Tin của họ không tới bot." },
 
   // --- Site sinh đôi ---
+  { key: "site_doi_ma", label: "Mã site thứ hai (chữ thường + số)", group: "site-doi", hint: "Đơn đặt từ site này mang mã này. Ví dụ dasbui." },
   { key: "site_doi_ten", label: "Tên site thứ hai", group: "site-doi" },
   { key: "site_doi_dia_chi", label: "Địa chỉ site thứ hai", group: "site-doi" },
   { key: "site_doi_token", label: "Khoá quản trị site thứ hai", group: "site-doi", secret: true },
@@ -108,11 +118,29 @@ export const CATALOGUE: readonly SettingSpec[] = [
   { key: "mua_ho_bat", label: "Bật đặt hàng hộ tự động (1 = bật)", group: "mua-ho" },
   { key: "mua_ho_nguoi_nhan", label: "Tên người nhận khi đặt hộ", group: "mua-ho" },
   { key: "mua_ho_dien_thoai", label: "Điện thoại người nhận khi đặt hộ", group: "mua-ho" },
+  { key: "mua_ho_dia_chi", label: "Địa chỉ nhận khi đặt hộ", group: "mua-ho" },
+  { key: "mua_ho_xa", label: "Phường/xã nhận", group: "mua-ho" },
+  { key: "mua_ho_huyen", label: "Quận/huyện nhận", group: "mua-ho" },
+  { key: "mua_ho_tinh", label: "Tỉnh/thành nhận", group: "mua-ho" },
+  { key: "mua_ho_tu_khoa", label: "Từ khoá kho / nguồn được đặt hộ", group: "mua-ho", hint: "Dòng đơn có kho hoặc nguồn chứa từ này (ví dụ supersports) mới vào hàng đợi." },
+  { key: "mua_ho_trang_web", label: "Trang web đặt hộ", group: "mua-ho", hint: "Ví dụ https://supersports.com.vn — tiện ích trình duyệt mở trang này." },
 
   // --- Công cụ ---
   { key: "cong_cu_video", label: "Địa chỉ Xưởng video", group: "cong-cu", hint: "OMI mở trong cửa sổ riêng." },
   { key: "cong_cu_anh", label: "Địa chỉ công cụ ảnh", group: "cong-cu" },
-  { key: "cong_cu_sao_luu", label: "Thư mục sao lưu (Google Drive)", group: "cong-cu" }
+  { key: "cong_cu_sao_luu", label: "Thư mục sao lưu (Google Drive)", group: "cong-cu" },
+
+  // --- Sao lưu Google Drive (Đ10, thay localStorage của Desk) ---
+  { key: "google_sao_luu_url", label: "Web app URL (Apps Script)", group: "sao-luu", hint: "https://script.google.com/macros/s/…/exec" },
+  { key: "google_sao_luu_token", label: "Secret token", group: "sao-luu", secret: true, hint: "Token đã đặt trong Apps Script." },
+
+  // --- Email SMTP (Đ9: theo shop thay cho SMTP_* của .env) ---
+  { key: "smtp_host", label: "SMTP host", group: "email", hint: "Ví dụ smtp.gmail.com" },
+  { key: "smtp_port", label: "SMTP port", group: "email", hint: "Bỏ trống = 587." },
+  { key: "smtp_user", label: "SMTP user", group: "email" },
+  { key: "smtp_pass", label: "SMTP pass", group: "email", secret: true, hint: "Gmail: dùng mật khẩu ứng dụng." },
+  { key: "smtp_from", label: "Email gửi đi", group: "email", hint: "Bỏ trống = SMTP user." },
+  { key: "smtp_secure", label: "SMTP secure SSL/TLS (1 = bật)", group: "email", hint: "Cổng 465 thì bật; 587 thì để trống." }
 ];
 
 /** Document name — on-disk contract. */

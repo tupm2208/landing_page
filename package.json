@@ -18,11 +18,13 @@
     "fanpage:xem-token": "node dist/tools/import-fanpage-tokens.js xem",
     "fanpage:nap-token": "node dist/tools/import-fanpage-tokens.js",
     "test": "npm run build && node --test --test-timeout=60000 --test-force-exit \"test/*.test.mts\"",
+    "test:ui": "npm run build && node --test --test-concurrency=1 --test-timeout=300000 --test-force-exit \"test-ui/*.test.mts\"",
     "test:mysql": "npm run build && node --test --test-concurrency=1 --test-timeout=90000 --test-force-exit \"test-mysql/*.test.mts\""
   },
   "dependencies": {
     "mysql2": "^3.24.4",
-    "nodemailer": "^7.0.13"
+    "nodemailer": "^7.0.13",
+    "sharp": "^0.34.5"
   },
   "devDependencies": {
     "@types/node": "^24.3.0",

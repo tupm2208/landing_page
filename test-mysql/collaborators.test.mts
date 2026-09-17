@@ -10,7 +10,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { ROLE, defineModule, type AnyManifest, type Reply } from "../dist/contract/index.js";
-import { FixedWindowRateLimiter, Kernel, ManualClock, MemoryLogger, TokenAuth, openMysqlStore } from "../dist/kernel/index.js";
+import { FixedWindowRateLimiter, Kernel, ManualClock, MemoryLogger, MemoryMailer, TokenAuth, openMysqlStore } from "../dist/kernel/index.js";
 import { manifest as collaborators } from "../dist/modules/ctv/module.js";
 import { hashPassword, verifyPassword } from "../dist/modules/ctv/password.js";
 
@@ -87,7 +87,9 @@ test("Collaborators on real MySQL", { ...skip }, async (t) => {
     ports: {
       store, logger, clock,
       auth: new TokenAuth({ keys: [{ token: ADMIN, name: "quan-tri", role: ROLE.admin }], clock }),
-      rateLimiter: new FixedWindowRateLimiter(clock)
+      rateLimiter: new FixedWindowRateLimiter(clock),
+      // Collaborators e-mail their password-reset link through the mail port.
+      mail: new MemoryMailer()
     },
     logger, modules, config: { ctv: { sessionSecret: SECRET }, "hang-kho": {} }
   });
@@ -118,6 +120,25 @@ test("Collaborators on real MySQL", { ...skip }, async (t) => {
     assert.equal(bodyOf(await addCollaborator({ ten: "Đặng Mai", dienThoai: "0356095310" })).error, "thieu_mat_khau");
     assert.equal(bodyOf(await addCollaborator({ ten: "Đặng Mai", dienThoai: "0356095310", matKhau: "ngan" })).error, "mat_khau_qua_ngan");
     assert.equal(bodyOf(await addCollaborator({ ten: "Đặng Mai", dienThoai: "123" })).error, "thieu_ten_hoac_dien_thoai");
+  });
+
+  await t.test("the web admin's edits: an e-mail-only account, a PARTIAL update that keeps name/phone/code, duplicates refused, delete", async () => {
+    await cleanUp();
+    const byMail = await addCollaborator({ email: "mai@example.com", matKhau: "mat-khau-cua-mai" });
+    assert.equal(byMail.status, 200, JSON.stringify(byMail.body));
+    const created = await addCollaborator({ ten: "Đặng Mai", dienThoai: "0356095310", matKhau: "mat-khau-cua-mai" });
+    const id = bodyOf(created).ctv.ma as string;
+    const code = bodyOf(created).ctv.maGioiThieu as string;
+
+    const paused = await addCollaborator({ ma: id, dangBat: false });
+    assert.equal(paused.status, 200, JSON.stringify(paused.body));
+    assert.deepEqual([bodyOf(paused).ctv.ten, bodyOf(paused).ctv.dienThoai, bodyOf(paused).ctv.maGioiThieu, bodyOf(paused).ctv.dangBat], ["Đặng Mai", "0356095310", code, false],
+      "BREAKS IF pausing erases the name or mints a new referral code");
+
+    assert.equal((await addCollaborator({ ten: "Người khác", dienThoai: "0356095310", matKhau: "mat-khau-nguoi-khac" })).status, 409, "the same phone twice");
+    const del = await kernel.handle({ method: "POST", path: "/api/admin/ctv/xoa", headers: { authorization: `Bearer ${ADMIN}` }, ip: "1.1.1.1", json: async () => ({ ma: id }) });
+    assert.equal(del.status, 200);
+    assert.equal(await store.table("ctv_tai_khoan").count({ ma: id }), 0);
   });
 
   await t.test("THE PASSWORD HASH never leaves the machine", async () => {
@@ -278,6 +299,10 @@ test("Collaborators on real MySQL", { ...skip }, async (t) => {
 
   await t.test("the route table keeps the exact public paths of the old site", () => {
     const paths = kernel.routes().filter((r) => r.moduleId === "ctv" && r.access === "cong-khai").map((r) => `${r.method} ${r.path}`).sort();
-    assert.deepEqual(paths, ["GET /api/ctv/anh", "GET /api/ctv/me", "POST /api/ctv/login", "POST /api/ctv/logout"]);
+    // download-log, forgot-password and reset-password: the running site had them too (ctv-server.js).
+    assert.deepEqual(paths, [
+      "GET /api/ctv/anh", "GET /api/ctv/me", "POST /api/ctv/download-log", "POST /api/ctv/forgot-password",
+      "POST /api/ctv/login", "POST /api/ctv/logout", "POST /api/ctv/reset-password"
+    ]);
   });
 });

@@ -36,6 +36,49 @@ export class TelegramAlerts {
     return this.token !== "" && this.chatId !== "";
   }
 
+  /**
+   * Sends one message and WAITS for Telegram's answer — the "Thử Telegram" button (Đ3). The reply
+   * says what is wrong in words a seller can act on; the token never appears in it.
+   */
+  async sendNow(text: string): Promise<{ ok: boolean; loiNhan: string }> {
+    if (this.token === "") return { ok: false, loiNhan: "Chưa nhập token bot Telegram." };
+    if (this.chatId === "") return { ok: false, loiNhan: "Chưa nhập chat ID nhóm nhận báo động." };
+    try {
+      const response = await this.deps.http.fetch(`https://api.telegram.org/bot${this.token}/sendMessage`, {
+        method: "POST", timeoutMs: 8000, headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ chat_id: this.chatId, text, parse_mode: "HTML" })
+      });
+      if (response.ok) return { ok: true, loiNhan: "Đã gửi tin thử vào nhóm Telegram." };
+      const answer = (await response.json().catch(() => ({}))) as { description?: string };
+      const why = String(answer.description ?? `HTTP ${response.status}`);
+      return { ok: false, loiNhan: /chat not found/i.test(why) ? "Telegram không thấy nhóm: kiểm tra chat ID và đã thêm bot vào nhóm chưa." : /unauthorized/i.test(why) ? "Telegram không nhận token bot." : `Telegram từ chối: ${why}` };
+    } catch (e) {
+      return { ok: false, loiNhan: `Không gọi được Telegram: ${e instanceof Error ? e.message : String(e)}` };
+    }
+  }
+
+  /**
+   * Sends one message to ANOTHER chat with the shop's own bot — a partner's Telegram (Đ4, Desk's
+   * "Gửi đối tác"). Waits for the answer: the seller must know which partner did not get it.
+   */
+  async sendTo(chatId: string, text: string): Promise<{ ok: boolean; loiNhan: string }> {
+    const target = String(chatId || "").trim();
+    if (this.token === "") return { ok: false, loiNhan: "Chưa nhập token bot Telegram." };
+    if (target === "") return { ok: false, loiNhan: "Đối tác chưa có Telegram chat ID." };
+    try {
+      const response = await this.deps.http.fetch(`https://api.telegram.org/bot${this.token}/sendMessage`, {
+        method: "POST", timeoutMs: 8000, headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ chat_id: target, text, parse_mode: "HTML" })
+      });
+      if (response.ok) return { ok: true, loiNhan: "Đã gửi." };
+      const answer = (await response.json().catch(() => ({}))) as { description?: string };
+      const why = String(answer.description ?? `HTTP ${response.status}`);
+      return { ok: false, loiNhan: /chat not found/i.test(why) ? "Telegram không thấy chat ID này (đối tác đã nhắn /start cho bot chưa?)." : `Telegram từ chối: ${why}` };
+    } catch (e) {
+      return { ok: false, loiNhan: `Không gọi được Telegram: ${e instanceof Error ? e.message : String(e)}` };
+    }
+  }
+
   /** Sends an HTML message without waiting. Returns whether an alert was attempted at all. */
   notify(text: string): boolean {
     if (!this.enabled) return false;   // not configured: OFF, never alert at random

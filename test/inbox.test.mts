@@ -10,7 +10,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { EVENTS, ROLE, type HttpResponse, type IncomingRequest } from "../dist/contract/index.js";
-import { FakeHttpClient, FixedWindowRateLimiter, JsonFileStore, Kernel, ManualClock, MemoryLogger, TokenAuth, jsonResponse, type FakeResponder } from "../dist/kernel/index.js";
+import { FakeHttpClient, FixedWindowRateLimiter, MemoryUploadPort, JsonFileStore, Kernel, ManualClock, MemoryLogger, TokenAuth, jsonResponse, type FakeResponder } from "../dist/kernel/index.js";
 import { INBOX_DOCUMENT, manifest as inbox, type Config } from "../dist/modules/hop-thu/module.js";
 import { parseWebhookMessages, verifySignature } from "../dist/modules/hop-thu/webhook.js";
 
@@ -28,7 +28,7 @@ function build({ appSecret = APP_SECRET, pageToken = "token-trang", responder, b
   const store = new JsonFileStore(directory, logger);
   const config: Config = { verifyToken: VERIFY, appSecret, pageToken, ...(brain ? { brain } : {}) };
   const kernel = new Kernel({
-    ports: { store, logger, clock, http, auth: new TokenAuth({ keys: [{ token: ADMIN, name: "quan-tri", role: ROLE.admin }], clock }), rateLimiter: new FixedWindowRateLimiter(clock) },
+    ports: { store, logger, clock, http, auth: new TokenAuth({ keys: [{ token: ADMIN, name: "quan-tri", role: ROLE.admin }], clock }), rateLimiter: new FixedWindowRateLimiter(clock), uploads: new MemoryUploadPort() },
     logger,
     modules: [inbox],
     config: { "hop-thu": config }

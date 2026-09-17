@@ -44,6 +44,20 @@ export function splitStatements(sql: string): string[] {
   return withoutComments.split(";").map((s) => s.trim()).filter(Boolean);
 }
 
+/**
+ * An `ALTER TABLE t ADD COLUMN c` / `ADD KEY k` with ONE clause whose column or key already exists.
+ * Inherited tables (`orders`...) were grown by the old web too, so a step may meet a column that is
+ * already there (17/09: `shipping_fee`). Only single-clause statements are forgiven — in a
+ * multi-clause ALTER MySQL applies nothing, and skipping it would silently drop the other columns.
+ */
+export function alreadyPresent(statement: string, error: unknown): boolean {
+  const code = (error as { code?: string } | null)?.code;
+  if (code !== "ER_DUP_FIELDNAME" && code !== "ER_DUP_KEYNAME") return false;
+  const s = statement.replace(/\s+/g, " ").trim();
+  if (!/^ALTER TABLE \S+ ADD (COLUMN|KEY|INDEX|UNIQUE KEY) /i.test(s)) return false;
+  return !/,\s*(ADD|DROP|MODIFY|CHANGE)\s/i.test(s);
+}
+
 /** Only lower-case letters, digits and underscores may become an identifier in a statement. */
 export function safeName(name: unknown, kind = "table"): string {
   const s = String(name ?? "");
@@ -275,7 +289,14 @@ class BoundStore implements DataStore {
       }
       // One step may hold several statements. The driver's `multipleStatements` stays OFF (it
       // opens an injection path everywhere else); statements are split by hand here.
-      for (const statement of splitStatements(step.sql)) await this.run(statement, []);
+      for (const statement of splitStatements(step.sql)) {
+        try {
+          await this.run(statement, []);
+        } catch (error) {
+          if (!alreadyPresent(statement, error)) throw error;
+          this.logger.warn(`[kho] ${moduleId}/${step.name}: bỏ qua, đã có sẵn — ${statement.replace(/\s+/g, " ").slice(0, 120)}`);
+        }
+      }
       await this.run(`INSERT INTO \`${SCHEMA_HISTORY_TABLE}\` (module, ten, chay_luc) VALUES (?, ?, NOW(3))`, [moduleId, step.name]);
       this.logger.info(`[kho] chạy lược đồ ${moduleId}/${step.name}`);
     }

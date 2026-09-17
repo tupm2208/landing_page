@@ -20,7 +20,7 @@
  *    shop's group.
  */
 
-import { ACCESS, EVENTS, defineModule, type ModuleContext } from "../../contract";
+import { ACCESS, EVENTS, defineModule, reply, type ModuleContext, type ReplyDraft } from "../../contract";
 import type { OrderServices as OrderServicesOf } from "../don-khach/module";
 import type { PlatformServices } from "../khung-nen-tang/module";
 import { annotateOrderMoneyFields, codAmountForOrder, type MoneyFields } from "../../shared/order-money";
@@ -28,6 +28,8 @@ import {
   PAYMENT_METHODS, PAYMENT_NOTES, amountDueNow, isValidChoice, shippingFee, transferCode, type PaymentChoice
 } from "./money-rules";
 import { TelegramAlerts, type TelegramConfig } from "./telegram";
+import { ENTRY_GROUPS, FINANCE_SCHEMA, FinanceBook, PARTNER_GOODS_GROUP, financeReport, type FinanceOrder, type FinanceShipment } from "./finance-book";
+import { dateWindow } from "../../shared/date-range";
 
 /** `ctx.config` as `app.ts` builds it. The three amounts are FALLBACKS: page content wins when present. */
 export interface Config {
@@ -59,8 +61,12 @@ interface PageMoneySettings {
 
 
 interface Services {
-  "don-khach": Pick<OrderServices, "read" | "readByLookupToken" | "recordPayment">;
+  "don-khach": Pick<OrderServices, "read" | "readByLookupToken" | "recordPayment"> & Partial<Pick<OrderServices, "search">>;
   "khung-nen-tang"?: Pick<PlatformServices, "moneySettings" | "settings">;
+  /** Đ4: waybills with the carrier's fee (shipping table + shipping the shop bears). */
+  "van-chuyen"?: { shipmentBook(): Promise<Record<string, FinanceShipment>> };
+  /** Đ4: cost per line from partner slips, and partner names for the partner rows. */
+  "mua-ho"?: { costByLine(partnerId?: string): Promise<Map<string, number>>; partnerNames(): Promise<Map<string, string>> };
 }
 
 type Ctx = ModuleContext<Config, Services>;
@@ -280,6 +286,54 @@ async function orderMoney(ctx: Ctx, orderId: string): Promise<(OrderMoney & { ma
   return { maDon: order.id, ...moneyOf(order) };
 }
 
+// ---------- Đ4: the book of manual income / expense and the finance report ----------
+
+/** Reads the whole Tài chính screen for a window. Optional sources missing = those numbers are 0. */
+async function financeScreen(ctx: Ctx, tuNgay: string, denNgay: string): Promise<Record<string, unknown>> {
+  const window = dateWindow(tuNgay, denNgay);
+  const safe = async <T,>(work: (() => Promise<T>) | undefined, fallback: T): Promise<T> => {
+    if (!work) return fallback;
+    try { return await work(); } catch (e) {
+      ctx.ports.logger.warn(`[tien-doi-soat] tai chinh: ${e instanceof Error ? e.message : String(e)}`);
+      return fallback;
+    }
+  };
+  const orders = ctx.services["don-khach"];
+  const shipping = ctx.services["van-chuyen"];
+  const purchasing = ctx.services["mua-ho"];
+  const [list, shipments, slipCost, partnerNames, entries] = await Promise.all([
+    orders.search ? orders.search({ ...(window.from ? { since: window.from.toISOString() } : {}), limit: 500 }) : Promise.resolve([]),
+    safe(shipping ? () => shipping.shipmentBook() : undefined, {} as Record<string, FinanceShipment>),
+    safe(purchasing ? () => purchasing.costByLine("") : undefined, new Map<string, number>()),
+    safe(purchasing ? () => purchasing.partnerNames() : undefined, new Map<string, string>()),
+    new FinanceBook(ctx.ports.store).inWindow(window)
+  ]);
+  return {
+    ...financeReport({ orders: list as unknown as FinanceOrder[], window, shipments, slipCost, partnerNames, entries }),
+    tuNgay, denNgay, chamTran: list.length >= 500
+  };
+}
+
+/** Desk `add-finance-entry` / `pay-finance-partner`: one line in the book. */
+async function addEntry(ctx: Ctx, body: Record<string, unknown>, who: string, partnerPayment: boolean): Promise<ReplyDraft> {
+  const amount = Math.round(Number(body["soTien"] ?? 0));
+  if (!Number.isFinite(amount) || amount <= 0) return reply.json({ ok: false, error: "so_tien_sai", message: "Số tiền phát sinh không hợp lệ." }, 400);
+  const partnerId = String(body["doiTac"] ?? body["maDoiTac"] ?? "").trim();
+  if (partnerPayment && !partnerId) return reply.json({ ok: false, error: "thieu_doi_tac", message: "Thiếu đối tác được trả tiền hàng." }, 400);
+  const group = partnerPayment ? PARTNER_GOODS_GROUP : String(body["nhom"] ?? "").trim();
+  if (!partnerPayment && !Object.prototype.hasOwnProperty.call(ENTRY_GROUPS, group)) {
+    return reply.json({ ok: false, error: "nhom_sai", message: `Nhóm "${group}" không có.` }, 400);
+  }
+  const entry = await new FinanceBook(ctx.ports.store).add({
+    loai: partnerPayment ? "chi" : String(body["loai"]) === "thu" ? "thu" : "chi",
+    nhom: group, soTien: amount, maDon: String(body["maDon"] ?? "").trim(), maDoiTac: partnerId,
+    ghiChu: String(body["ghiChu"] ?? "").trim() || (partnerPayment ? "Thanh toán tiền hàng đối tác" : ""), boi: who,
+    at: ctx.ports.clock.now()
+  });
+  ctx.ports.logger.info(`[tien-doi-soat] so thu chi: ${entry.loai} ${entry.nhom} ${entry.soTien}`);
+  return reply.json({ ok: true, khoan: entry, message: partnerPayment ? `Đã ghi thanh toán ${vnd(amount)}đ.` : "Đã lưu khoản phát sinh." }, 200, { "Cache-Control": "no-store" });
+}
+
 export const manifest = defineModule<Config, Services>({
   id: "tien-doi-soat",
   name: "Tiền & đối soát",
@@ -287,10 +341,14 @@ export const manifest = defineModule<Config, Services>({
   runsOn: "server-khach",
   feature: "tien",
   version: "0.1.0",
-  ports: ["logger", "clock", "http", "bus", "config"],
+  ports: ["store", "logger", "clock", "http", "bus", "config"],
   requires: ["don-khach.read", "don-khach.readByLookupToken", "don-khach.recordPayment"],
   // Deposit % / shipping fee / transfer prefix: read from page content when the platform is present.
-  requiresOptional: ["khung-nen-tang.moneySettings", "khung-nen-tang.settings"],
+  requiresOptional: [
+    "khung-nen-tang.moneySettings", "khung-nen-tang.settings", "don-khach.search",
+    "van-chuyen.shipmentBook", "mua-ho.costByLine", "mua-ho.partnerNames"
+  ],
+  schema: FINANCE_SCHEMA,
 
   events: { emits: [EVENTS.paymentReceived, EVENTS.paymentRefunded], listens: {} },
 
@@ -298,7 +356,9 @@ export const manifest = defineModule<Config, Services>({
     "tien-doi-soat.orderMoney": (ctx, orderId: string) => orderMoney(ctx, orderId),
     "tien-doi-soat.choosePaymentMethod": (ctx, input: ChoosePaymentInput) => choosePaymentMethod(ctx, input),
     "tien-doi-soat.recordPaid": (ctx, input: RecordPaidInput) => recordPaid(ctx, input),
-    "tien-doi-soat.refund": (ctx, input: RefundInput) => refund(ctx, input)
+    "tien-doi-soat.refund": (ctx, input: RefundInput) => refund(ctx, input),
+    /** Đ4: the shop's own bot sends to another chat (a partner). Never exposed to the bot as a tool. */
+    "tien-doi-soat.sendTelegram": async (ctx, input: { chatId: string; text: string }) => (await alerts(ctx)).sendTo(input.chatId, input.text)
   },
 
   routes: [
@@ -332,6 +392,12 @@ export const manifest = defineModule<Config, Services>({
       }
     },
     {
+      // "Thử Telegram" (Desk `test-telegram-alert`, Đ3): one real message, the answer read back.
+      method: "POST", path: "/api/tien/thu-telegram", access: ACCESS.admin,
+      rateLimit: { calls: 20, windowMs: TEN_MINUTES },
+      handle: async (ctx) => ({ status: 200, headers: { "Cache-Control": "no-store" }, body: await (await alerts(ctx)).sendNow("✅ Tin thử từ OMI: nhóm này sẽ nhận báo động đơn hàng và tiền.") })
+    },
+    {
       // Giving money back. Admin only, a reason is required, never more than the customer paid.
       method: "POST", path: "/api/tien/hoan", access: ACCESS.admin,
       rateLimit: { calls: 60, windowMs: TEN_MINUTES },
@@ -344,6 +410,37 @@ export const manifest = defineModule<Config, Services>({
           boi: String(body["boi"] || "quan-tri")
         });
         return result.ok ? { status: 200, body: result } : { status: 400, body: { ok: false, error: result.viSao, daTra: result.daTra } };
+      }
+    },
+    {
+      // Đ4: the whole Tài chính screen for a window (tuNgay / denNgay = local YYYY-MM-DD, empty = open).
+      method: "GET", path: "/api/tien/tai-chinh", access: ACCESS.admin,
+      rateLimit: { calls: 120, windowMs: TEN_MINUTES },
+      handle: async (ctx, request) => ({
+        status: 200, headers: { "Cache-Control": "no-store" },
+        body: await financeScreen(ctx, String(request.query["tuNgay"] ?? "").trim(), String(request.query["denNgay"] ?? "").trim())
+      })
+    },
+    {
+      method: "POST", path: "/api/tien/thu-chi", access: ACCESS.admin,
+      rateLimit: { calls: 120, windowMs: TEN_MINUTES },
+      handle: async (ctx, request) => addEntry(ctx, asRecord(await request.json()), String(request.caller?.name || "quan-tri"), false)
+    },
+    {
+      // A transfer to a partner FOR GOODS: in the book, linked to the partner, NOT an expense (rule in finance-book.ts).
+      method: "POST", path: "/api/tien/tra-doi-tac", access: ACCESS.admin,
+      rateLimit: { calls: 60, windowMs: TEN_MINUTES },
+      handle: async (ctx, request) => addEntry(ctx, asRecord(await request.json()), String(request.caller?.name || "quan-tri"), true)
+    },
+    {
+      method: "POST", path: "/api/tien/thu-chi/huy", access: ACCESS.admin,
+      rateLimit: { calls: 60, windowMs: TEN_MINUTES },
+      handle: async (ctx, request) => {
+        const body = asRecord(await request.json());
+        const changed = await new FinanceBook(ctx.ports.store).voidEntry(String(body["ma"] ?? ""), String(body["lyDo"] ?? "").trim() || "Hoàn tác", ctx.ports.clock.now());
+        return changed > 0
+          ? reply.json({ ok: true, message: "Đã hoàn tác khoản thu/chi." }, 200)
+          : reply.json({ ok: false, error: "khong_thay_khoan", message: "Không thấy khoản này, hoặc đã hoàn tác." }, 404);
       }
     },
     {

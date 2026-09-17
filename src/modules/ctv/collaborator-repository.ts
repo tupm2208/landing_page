@@ -8,7 +8,7 @@
  */
 
 import type { DataStore, Row, Where } from "../../contract";
-import { isoFromMysql } from "../../shared/mysql-time";
+import { isoFromMysql, toMysqlDateTime } from "../../shared/mysql-time";
 import { ACCOUNT_TABLE, DEVICE_TABLE, DOWNLOAD_LOG_TABLE, SESSION_TABLE } from "./schema";
 
 /** Status values of a device row. */
@@ -26,6 +26,8 @@ export interface CollaboratorView {
   dangBat: boolean;
   choBoLogo: boolean;
   coMatKhau: boolean;
+  /** Commission rate: "5%" of each line, or a fixed amount per pair; empty = none. */
+  hoaHongMacDinh: string;
   taoLuc: string;
 }
 
@@ -91,6 +93,7 @@ export function publicView(row: Row = {}): CollaboratorView {
     dangBat: Number(row["dang_bat"] ?? 1) === 1,
     choBoLogo: Number(row["cho_bo_logo"] ?? 0) === 1,
     coMatKhau: String(row["bam_mat_khau"] ?? "") !== "",
+    hoaHongMacDinh: String(row["hoa_hong_mac_dinh"] ?? ""),
     taoLuc: isoFromMysql(row["tao_luc"])
   };
 }
@@ -206,5 +209,46 @@ export class CollaboratorRepository {
     const where: Where = {};
     if (collaboratorId) where["ma_ctv"] = collaboratorId;
     return this.store.table(DOWNLOAD_LOG_TABLE).find({ where, orderBy: "luc desc", limit });
+  }
+
+  // ---- password reset ------------------------------------------------------------------------
+
+  /** The ENABLED account with this email (case-insensitive). */
+  async findByEmail(email: string): Promise<Row | null> {
+    const rows = await this.store.rows(
+      `SELECT * FROM ${ACCOUNT_TABLE} WHERE dang_bat = 1 AND LOWER(email) = ? LIMIT 1`,
+      [email.toLowerCase()]
+    );
+    return rows[0] ?? null;
+  }
+
+  /** Stores a hashed reset token with an expiry on an account. */
+  async setResetToken(opts: { id: string; tokenHash: string; expiresAt: Date; now: Date }): Promise<void> {
+    await this.store.table(ACCOUNT_TABLE).update(
+      { ma: opts.id },
+      { bam_ma_dat_lai: opts.tokenHash, dat_lai_het_luc: toMysqlDateTime(opts.expiresAt), sua_luc: toMysqlDateTime(opts.now) }
+    );
+  }
+
+  /** The ENABLED account whose reset-token hash matches and has not expired. */
+  async findByResetToken(tokenHash: string, now: Date): Promise<Row | null> {
+    const rows = await this.store.rows(
+      `SELECT * FROM ${ACCOUNT_TABLE} WHERE dang_bat = 1 AND bam_ma_dat_lai = ? AND dat_lai_het_luc > ? LIMIT 1`,
+      [tokenHash, toMysqlDateTime(now)]
+    );
+    return rows[0] ?? null;
+  }
+
+  /** Updates the password hash and clears the reset token. */
+  async setPassword(opts: { id: string; passwordHash: string; now: Date }): Promise<void> {
+    await this.store.table(ACCOUNT_TABLE).update(
+      { ma: opts.id },
+      { bam_mat_khau: opts.passwordHash, bam_cap_luc: toMysqlDateTime(opts.now), bam_ma_dat_lai: "", dat_lai_het_luc: null, sua_luc: toMysqlDateTime(opts.now) }
+    );
+  }
+
+  /** Deletes all sessions of one collaborator. */
+  async deleteSessionsOf(collaboratorId: string): Promise<void> {
+    await this.store.table(SESSION_TABLE).delete({ ma_ctv: collaboratorId });
   }
 }

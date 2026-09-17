@@ -70,11 +70,70 @@ export type TrackResult =
 
 export type CarrierName = "spx" | "vtp";
 
+/** Đ3 (17/09/2026): answers of cancel / verify (`ok` + a sentence for the seller). */
+export interface CarrierAnswer { ok: boolean; loiNhan: string }
+/** A printable label: a link the carrier hosts (AWB / printing link). */
+export type LabelResult = { ok: true; duongDan: string; loiNhan: string } | { ok: false; loiNhan: string };
+
+/** Where a parcel is and what money moved, read out of a carrier's own tracking record. */
+export interface TrackSnapshot {
+  /** The carrier's status text, as the carrier wrote it. */
+  trangThai: string;
+  /** The shop's delivery state (`FULFILLMENT` values), derived from that text. */
+  trangThaiGiao: string;
+  /** Null = the carrier did not say. Zero is a real value. */
+  codDuKien: number | null;
+  codDaThu: number | null;
+  phi: number | null;
+}
+
+/** Delivery states the order screens understand (Desk `spxFulfillmentStatusFromTracking`). */
+export const FINAL_DELIVERY_STATES = ["delivered", "returned", "cancelled"] as const;
+
+function plain(v: unknown): string {
+  return String(v ?? "").normalize("NFD").replace(/[̀-ͯ]/g, "").replace(/đ/g, "d").replace(/Đ/g, "D").toLowerCase().trim();
+}
+
+/**
+ * Carrier status text → delivery state. Order of checks is the point (Desk, paid for): a FAILED or
+ * RETURNED delivery must be caught before "đã giao" / "hoàn thành", or a returned parcel reads as sold.
+ */
+export function deliveryStateFromStatus(status: unknown): string {
+  const t = plain(status);
+  if (!t) return "shipping_created";
+  if (t.includes("da huy") || t.includes("cancel")) return "cancelled";
+  if (t.includes("da hoan hang") || t.includes("hoan hang thanh cong") || t.includes("tra hang thanh cong") || t.includes("returned")) return "returned";
+  if (t.includes("hoan hang") || t.includes("hoan tra") || t.includes("don hoan") || t.includes("cho hoan") || t.includes("returning") || t.includes("return")) return "returning";
+  if (t.includes("giao khong thanh cong") || t.includes("khong thanh cong") || t.includes("giao that bai") || t.includes("khong giao duoc") || t.includes("khong nhan hang") || t.includes("tu choi nhan") || t.includes("khach khong nhan") || t.includes("failed")) return "delivery_failed";
+  if (t.includes("da giao") || t.includes("hoan thanh") || t.includes("delivered")) return "delivered";
+  if (t.includes("dang van chuyen") || t.includes("dang giao") || t.includes("in transit")) return "shipping";
+  if (t.includes("lay hang") || t.includes("pickup")) return "shipping_created";
+  return "shipping";
+}
+
+/** First key present with a finite number (≥ 0), or null — carriers name money fields five ways. */
+export function firstMoney(data: Record<string, unknown>, keys: readonly string[]): number | null {
+  for (const key of keys) {
+    const v = data[key];
+    if (v === undefined || v === null || v === "") continue;
+    const n = Number(v);
+    if (Number.isFinite(n)) return Math.max(0, n);
+  }
+  return null;
+}
+
 /** One carrier. Adding a carrier = one class here plus one line in the module's factory. */
 export interface Carrier {
   readonly name: CarrierName;
   createShipment(slip: ShippingSlip): Promise<CreateShipmentResult>;
   track(trackingNumber: string): Promise<TrackResult>;
+  /** Reads status + money out of `track(...).don`. Pure. */
+  readTrack(record: unknown): TrackSnapshot;
+  /** Cancels at the carrier. Only works while the parcel waits for pickup — the carrier says why when not. */
+  cancel(trackingNumber: string): Promise<CarrierAnswer>;
+  label(trackingNumber: string): Promise<LabelResult>;
+  /** Credentials really accepted by the carrier (not just "fields are filled"). */
+  verify(): Promise<CarrierAnswer>;
 }
 
 /** What every carrier needs from the outside: the HTTP port (never `fetch`) and the clock. */

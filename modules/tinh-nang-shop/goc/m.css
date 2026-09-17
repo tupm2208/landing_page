@@ -1,0 +1,127 @@
+/* m.css — trang điện thoại cho người bán (route /m). Dáng và bảng màu theo mobile.css của Sales Desk
+   (thanh tab tối #1f2520, thẻ bo tròn, sheet trượt lên), chỉ giữ phần ba tab Đơn · Tra tồn · Kho dùng. */
+* { box-sizing: border-box; }
+:root {
+  --bg: #f4f5f2; --surface: #ffffff; --surface-soft: #f7f8f5; --ink: #20231f; --muted: #656d63; --line: #dfe4dc;
+  --sidebar: #1f2520; --sidebar-soft: #2c332e;
+  --green: #23785b; --green-soft: #e5f2ec; --amber: #ad6a1f; --amber-soft: #f7ebd7; --red: #b54242; --red-soft: #fae8e6;
+  --blue: #315d8a; --blue-soft: #e5eef7;
+  --safe-bottom: env(safe-area-inset-bottom, 0px);
+  --safe-top: env(safe-area-inset-top, 0px);
+}
+html { -webkit-text-size-adjust: 100%; }
+body {
+  margin: 0; background: var(--bg); color: var(--ink);
+  font-family: -apple-system, "Segoe UI", Roboto, system-ui, sans-serif; font-size: 14px; line-height: 1.45;
+  min-height: 100vh; min-height: 100dvh; display: flex; flex-direction: column;
+  -webkit-tap-highlight-color: transparent;
+}
+h1, h2, h3, h4, p { margin: 0; }
+button { font: inherit; color: inherit; background: none; border: 0; padding: 0; cursor: pointer; }
+input, select, textarea { font: inherit; color: inherit; }
+a { color: var(--blue); }
+.hidden { display: none !important; }
+.muted { color: var(--muted); }
+.small { font-size: 12.5px; }
+.num { font-variant-numeric: tabular-nums; }
+.grow { flex: 1; min-width: 0; }
+.row { display: flex; gap: 8px; align-items: center; }
+.row.wrap { flex-wrap: wrap; }
+.between { justify-content: space-between; }
+.stack { display: flex; flex-direction: column; gap: 6px; }
+.label { font-size: 11.5px; text-transform: uppercase; letter-spacing: .08em; color: var(--muted); font-weight: 700; }
+.stack.end { align-items: flex-end; }
+.stack.tight { gap: 2px; min-width: 0; }
+.strike { text-decoration: line-through; }
+.ellipsis { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+
+/* ===== Khung ===== */
+#m-app { display: flex; flex-direction: column; min-height: 100vh; min-height: 100dvh; }
+.m-topbar { padding: calc(10px + var(--safe-top)) 14px 10px; display: flex; align-items: center; gap: 10px; flex: none; position: sticky; top: 0; background: var(--bg); z-index: 4; }
+.m-topbar h2 { font-size: 20px; font-weight: 800; letter-spacing: -.01em; }
+.m-topbar .sub { font-size: 12.5px; color: var(--muted); }
+.m-topbar .title-block { flex: 1; min-width: 0; }
+.icon-btn { width: 38px; height: 38px; border-radius: 12px; background: var(--surface); border: 1px solid var(--line); display: grid; place-items: center; font-size: 16px; font-weight: 700; flex: none; }
+.m-view { flex: 1; padding: 0 14px 14px; display: flex; flex-direction: column; gap: 12px; }
+.m-tabbar { position: sticky; bottom: 0; margin-top: auto; background: var(--sidebar); color: #aab3a6; display: grid; grid-template-columns: repeat(3, 1fr); padding: 8px 6px calc(10px + var(--safe-bottom)); flex: none; z-index: 4; }
+.m-tab { display: flex; flex-direction: column; align-items: center; gap: 3px; font-size: 10.5px; font-weight: 700; position: relative; min-height: 44px; justify-content: center; }
+.m-tab i { font-style: normal; font-size: 19px; line-height: 1; }
+.m-tab.on { color: #fff; }
+.m-tab.on::after { content: ""; position: absolute; top: -8px; width: 26px; height: 3px; border-radius: 2px; background: #4fb58e; }
+.m-tab .dot { position: absolute; top: 0; right: 28%; min-width: 16px; height: 16px; border-radius: 8px; background: var(--red); color: #fff; font-size: 10px; display: grid; place-items: center; padding: 0 4px; }
+.m-tab .dot:empty { display: none; }
+
+/* ===== Thẻ / pill / nút ===== */
+.card { background: var(--surface); border: 1px solid var(--line); border-radius: 16px; padding: 12px 14px; }
+.card.warn { border-color: #f1d2d0; background: #fdf6f5; }
+.pill { display: inline-flex; align-items: center; gap: 5px; font-size: 11.5px; font-weight: 700; padding: 3px 9px; border-radius: 999px; white-space: nowrap; background: #eceee8; color: var(--muted); }
+.pill.green { background: var(--green-soft); color: var(--green); }
+.pill.amber { background: var(--amber-soft); color: var(--amber); }
+.pill.red { background: var(--red-soft); color: var(--red); }
+.pill.blue { background: var(--blue-soft); color: var(--blue); }
+.btn { display: inline-flex; align-items: center; justify-content: center; gap: 6px; min-height: 44px; padding: 0 14px; border-radius: 12px; font-weight: 700; font-size: 14px; border: 1px solid var(--line); background: var(--surface); color: var(--ink); flex: 1; text-align: center; white-space: nowrap; text-decoration: none; }
+.btn.primary { background: var(--green); color: #fff; border-color: var(--green); }
+.btn.dark { background: var(--sidebar); color: #fff; border-color: var(--sidebar); }
+.btn.sm { min-height: 36px; padding: 0 11px; font-size: 12.5px; border-radius: 10px; flex: 0 0 auto; }
+.btn.done { background: var(--green-soft); color: var(--green); border-color: #bfdccd; }
+.btn:disabled { opacity: .55; cursor: default; }
+.btn:focus-visible, .chip:focus-visible, .m-tab:focus-visible { outline: 2px solid var(--blue); outline-offset: 2px; }
+
+/* ===== Ô nhập ===== */
+.search { display: flex; align-items: center; gap: 8px; background: var(--surface); border: 1px solid var(--line); border-radius: 14px; padding: 0 12px; height: 44px; color: var(--muted); }
+.search input { border: 0; outline: 0; flex: 1; font-size: 16px; background: transparent; color: var(--ink); min-width: 0; }
+.search input::placeholder { color: #9aa396; }
+.field { display: flex; flex-direction: column; gap: 6px; }
+.field label { font-size: 12.5px; font-weight: 700; color: var(--muted); }
+.field input { min-height: 44px; border: 1px solid var(--line); border-radius: 12px; background: var(--surface); padding: 0 12px; font-size: 16px; width: 100%; outline: 0; }
+.field input:focus { border-color: var(--green); }
+.chips { display: flex; gap: 6px; overflow-x: auto; padding: 2px 14px 6px; margin: 0 -14px; scrollbar-width: none; -webkit-overflow-scrolling: touch; }
+.chips::-webkit-scrollbar { display: none; }
+.chip { flex: none; font-size: 12.5px; font-weight: 700; padding: 8px 12px; min-height: 36px; border-radius: 999px; background: var(--surface); border: 1px solid var(--line); color: var(--ink); display: inline-flex; gap: 6px; align-items: center; }
+.chip b { font-weight: 800; color: var(--muted); }
+.chip.on { background: var(--sidebar); color: #fff; border-color: var(--sidebar); }
+.chip.on b { color: #bfd6cb; }
+
+/* ===== Đơn hàng ===== */
+.order { padding: 12px 14px; text-align: left; width: 100%; display: block; }
+.order .id { font-weight: 800; font-size: 14px; }
+.order .cust { font-weight: 600; margin-top: 2px; }
+.order .money { font-weight: 800; font-variant-numeric: tabular-nums; }
+.kv { display: grid; grid-template-columns: 1fr auto; gap: 4px 12px; font-size: 13.5px; }
+.kv .k { color: var(--muted); }
+.kv .v { font-weight: 700; text-align: right; font-variant-numeric: tabular-nums; }
+.kv .v.big { font-size: 17px; color: var(--green); }
+.kv .v.warn { color: var(--red); }
+.line { display: flex; gap: 10px; align-items: flex-start; padding: 8px 0; border-top: 1px solid #e8ebe5; }
+.line:first-child { border-top: 0; }
+.thumb { width: 52px; height: 52px; border-radius: 10px; background: linear-gradient(135deg, #e8ebe5, #d5dbd2); flex: none; display: grid; place-items: center; font-size: 10px; font-weight: 700; color: var(--muted); overflow: hidden; }
+.thumb img { width: 100%; height: 100%; object-fit: cover; display: block; }
+.empty { padding: 28px 14px; text-align: center; color: var(--muted); font-size: 13.5px; }
+.err-box { background: var(--red-soft); color: var(--red); border-radius: 12px; padding: 10px 12px; font-size: 13px; }
+
+/* ===== Tra tồn ===== */
+.stock-row { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 6px 10px; padding: 9px 0; border-top: 1px solid #e8ebe5; align-items: center; }
+.stock-row:first-of-type { border-top: 0; }
+.stock-edit { grid-column: 1 / -1; display: flex; gap: 8px; align-items: center; }
+.stock-edit input { width: 84px; min-height: 36px; border: 1px solid var(--line); border-radius: 10px; padding: 0 10px; font-size: 16px; }
+
+/* ===== Kho ===== */
+.menu-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+.menu-item { background: var(--surface); border: 1px solid var(--line); border-radius: 14px; padding: 12px; display: flex; flex-direction: column; gap: 4px; min-height: 74px; text-align: left; color: var(--ink); text-decoration: none; }
+.menu-item b { font-size: 13.5px; }
+.menu-item span { font-size: 11.5px; color: var(--muted); }
+
+/* ===== Sheet trượt lên ===== */
+.sheet-bg { position: fixed; inset: 0; background: rgba(20, 24, 20, .45); z-index: 20; }
+.sheet { position: fixed; left: 0; right: 0; bottom: 0; background: var(--surface); border-radius: 22px 22px 0 0; padding: 10px 14px calc(18px + var(--safe-bottom)); z-index: 21; display: flex; flex-direction: column; gap: 10px; max-height: 88vh; max-height: 88dvh; overflow-y: auto; }
+.sheet .grab { width: 40px; height: 4px; border-radius: 2px; background: var(--line); margin: 0 auto 4px; flex: none; }
+.sheet h3 { font-size: 15px; font-weight: 800; }
+
+/* ===== Thông báo ===== */
+#m-toast { position: fixed; left: 50%; bottom: calc(92px + var(--safe-bottom)); transform: translateX(-50%); background: var(--sidebar); color: #fff; padding: 10px 16px; border-radius: 999px; font-size: 13px; font-weight: 600; z-index: 30; max-width: 90vw; box-shadow: 0 10px 24px rgba(0,0,0,.25); pointer-events: none; opacity: 0; transition: opacity .2s; }
+#m-toast.show { opacity: 1; }
+#m-toast.err { background: var(--red); }
+.spinner { display: inline-block; width: 16px; height: 16px; border: 2px solid rgba(0,0,0,.15); border-top-color: var(--green); border-radius: 50%; animation: spin .8s linear infinite; vertical-align: middle; }
+@keyframes spin { to { transform: rotate(360deg); } }
+@media (prefers-reduced-motion: reduce) { * { transition: none !important; animation: none !important; } }
+@media (min-width: 720px) { #m-app { width: 100%; max-width: 480px; margin: 0 auto; border-left: 1px solid var(--line); border-right: 1px solid var(--line); } .sheet { max-width: 480px; left: 50%; transform: translateX(-50%); right: auto; width: 100%; } }

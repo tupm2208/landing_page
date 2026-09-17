@@ -373,7 +373,7 @@ button:disabled {
 }
 
 .need-row {
-  grid-template-columns: minmax(220px, 1fr) 82px 110px 128px 132px 112px minmax(120px, 170px) 104px;
+  grid-template-columns: minmax(160px, 1fr) 82px 110px 120px 124px 104px minmax(110px, 170px) 104px;
 }
 
 .need-row.is-done {

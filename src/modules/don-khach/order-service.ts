@@ -153,11 +153,29 @@ export async function commitHolds(ctx: OrderContext, held: Hold[], orderId: stri
 }
 
 /**
+ * Đ10 TWIN SITE: which website a PUBLIC order came from. Only the slug the shop configured
+ * (`site_doi_ma`) is accepted — named in the body, or recognised by the Host / Origin the twin
+ * storefront calls from (`site_doi_dia_chi`). Anything else is the main site: a customer cannot
+ * invent a site.
+ */
+export async function twinSiteOf(ctx: OrderContext, body: Record<string, unknown>, headers: Record<string, string | undefined>): Promise<string> {
+  let settings: Record<string, string> = {};
+  try { settings = (await ctx.services["khung-nen-tang"]?.settings?.()) ?? {}; } catch { return ""; }
+  const slug = text(settings["site_doi_ma"]).toLowerCase();
+  if (!slug) return "";
+  if (text(body["site"]).toLowerCase() === slug) return slug;
+  const host = (() => { try { return new URL(text(settings["site_doi_dia_chi"])).host.toLowerCase(); } catch { return ""; } })();
+  if (!host) return "";
+  const origin = (() => { try { return new URL(text(headers["origin"] ?? headers["referer"])).host.toLowerCase(); } catch { return ""; } })();
+  return origin === host || text(headers["host"]).toLowerCase() === host ? slug : "";
+}
+
+/**
  * Places an order. Reserves stock FIRST, then writes the whole order in ONE transaction.
  * If the reservation succeeded but the write failed, the reservation is released — stock is
  * never left hanging.
  */
-export async function placeOrder(ctx: OrderContext, rawBody: unknown): Promise<PlaceResult> {
+export async function placeOrder(ctx: OrderContext, rawBody: unknown, headers: Record<string, string | undefined> = {}): Promise<PlaceResult> {
   const body = (rawBody && typeof rawBody === "object" ? rawBody : {}) as Record<string, unknown>;
   const lines = (Array.isArray(body["items"]) ? body["items"] : []).map(normaliseLine).filter((l): l is NormalisedLine => l !== null);
   if (lines.length === 0) return { ok: false, reason: "don_khong_co_mon" };
@@ -177,8 +195,10 @@ export async function placeOrder(ctx: OrderContext, rawBody: unknown): Promise<P
   const lookupToken = crypto.randomBytes(16).toString("hex");
   const total = lines.reduce((sum, l) => sum + l.unitPrice * l.quantity, 0);
   const prefix = await transferPrefixOf(ctx);
+  const site = await twinSiteOf(ctx, body, headers);
   const draft: Omit<OrderDraft, "id"> = {
-    lookupToken, total, lines, profile: profileFromBody(body), paymentMethod: text(body["paymentMethod"]), placedAt
+    lookupToken, total, lines, profile: profileFromBody(body), paymentMethod: text(body["paymentMethod"]), placedAt,
+    ...(site ? { extra: { site } } : {})
   };
 
   // ORDER ID from the timestamp (`ORD-<milliseconds>`) — the exact shape of the running site,
@@ -216,7 +236,9 @@ export async function placeOrder(ctx: OrderContext, rawBody: unknown): Promise<P
   const taken = await commitHolds(ctx, held, id);
   if (taken.length > 0) await repository.recordStockTaken({ id, lines: taken, at: placedAt });
 
-  ctx.bus.emit(EVENTS.orderCreated, { maDon: id, tong: total, soMon: lines.length, dienThoai: text(body["phone"]) });
+  // WHO BROUGHT IT, captured now: the cookie of this request is the only honest witness.
+  const ctv = await ctx.services["ctv"]?.attributionFor(headers).catch(() => null) ?? null;
+  ctx.bus.emit(EVENTS.orderCreated, { maDon: id, tong: total, soMon: lines.length, dienThoai: text(body["phone"]), ctv });
   return { ok: true, id, token: lookupToken, total, paymentReference: transferCode(id, prefix) };
 }
 
@@ -225,14 +247,15 @@ export async function placeOrder(ctx: OrderContext, rawBody: unknown): Promise<P
  * (the customer within 15 minutes, the owner from OMI, Sales Desk). The repository hands the
  * lines out only the first time; a repeated cancel returns nothing.
  */
-export async function returnStock(ctx: OrderContext, id: string): Promise<void> {
+export async function returnStock(ctx: OrderContext, id: string): Promise<number> {
   const taken = await repositoryOf(ctx).markStockRestored({ id, at: ctx.ports.clock.now() });
-  if (taken === null) return;
+  if (taken === null) return 0;   // đã trả rồi, hoặc đơn chưa từng lấy gì
   for (const line of taken) {
     const r = await ctx.services["hang-kho"].restock({ variantId: line.maBienThe, quantity: line.soLuong });
     if (!r.ok) ctx.ports.logger.warn(`[don-khach] khong tra lai duoc ton cho don ${id} (${line.maBienThe}): ${r.reason}`);
   }
   ctx.ports.logger.info(`[don-khach] don ${id} huy: tra lai ${taken.length} dong ton kho`);
+  return taken.length;
 }
 
 /** Sets a new status, logs it and announces it on the bus. `khong_co_don` when the id is unknown. */

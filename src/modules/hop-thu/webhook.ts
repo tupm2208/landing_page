@@ -58,7 +58,7 @@ export function parseWebhookComments(payload: unknown): InboundMessage[] {
       const sender = String(from.id ?? "");
       if (!sender || sender === page) continue;
       const text = String(value["message"] ?? "").trim();
-      const photo = String(value["photo"] ?? "");
+      const photo = String(value["photo"] ?? "").trim();
       if (!text && photo === "") continue;
       const at = Number(value["created_time"] ?? 0);
       out.push({
@@ -70,6 +70,7 @@ export function parseWebhookComments(payload: unknown): InboundMessage[] {
         baiViet: String(value["post_id"] ?? ""),
         chu: text,
         soAnh: photo === "" ? 0 : 1,
+        ...(/^https:\/\//i.test(photo) ? { anh: [photo] } : {}),
         // Meta sends comment times in SECONDS, messages in milliseconds. Multiplying the wrong one
         // by 1000 puts the comment in the year 57,000 and it sorts to the top of every thread.
         luc: new Date(at > 0 ? at * 1000 : Date.now()).toISOString()
@@ -97,9 +98,11 @@ export function parseWebhookMessages(payload: unknown): InboundMessage[] {
       // answers itself and loops.
       if (!sender || sender === page || m.message?.is_echo) continue;
       const text = String(m.message?.text ?? "").trim();
-      const attachments = Array.isArray(m.message?.attachments) ? (m.message.attachments as { type?: unknown }[]) : [];
+      const attachments = Array.isArray(m.message?.attachments) ? (m.message.attachments as { type?: unknown; payload?: { url?: unknown } }[]) : [];
       const images = attachments.filter((a) => a?.type === "image").length;
       if (!text && images === 0) continue;
+      // Đ6: KEEP the addresses, not just the count — the seller has to SEE the photo of the shoe.
+      const urls = attachments.filter((a) => a?.type === "image").map((a) => String(a?.payload?.url ?? "").trim()).filter((u) => /^https:\/\//i.test(u)).slice(0, 10);
       out.push({
         kenh: "facebook",
         trang: page,
@@ -107,6 +110,7 @@ export function parseWebhookMessages(payload: unknown): InboundMessage[] {
         maTin: String(m.message?.mid ?? ""),
         chu: text,
         soAnh: images,
+        ...(urls.length === 0 ? {} : { anh: urls }),
         luc: new Date(Number(m.timestamp ?? Date.now())).toISOString()
       });
     }

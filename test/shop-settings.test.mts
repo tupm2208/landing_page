@@ -12,7 +12,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { ROLE } from "../dist/contract/index.js";
-import { FakeHttpClient, FixedWindowRateLimiter, JsonFileStore, Kernel, ManualClock, MemoryLogger, TokenAuth, jsonResponse } from "../dist/kernel/index.js";
+import { FakeHttpClient, FixedWindowRateLimiter, JsonFileStore, Kernel, ManualClock, MemoryLogger, MemoryMailer, TokenAuth, jsonResponse } from "../dist/kernel/index.js";
 import { manifest as platform } from "../dist/modules/khung-nen-tang/module.js";
 import { forScreen, mergeSettings, settingsOf, KEEP_CLEAR } from "../dist/modules/khung-nen-tang/shop-settings.js";
 import { manifest as shipping } from "../dist/modules/van-chuyen/module.js";
@@ -30,7 +30,7 @@ function build() {
   const kernel = new Kernel({
     ports: {
       store: new JsonFileStore(tmp()), logger, clock, http,
-      auth: new TokenAuth({ keys: [{ token: ADMIN, name: "quan-tri", role: ROLE.admin }], clock }), rateLimiter: new FixedWindowRateLimiter(clock)
+      auth: new TokenAuth({ keys: [{ token: ADMIN, name: "quan-tri", role: ROLE.admin }], clock }), rateLimiter: new FixedWindowRateLimiter(clock), mail: new MemoryMailer()
     },
     logger, modules: [platform, shipping], config: { "van-chuyen": { defaultCarrier: "spx" } }
   });

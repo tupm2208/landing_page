@@ -28,10 +28,10 @@ const placementsByStore = new WeakMap<object, Map<string, Placement>>();
  * back instead of a second order holding the stock twice (old site, fix of 01/08/2026). Kept in
  * memory: the orders table has no column for it, and a retry reaches the same process within seconds.
  */
-export async function placeOrderOnce(ctx: OrderContext, rawBody: unknown): Promise<(Placed & { duplicate?: true }) | Refused> {
+export async function placeOrderOnce(ctx: OrderContext, rawBody: unknown, headers: Record<string, string | undefined> = {}): Promise<(Placed & { duplicate?: true }) | Refused> {
   const body = (rawBody && typeof rawBody === "object" ? rawBody : {}) as Record<string, unknown>;
   const key = text(body["clientOrderId"]).slice(0, 64);
-  if (!key) return placeOrder(ctx, rawBody);
+  if (!key) return placeOrder(ctx, rawBody, headers);
 
   const now = ctx.ports.clock.now().getTime();
   let placements = placementsByStore.get(ctx.ports.store);
@@ -47,7 +47,7 @@ export async function placeOrderOnce(ctx: OrderContext, rawBody: unknown): Promi
     if (settled.ok) return { ...settled, duplicate: true };
   }
 
-  const result = placeOrder(ctx, rawBody);
+  const result = placeOrder(ctx, rawBody, headers);
   const mine: Placement = { at: now, result };
   placements.set(key, mine);
   if (placements.size > MAX_REMEMBERED) {

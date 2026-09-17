@@ -1,0 +1,78 @@
+<!doctype html>
+<html lang="vi">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="robots" content="noindex,nofollow,noarchive">
+  <title>Người &amp; máy — Quản trị</title>
+  <link rel="stylesheet" href="/admin.css?v=20260917-bo-cuc-2">
+  <style>
+    .people-shell { max-width: 1100px; margin: 0 auto; padding: 16px; display: grid; gap: 16px; }
+    .people-panel { background: #fff; border: 1px solid #e3e8e5; border-radius: 12px; padding: 16px; }
+    .people-panel h2 { margin: 0 0 12px; font-size: 18px; }
+    .people-form { display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 10px; align-items: end; }
+    .people-form label { display: grid; gap: 4px; font-size: 13px; }
+    .people-table { width: 100%; min-width: 0; border-collapse: collapse; font-size: 14px; }
+    .people-shell { overflow-wrap: anywhere; }
+    @media (max-width: 700px) { .people-table thead { display: none; } .people-table tr { display: grid; border-bottom: 1px solid #eef1ef; padding: 6px 0; } .people-table td { border: 0; padding: 3px 8px; } }
+    .people-table th, .people-table td { text-align: left; padding: 8px; border-bottom: 1px solid #eef1ef; vertical-align: top; }
+    .people-actions { display: flex; gap: 6px; flex-wrap: wrap; }
+    .people-actions button { min-height: 34px; padding: 0 10px; font-size: 13px; }
+    .people-table td { vertical-align: middle; }
+    .people-shell .message { width: auto; margin: 0; }
+    .status-pending { color: #b45309; font-weight: 600; }
+    .status-approved { color: #15803d; font-weight: 600; }
+    .status-blocked { color: #b91c1c; font-weight: 600; }
+  </style>
+</head>
+<body>
+  <header class="admin-topbar">
+    <div>
+      <strong>Người &amp; máy</strong>
+      <span id="who"></span>
+    </div>
+    <div class="topbar-actions">
+      <a class="topbar-link" href="/admin">← Quản trị</a>
+      <a class="topbar-link" href="/warehouse">Kho</a>
+    </div>
+  </header>
+  <main class="people-shell">
+    <section id="message" class="message" hidden></section>
+
+    <section class="people-panel" id="people-panel">
+      <h2>Tài khoản</h2>
+      <p class="muted">Chủ shop quản lý người và máy; nhân viên làm mọi việc bán hàng nhưng không thêm người hay duyệt máy. Đổi mật khẩu hoặc tạm khoá là mọi phiên của người đó kết thúc ngay.</p>
+      <form id="person-form" class="people-form">
+        <label>Tên đăng nhập<input name="dangNhap" required autocomplete="off" placeholder="vd: lan.kho"></label>
+        <label>Tên hiển thị<input name="ten" placeholder="Lan (kho)"></label>
+        <label>Vai<select name="vai"><option value="nhan-vien">Nhân viên</option><option value="chu-shop">Chủ shop</option></select></label>
+        <label>Mật khẩu (>= 8 ký tự)<input name="matKhau" type="password" autocomplete="new-password" placeholder="Bỏ trống = giữ nguyên"></label>
+        <button type="submit">Lưu tài khoản</button>
+      </form>
+      <table class="people-table" style="margin-top:14px">
+        <thead><tr><th>Tên đăng nhập</th><th>Tên</th><th>Vai</th><th>Trạng thái</th><th></th></tr></thead>
+        <tbody id="people-rows"></tbody>
+      </table>
+    </section>
+
+    <section class="people-panel" id="devices-panel">
+      <h2>Máy được vào</h2>
+      <p class="muted">Máy lạ đăng nhập sẽ chờ ở đây. Chặn một máy là phiên trên máy đó kết thúc ngay.</p>
+      <table class="people-table">
+        <thead><tr><th>Người</th><th>Máy</th><th>Lần cuối</th><th>Trạng thái</th><th></th></tr></thead>
+        <tbody id="device-rows"></tbody>
+      </table>
+    </section>
+
+    <section class="people-panel">
+      <h2>Đổi mật khẩu của tôi</h2>
+      <form id="password-form" class="people-form">
+        <label>Mật khẩu hiện tại<input name="currentPassword" type="password" autocomplete="current-password" required></label>
+        <label>Mật khẩu mới<input name="password" type="password" autocomplete="new-password" required minlength="8"></label>
+        <button type="submit">Đổi mật khẩu</button>
+      </form>
+    </section>
+  </main>
+  <script src="/nguoi.js?v=20260917-bo-cuc"></script>
+</body>
+</html>

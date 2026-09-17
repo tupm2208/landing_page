@@ -233,6 +233,7 @@ export type NormalisedItem = {
   description: string;
   seoTitle: string;
   seoDescription: string;
+  seoKeywords: string;
   productUrl: string;
   sourcePageUrl: string;
   detailUrl: string;
@@ -313,6 +314,7 @@ export function normaliseItem(raw: unknown): NormalisedItem | null {
     description: text(m.description || m.introduction || m.productDescription),
     seoTitle: text(m.seoTitle),
     seoDescription: text(m.seoDescription),
+    seoKeywords: text(m.seoKeywords),
     productUrl: text(m.productUrl || m.product_url),
     sourcePageUrl: text(m.sourcePageUrl || m.source_page_url),
     detailUrl: text(m.detailUrl || m.detail_url),
@@ -414,9 +416,12 @@ export type PublicItem = {
   description: string;
   seoTitle: string;
   seoDescription: string;
+  seoKeywords: string;
   partnerCampaign: boolean;
   policy: string;
   readyPolicySummary?: string;
+  /** The product page text the shop wrote in OMI (line intro, features, SEO article). No prices, no stock. */
+  webContent?: Record<string, unknown>;
 };
 
 /**
@@ -462,9 +467,11 @@ export function publicView(item: unknown): PublicItem | null {
     description: text(m.description || m.introduction || m.productDescription),
     seoTitle: text(m.seoTitle),
     seoDescription: text(m.seoDescription),
+    seoKeywords: text(m.seoKeywords),
     partnerCampaign: Boolean(m.partnerCampaign),
     policy: text(m.policy),
-    ...(readyPolicySummary ? { readyPolicySummary } : {})
+    ...(readyPolicySummary ? { readyPolicySummary } : {}),
+    ...(m.webContent && typeof m.webContent === "object" && !Array.isArray(m.webContent) ? { webContent: m.webContent as Record<string, unknown> } : {})
   };
 }
 

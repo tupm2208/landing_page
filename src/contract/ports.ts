@@ -10,7 +10,7 @@
  */
 
 /** Names a manifest may list under `ports`. `bus` and `config` are always handed over separately. */
-export const PORT_NAMES = ["store", "logger", "clock", "http", "bus", "auth", "config", "staticFiles", "mail"] as const;
+export const PORT_NAMES = ["store", "logger", "clock", "http", "bus", "auth", "config", "staticFiles", "mail", "uploads"] as const;
 export type PortName = (typeof PORT_NAMES)[number];
 
 // ---------------------------------------------------------------------------------------------
@@ -46,6 +46,8 @@ export interface HttpResponse {
   status: number;
   json(): Promise<unknown>;
   text(): Promise<string>;
+  /** The raw body — images copied to the shop's own storage (Đ5). Optional: JSON fakes leave it out. */
+  arrayBuffer?(): Promise<ArrayBuffer>;
 }
 
 /**
@@ -211,6 +213,22 @@ export interface Caller {
   features?: string[];
   onDuty?: boolean;
   expiresAt?: number;
+  /** A PERSON logged in to the web admin (via `phien-nguoi`): their account id, login and role. */
+  personId?: string;
+  login?: string;
+  /** `chu-shop` (owner: manages people and devices) or `nhan-vien` (staff). */
+  personRole?: string;
+}
+
+/**
+ * Looks a person's web-admin session up (16/09/2026). The session is a random token in a cookie
+ * whose HASH sits in a table, so logging out, switching a person off or resetting a password ends
+ * the session AT ONCE — which a self-signed cookie cannot do. The composition root plugs the
+ * module that owns the table in; the kernel only asks.
+ */
+export interface PersonSessionResolver {
+  /** The person behind the request's session cookie, or `null`. Never throws. */
+  resolve(request: CredentialSource): Promise<Caller | null>;
 }
 
 /** The request slice the auth port needs: a token comes from a header or the query string. */
@@ -226,8 +244,19 @@ export interface XeonPublicKey {
 }
 
 export interface AuthPort {
-  /** Who is calling. Never throws. */
+  /** Who is calling, by token or ticket only (synchronous). Never throws. */
   identify(request: CredentialSource): Caller;
+  /**
+   * Who is calling, ALSO by a person's session cookie. A token or ticket, when present, wins —
+   * a machine never becomes a person because a cookie happens to ride along. Never throws.
+   */
+  resolve(request: CredentialSource): Promise<Caller>;
+  /** Does this (already resolved) caller reach a route declared with `access`? */
+  callerAllows(caller: Caller, access: Access): boolean;
+  /** Ticket callers lacking the feature are blocked; keys, persons and anonymous callers are not. */
+  callerLacksFeature(caller: Caller, feature: string): boolean;
+  /** Plugs in the lookup of web-admin sessions. Without one, cookies are never read. */
+  usePersonSessions(resolver: PersonSessionResolver): void;
   /** Does this caller reach a route declared with `access`? Admin reaches service routes too. */
   allows(request: CredentialSource, access: Access): boolean;
   /** Ticket callers lacking the feature are blocked; long-lived keys and anonymous callers are not. */
@@ -273,6 +302,23 @@ export interface StaticZone {
 }
 
 export interface StaticFilePort {
+  open(zone: string): StaticZone;
+}
+
+/** A file the upload port kept: its server-chosen name inside the zone. */
+export interface UploadedFile {
+  name: string;
+  type: string;
+  bytes: number;
+}
+
+/**
+ * Files people send (product photos, invoice images). Images only, named by the server, kept
+ * outside the code. A module uses `<its id>/<area>` as the zone, as it does for static files.
+ */
+export interface UploadPort {
+  /** Throws `UploadRefused` (code `qua_lon` / `khong_phai_anh`) for what must not be kept. */
+  saveImage(zone: string, data: Buffer, hint?: string): Promise<UploadedFile>;
   open(zone: string): StaticZone;
 }
 

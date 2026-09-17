@@ -20,6 +20,9 @@ export const SESSION_TABLE = "ctv_phien";
 /** Image download log, one row per download call. */
 export const DOWNLOAD_LOG_TABLE = "ctv_nhat_ky_tai";
 
+/** Default reset-link life when config says nothing: 30 minutes. */
+export const DEFAULT_RESET_MINUTES = 30;
+
 /** The schema steps the kernel runs at startup (idempotent). */
 export const SCHEMA: SchemaStep[] = [
   {
@@ -81,6 +84,14 @@ CREATE TABLE IF NOT EXISTS ctv_nhat_ky_tai (
   PRIMARY KEY (ma),
   KEY idx_ctv_nhat_ky_ctv (ma_ctv, luc)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+`
+  },
+  {
+    name: "002-ctv-dat-lai-mat-khau",
+    tables: [ACCOUNT_TABLE],
+    sql: `
+ALTER TABLE ctv_tai_khoan ADD COLUMN bam_ma_dat_lai VARCHAR(128) NOT NULL DEFAULT '';
+ALTER TABLE ctv_tai_khoan ADD COLUMN dat_lai_het_luc DATETIME NULL;
 `
   }
 ];

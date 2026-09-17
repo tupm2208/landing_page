@@ -22,6 +22,19 @@ export interface ShipmentRecord {
   cod: number;
   /** ISO time it was remembered. */
   luc: string;
+  // ----- Đ3 (17/09/2026): what the last tracking sync learned. All optional: old rows have none. -----
+  /** The order this slip belongs to (a parcel `ORD-1-02` → `ORD-1`). */
+  maDon?: string;
+  trangThai?: string;
+  /** `FULFILLMENT` value derived from the carrier's text. */
+  trangThaiGiao?: string;
+  codDaThu?: number | null;
+  phi?: number | null;
+  capNhatLuc?: string;
+  /** Cancelled at the carrier from OMI. */
+  daHuy?: boolean;
+  /** Đ10: the twin / reseller site whose carrier account created it. Empty = the shop's own. */
+  site?: string;
 }
 
 export interface ShipmentsBook {
@@ -49,6 +62,26 @@ export class ShipmentsDocument {
       const book = current ?? emptyBook();
       return { version: 1, vanDon: { ...(book.vanDon ?? {}), [slipRef]: { ...record, luc } }, updatedAt: luc };
     }, emptyBook());
+  }
+
+  /** Merges a patch into one remembered shipment. Unknown slip = nothing written, `false`. */
+  async patch(slipRef: string, patch: Partial<Omit<ShipmentRecord, "luc">>): Promise<boolean> {
+    let found = false;
+    const at = this.clock.now().toISOString();
+    await this.document().update((current) => {
+      const book = current ?? emptyBook();
+      const old = (book.vanDon ?? {})[slipRef];
+      if (!old) return book;
+      found = true;
+      return { version: 1, vanDon: { ...(book.vanDon ?? {}), [slipRef]: { ...old, ...patch } }, updatedAt: at };
+    }, emptyBook());
+    return found;
+  }
+
+  /** Every remembered shipment, keyed by slip reference. */
+  async all(): Promise<Record<string, ShipmentRecord>> {
+    const book = (await this.document().read(emptyBook())) ?? emptyBook();
+    return book.vanDon ?? {};
   }
 
   /** The remembered shipment for a slip reference, or `null`. */

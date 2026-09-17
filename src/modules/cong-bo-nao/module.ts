@@ -45,7 +45,7 @@ export const manifest = defineModule<Config, Services>({
   requires: ["hang-kho.search", "hang-kho.stock"],
   // Orders and shipping are OPTIONAL: a shop whose package lacks them loses the matching tools
   // from the list and the bot never calls them — the whole bot does not die.
-  requiresOptional: ["hang-kho.count", "hang-kho.read", "khung-nen-tang.content", "don-khach.read", "don-khach.search", "van-chuyen.track"],
+  requiresOptional: ["hang-kho.count", "hang-kho.read", "khung-nen-tang.content", "don-khach.read", "don-khach.search", "van-chuyen.track", "hop-thu.thread", "tro-ly-ai.knowledge"],
 
   routes: [
     {

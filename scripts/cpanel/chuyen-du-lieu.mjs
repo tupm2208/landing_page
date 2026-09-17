@@ -6,6 +6,7 @@
 //   1. Nối ảnh cũ (assets/products, assets/thumbnails) bằng symlink — không chép 7,5 GB.
 //   2. Nạp đơn còn trong data/orders.json + data/manual-orders.json (đơn đã có trong sổ thì bỏ qua).
 //   3. Nạp cộng tác viên (giữ mật khẩu cũ; thiết bị phải duyệt lại).
+//   3b. Nạp đối tác mua hộ từ data/partner-portal.json (giữ mật khẩu cũ, gán dòng đơn, phiếu mua, báo hết).
 //   4. Đẩy danh mục hàng nhà, hàng có sẵn, chiến dịch đối tác, nội dung trang qua API của app
 //      (app phải đang chạy; danh mục hàng nhà bị THAY toàn bộ).
 // Đơn và tài khoản khách trong MySQL cũ KHÔNG chép ở đây — làm bằng phpMyAdmin (INSERT IGNORE ... SELECT).
@@ -116,6 +117,8 @@ function runTool(label, name) {
 
 runTool("2. Đơn còn trong JSON", "import-orders");
 runTool("3. Cộng tác viên", "import-collaborators");
+// Sau đơn: phiếu mua phải khớp vào dòng đơn đã có trong sổ (đơn web cũ chép bằng phpMyAdmin TRƯỚC bước này).
+runTool("3b. Đối tác mua hộ (tài khoản, dòng đơn được giao, phiếu mua, báo hết)", "import-partners");
 
 const catalog = fs.statSync(path.join(oldRoot, "data", "published-products.json"), { throwIfNoEntry: false });
 if (catalog && catalog.size > 16 * 1024 * 1024) {

@@ -6,7 +6,7 @@
  * adapter that could be swapped (Express, serverless) without touching a module.
  */
 
-import type { AuthPort, Clock, DataStore, HttpClient, Logger, Mailer, ModuleBus, StaticFilePort } from "./ports";
+import type { AuthPort, Caller, Clock, DataStore, HttpClient, Logger, Mailer, ModuleBus, StaticFilePort, UploadPort } from "./ports";
 
 /** Headers as the kernel presents them: lower-cased names, one string per header. */
 export type Headers = Record<string, string | undefined>;
@@ -37,6 +37,12 @@ export interface KernelRequest {
   query: Record<string, string>;
   headers: Headers;
   ip: string;
+  /**
+   * Who called a protected route, as the kernel resolved it before the handler ran. Absent on
+   * public routes. Handlers write `caller.name` into history instead of a fixed "quan-tri", so
+   * the log says WHICH person or machine did it.
+   */
+  caller?: Caller;
   json(): Promise<unknown>;
   raw(): Promise<Buffer>;
 }
@@ -80,6 +86,7 @@ export interface ModulePorts {
   auth: AuthPort;
   staticFiles: StaticFilePort;
   mail: Mailer;
+  uploads: UploadPort;
 }
 
 /** Services other modules provide, keyed by module id then service name (`ctx.services["hang-kho"].reserve`). */

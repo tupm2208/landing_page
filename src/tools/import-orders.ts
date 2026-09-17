@@ -25,6 +25,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { ConsoleLogger, openMysqlStore } from "../kernel";
 import { toMysqlDateTime } from "../shared/mysql-time";
+import { orderLineId } from "../shared/order-line-id";
 import { annotateOrderMoneyFields } from "../shared/order-money";
 import { manifest as orders } from "../modules/don-khach/module";
 
@@ -82,6 +83,9 @@ function itemRows(order: Json): Json[] {
   return items.map((m, i) => ({
     order_id: text(order["id"], 64),
     line_no: i + 1,
+    // The stable line id, written now: the schema's backfill already ran, and a line without it
+    // cannot be found by the doors that look lines up (warehouse, purchase, swap).
+    line_id: orderLineId(order["id"], "", m["variantId"], i),
     product_code: text(m["productCode"] || m["code"], 128),
     variant_id: text(m["variantId"], 128),
     product_name: text(m["productName"] || m["name"], 255),

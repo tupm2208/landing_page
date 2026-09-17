@@ -12,5 +12,5 @@
     "rootDir": ".",
     "allowImportingTsExtensions": true
   },
-  "include": ["test/**/*.mts", "test-mysql/**/*.mts"]
+  "include": ["test/**/*.mts", "test-mysql/**/*.mts", "test-ui/**/*.mts"]
 }

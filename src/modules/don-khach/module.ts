@@ -32,7 +32,18 @@
  */
 
 import { ACCESS, ERROR_CODES, EVENTS, defineModule, reply, type ReplyDraft } from "../../contract";
-import { deleteOrder, editOrder, listCustomers, upsertManualOrder } from "./admin-orders";
+import { toMysqlDateTime } from "../../shared/mysql-time";
+import { deleteOrder, editOrder, listCustomers, purgeOrder, restoreOrder, reviewOrderCustomer, rotateLookupSecret, upsertManualOrder } from "./admin-orders";
+import { PROFILE_SCHEMA, deleteProfileAddress, findProfileByPhone, listProfiles, readProfile, saveProfile, saveProfileAddress } from "./customer-profiles";
+import { RETURNS_AND_CONTACTS_SCHEMA, listContacts, listReturns, returnLine, saveContact } from "./returns-and-contacts";
+import { withPurchaseCounts, writeLineState } from "./line-procurement";
+import { swapLine } from "./line-swap";
+import { backfillCostPrices, linesMissingCost, writeCostPrices } from "./cost-price";
+import { endOrder } from "./lifecycle";
+import { availableActions, runQuickAction } from "./quick-actions";
+import { parcelsOf } from "./parcels";
+import { suggestWarehouse, type StockLine } from "./warehouse-hint";
+import { WORKFLOW_TABS, countByTab, operationalStatuses } from "./workflow";
 import type { Config, OrderContext, Services } from "./context";
 import { repositoryOf } from "./context";
 import {
@@ -42,9 +53,11 @@ import { CUSTOMER_SCHEMA, CUSTOMER_TABLES } from "./customer-schema";
 import { cancelByCustomer, editCustomerProfile, lookupOrder, viewByLookupToken } from "./customer-self-service";
 import type { Order, SearchFilter } from "./order-repository";
 import {
-  changeStatus, placeOrder, readByLookupToken, readOrder, recordPayment, recordShipment, searchOrders,
+  changeStatus, placeOrder, readByLookupToken, readOrder, recordPayment, searchOrders,
   type ChangeStatusInput, type PlaceResult, type RecordPaymentInput, type WriteOutcome
 } from "./order-service";
+import type { Parcel } from "./parcels";
+import { onDeliveryState, onShipmentCreated } from "./shipment-state";
 import { placeOrderOnce, placeRefusal } from "./placement-guard";
 import { ORDER_CAP, overview } from "./reports";
 import { ORDER_TABLES, SCHEMA } from "./schema";
@@ -62,12 +75,19 @@ export interface OrderServices {
     changeStatus(input: ChangeStatusInput): Promise<WriteOutcome>;
     readByLookupToken(input: { id?: string; token?: string }): Promise<Order | null>;
     recordPayment(input: RecordPaymentInput): Promise<WriteOutcome>;
+    /** Đ3: the order's parcels (empty = ships as one). */
+    parcels(id: string): Promise<Parcel[]>;
   };
 }
 
 const TEN_MINUTES = 10 * 60 * 1000;
 const NO_STORE = { "Cache-Control": "no-store" };
 const text = (v: unknown): string => String(v ?? "").trim();
+/**
+ * Who did it, for the order history: the person or machine the kernel resolved (`nguoi:lan`,
+ * `quan-tri`, `shop:may-ban-hang`). Before the web admin every change was written as "quan-tri".
+ */
+const actorOf = (request: { caller?: { name?: string } }): string => text(request.caller?.name) || "quan-tri";
 const bodyOf = async (json: () => Promise<unknown>): Promise<Record<string, unknown>> => {
   const b = await json();
   return (b && typeof b === "object" ? b : {}) as Record<string, unknown>;
@@ -100,26 +120,76 @@ export const manifest = defineModule<Config, Services>({
     CUSTOMER_TABLES.customers, CUSTOMER_TABLES.sessions, CUSTOMER_TABLES.changeRequests, CUSTOMER_TABLES.addresses
   ],
   // This module CREATES them on a fresh machine, with exactly the running site's columns.
-  schema: [...SCHEMA, ...CUSTOMER_SCHEMA],
+  schema: [...SCHEMA, ...CUSTOMER_SCHEMA, ...RETURNS_AND_CONTACTS_SCHEMA, ...PROFILE_SCHEMA],
 
   // Money on an order is computed by the Money module (RULE 3: every number through the kit).
   // OPTIONAL because a merchant may not have bought Money — the lookup page still works, it
   // just does not show the paid amount.
   // The transfer prefix comes from page content when the platform module is there (the owner edits it).
-  requiresOptional: ["tien-doi-soat.orderMoney", "khung-nen-tang.moneySettings"],
+  // `mua-ho.purchasedByLine`: how much of each line the partners have bought. Optional — a shop
+  // without Purchasing simply has nothing bought yet, and the per-line buttons all stay open.
+  // `hang-kho.stock`: tồn từng kho, để trả lời "có kho nào gánh được cả đơn không". Tuỳ chọn vì
+  // bài kiểm tra cắm kho giả chỉ có bốn cửa giữ/trả/chốt/hoàn — thiếu nó thì màn hình đơn giản là
+  // không có gợi ý, chứ không gãy.
+  requiresOptional: [
+    "tien-doi-soat.orderMoney", "khung-nen-tang.moneySettings", "ctv.attributionFor",
+    "mua-ho.purchasedByLine", "mua-ho.costByLine", "hang-kho.stock", "hang-kho.restockInto", "khung-nen-tang.settings"
+  ],
 
   events: {
     emits: [EVENTS.orderCreated, EVENTS.orderStatusChanged, EVENTS.orderCancelled],
     listens: {
+      /**
+       * A partner reported buying a line: stamp it, so its warehouse can no longer be swapped.
+       *
+       * The stamp is a convenience, not the rule — the rule is "a line with slips against it is
+       * locked", counted fresh every time (`lineIsLocked`). If this listener never ran, the line
+       * would still lock; the column only saves a round trip and survives a slip being undone
+       * without the shop losing the fact that buying already started.
+       */
+      [EVENTS.purchaseReported]: async (ctx: OrderContext, payload: unknown) => {
+        const p = (payload ?? {}) as Record<string, unknown>;
+        const maDong = text(p["maDong"]);
+        const maDon = text(p["maDon"]);
+        if (maDon === "" || maDong === "") return;
+        await repositoryOf(ctx).updateLine({
+          orderId: maDon, lineId: maDong,
+          patch: { purchase_locked_at: toMysqlDateTime(ctx.ports.clock.now()), procurement_status: "purchased" },
+          at: ctx.ports.clock.now()
+        });
+      },
+      /**
+       * A partner said they cannot get this line. The line leaves their list (no longer pushed to
+       * buy) and is marked `partner_out_of_stock` — which puts the order on the "có vấn đề" tab, so
+       * the shop picks another warehouse. Before 16/09 nobody listened and the line just vanished.
+       */
+      [EVENTS.partnerStockOut]: async (ctx: OrderContext, payload: unknown) => {
+        const p = (payload ?? {}) as Record<string, unknown>;
+        const maDong = text(p["maDong"]);
+        const maDon = text(p["maDon"]);
+        if (maDon === "" || maDong === "") return;
+        await repositoryOf(ctx).updateLine({
+          orderId: maDon, lineId: maDong,
+          patch: { procurement_status: "partner_out_of_stock", purchase_authorized: 0 },
+          at: ctx.ports.clock.now()
+        });
+        ctx.ports.logger.info(`[don-khach] doi tac ${text(p["boi"])} bao het dong ${maDong} cua don ${maDon}`);
+      },
       // A waybill was created (from OMI's Vận đơn screen, or by Purchasing): write the tracking
       // number onto the order. Shipping does not know what an order is and only this module writes
       // the orders table, so the two meet here. The order is NOT marked shipped — see `recordShipment`.
       [EVENTS.shipmentCreated]: async (ctx: OrderContext, payload: unknown) => {
         const p = (payload ?? {}) as Record<string, unknown>;
-        const r = await recordShipment(ctx, { id: text(p["maPhieu"]), trackingCode: text(p["maVanDon"]), carrier: text(p["hang"]) });
+        // Đ3: the slip may be a PARCEL of an order (`ORD-1-02`) — see shipment-state.ts.
+        const r = await onShipmentCreated(ctx, { maPhieu: text(p["maPhieu"]), maVanDon: text(p["maVanDon"]), hang: text(p["hang"]) });
         if (!r.ok && r.reason !== "khong_co_don") {
           ctx.ports.logger.warn(`[don-khach] khong ghi duoc ma van don cho ${text(p["maPhieu"]) || "(khong ro don)"}: ${r.reason}`);
         }
+      },
+      // Đ3: the tracking sync learned a new delivery state.
+      [EVENTS.shipmentStatusChanged]: async (ctx: OrderContext, payload: unknown) => {
+        const p = (payload ?? {}) as Record<string, unknown>;
+        await onDeliveryState(ctx, { maPhieu: text(p["maPhieu"]), trangThaiGiao: text(p["trangThaiGiao"]), trangThai: text(p["trangThai"]) });
       }
     }
   },
@@ -130,7 +200,12 @@ export const manifest = defineModule<Config, Services>({
     "don-khach.place": (ctx: OrderContext, body: unknown) => placeOrder(ctx, body),
     "don-khach.changeStatus": (ctx: OrderContext, input: ChangeStatusInput) => changeStatus(ctx, input),
     "don-khach.readByLookupToken": (ctx: OrderContext, input: { id?: string; token?: string }) => readByLookupToken(ctx, input),
-    "don-khach.recordPayment": (ctx: OrderContext, input: RecordPaymentInput) => recordPayment(ctx, input)
+    "don-khach.recordPayment": (ctx: OrderContext, input: RecordPaymentInput) => recordPayment(ctx, input),
+    // Đ3: the parcels of an order, so Shipping can create one waybill per parcel without knowing the order shape.
+    "don-khach.parcels": async (ctx: OrderContext, id: string) => {
+      const order = await readOrder(ctx, id);
+      return order ? parcelsOf(order) : [];
+    }
   },
 
   routes: [
@@ -141,7 +216,7 @@ export const manifest = defineModule<Config, Services>({
       // Placing an order RESERVES real stock — a flooder could reserve the whole shop. Tight limit.
       rateLimit: { calls: 20, windowMs: TEN_MINUTES },
       handle: async (ctx, request): Promise<ReplyDraft> => {
-        const result = await placeOrderOnce(ctx, await request.json());
+        const result = await placeOrderOnce(ctx, await request.json(), request.headers);
         if (!result.ok) return placeRefusal(result);
         // `paymentReference`: the checkout popup puts it in the QR and "Nội dung CK". Without it the
         // customer paid with the order id while the shop reconciled by TR-... (15/09/2026).
@@ -287,28 +362,180 @@ export const manifest = defineModule<Config, Services>({
     },
     {
       method: "GET", path: "/api/orders", access: ACCESS.admin,
-      handle: async (ctx, request) => ({
-        status: 200, headers: NO_STORE,
-        body: await searchOrders(ctx, {
+      handle: async (ctx, request) => {
+        const tab = text(request.query["nhom"]);
+        const q = text(request.query["q"]).toLowerCase();
+        // The tab and the search box filter AFTER reading. Reading only `limit` orders first cut the
+        // list to the newest 50, so "Đơn mới" showed 0 while its tab counted 10 (17/09/2026). With a
+        // filter, read the same 500 the tab counts read, filter, then keep `limit`.
+        const wanted = Math.min(Math.max(1, Number(request.query["limit"]) || 50), 500);
+        const orders = await searchOrders(ctx, {
           status: request.query["status"] || null,
           phone: request.query["phone"] || null,
           since: request.query["since"] || null,
-          limit: request.query["limit"] ?? null
-        })
-      })
+          limit: tab === "" && q === "" ? (request.query["limit"] ?? null) : 500,
+          // An unknown value reads as "live orders only" — a typo in a query string must not
+          // quietly hand back the bin.
+          deleted: request.query["daXoa"] === "chi" ? "chi" : request.query["daXoa"] === "tat-ca" ? "tat-ca" : "khong",
+          // Đ10 twin site: `site=chinh` = the main site only, `site=<slug>` = that site. Absent = every site.
+          ...(request.query["site"] ? { site: request.query["site"] === "chinh" ? "" : String(request.query["site"]) } : {})
+        });
+        // ONE call for the whole page, not one per order.
+        const bought = (await ctx.services["mua-ho"]?.purchasedByLine()) ?? new Map<string, number>();
+        const withCounts = orders.map((o) => withPurchaseCounts(o, bought));
+        const drawn = withCounts
+          // Which tab it sits in, which buttons it shows, and whether it travels as more than one
+          // parcel — all decided here, once, so no screen works any of it out for itself.
+          .map((o) => ({ ...o, trangThaiQuyTrinh: operationalStatuses(o), viecLamDuoc: availableActions(o), kien: parcelsOf(o) }))
+          // Two filters from Desk's status dropdown (`landingOrderStatusOptions`) that are not tabs:
+          // a line nobody was given to yet, and orders sitting with a partner.
+          .filter((o) => tab === "" || (tab === "chua-gan-kho"
+            ? o.items.some((m) => m.warehouseId === "" && m.partnerId === "")
+            : tab === "o-doi-tac" ? o.items.some((m) => m.partnerId !== "") : o.trangThaiQuyTrinh.includes(tab)))
+          // The search box reads what the seller can SEE on the row — id, customer, phone, product.
+          .filter((o) => q === "" || [o.id, o.customerName, o.phone, o.trackingCode, ...o.items.map((m) => `${m.productCode} ${m.productName}`)]
+            .join(" ").toLowerCase().includes(q))
+          .slice(0, wanted);
+        return { status: 200, headers: NO_STORE, body: drawn };
+      }
+    },
+    {
+      /**
+       * How many orders sit in each tab — a door of its own, on purpose.
+       *
+       * The number on a tab counts EVERY live order, and must not move when the seller types in
+       * the search box or pages through the list. Folding it into the list door would make the
+       * counts follow the filter, which is exactly the thing they are there to escape.
+       *
+       * Under `/api/admin/orders/…` so it can never be mistaken for an order id by the router.
+       */
+      method: "GET", path: "/api/admin/orders/dem-quy-trinh", access: ACCESS.admin,
+      rateLimit: { calls: 240, windowMs: TEN_MINUTES },
+      handle: async (ctx, request) => {
+        const site = request.query["site"] ? { site: request.query["site"] === "chinh" ? "" : String(request.query["site"]) } : {};
+        const [live, binned] = await Promise.all([
+          searchOrders(ctx, { limit: 500, ...site }),
+          searchOrders(ctx, { limit: 500, deleted: "chi", ...site })
+        ]);
+        const bought = (await ctx.services["mua-ho"]?.purchasedByLine()) ?? new Map<string, number>();
+        const counts = countByTab(live.map((o) => withPurchaseCounts(o, bought)));
+        // Desk shows deleted orders inside "Đã hủy" as well (`app.js:8472`).
+        counts["cancelled"] = (counts["cancelled"] ?? 0) + binned.length;
+        return {
+          status: 200, headers: NO_STORE,
+          body: { ok: true, nhom: WORKFLOW_TABS, dem: counts, tongDangHoatDong: live.length, soDaXoa: binned.length }
+        };
+      }
     },
     {
       // A manual order typed by the owner (OMI). Same wire as Sales Desk's sync below.
       method: "POST", path: "/api/orders/thu-cong", access: ACCESS.admin,
       rateLimit: { calls: 120, windowMs: TEN_MINUTES },
-      handle: async (ctx, request) => upsertManualOrder(ctx, { body: await bodyOf(request.json), actor: "quan-tri" })
+      handle: async (ctx, request) => upsertManualOrder(ctx, { body: await bodyOf(request.json), actor: actorOf(request) })
     },
     {
       method: "GET", path: "/api/orders/:maDon", access: ACCESS.admin,
       handle: async (ctx, request) => {
         const order = await readOrder(ctx, request.params["maDon"] ?? "");
-        if (!order) return { status: 404, body: { ok: false, error: ERROR_CODES.notFound } };
-        return { status: 200, headers: NO_STORE, body: order };
+        if (!order) return { status: 404, body: { ok: false, error: ERROR_CODES.notFound, message: "Không có đơn này." } };
+        const bought = (await ctx.services["mua-ho"]?.purchasedByLine()) ?? new Map<string, number>();
+        const full = withPurchaseCounts(order, bought);
+        return {
+          status: 200, headers: NO_STORE,
+          body: { ...full, viecLamDuoc: availableActions(full), kien: parcelsOf(full) }
+        };
+      }
+    },
+    {
+      /**
+       * One door for the buttons in the status cell — Desk's shape: the name of the job travels in
+       * the body, not in the path. Six near-identical doors would drift apart; this one cannot.
+       */
+      /**
+       * "Có kho nào một mình gánh được cả đơn không?" — cửa RIÊNG, hỏi khi mở một đơn.
+       *
+       * Mỗi đơn là N lần hỏi tồn. Nhét vào cửa danh sách là 100 đơn thành 100×N lần hỏi cho một
+       * lần tải trang, và máy chủ của khách nằm trên hosting chung.
+       */
+      method: "GET", path: "/api/orders/:maDon/goi-y-kho", access: ACCESS.admin,
+      rateLimit: { calls: 240, windowMs: TEN_MINUTES },
+      handle: async (ctx, request) => {
+        const order = await readOrder(ctx, request.params["maDon"] ?? "");
+        if (!order) return { status: 404, body: { ok: false, error: ERROR_CODES.notFound, message: "Không có đơn này." } };
+        const stockOf = ctx.services["hang-kho"].stock;
+        if (!stockOf) return { status: 200, headers: NO_STORE, body: { ok: true, goiY: null } };
+
+        const stock = new Map<string, StockLine[]>();
+        const names = new Map<string, string>();
+        // Một lần hỏi cho mỗi MÃ HÀNG, không phải mỗi dòng: một đơn hai đôi cùng mã chỉ hỏi một lần.
+        for (const code of new Set(order.items.map((m) => m.productCode).filter((c) => c !== ""))) {
+          const answer = await stockOf({ code });
+          if (!answer.found) continue;
+          stock.set(code, answer.lines);
+          for (const l of answer.lines) if (!names.has(l.warehouseId)) names.set(l.warehouseId, l.warehouseId);
+        }
+        // Tên kho người đọc được: lấy từ chính dòng đơn nếu đã gán, không hiện mã thô như Desk.
+        for (const m of order.items) if (m.warehouseId !== "" && m.warehouseName !== "") names.set(m.warehouseId, m.warehouseName);
+
+        const hint = suggestWarehouse(
+          order.items.map((m) => ({ maDong: m.maDong, ma: m.productCode, size: m.size, soLuong: m.qty })),
+          stock, names
+        );
+        return { status: 200, headers: NO_STORE, body: { ok: true, goiY: hint } };
+      }
+    },
+    {
+      /**
+       * ĐỔI MẪU một dòng — đối tác báo hết hàng, người bán đổi cho khách sang đôi khác.
+       *
+       * Desk làm bằng chatbot đọc hiểu tiếng Việt và đang tắt vì lỗi chưa sửa. Đây là một nút:
+       * người bán gõ mã mới vào ô tìm hàng rồi bấm. Tồn đi theo món trong cùng một lượt — đó
+       * chính là chỗ Desk bỏ dở ("giữ chỗ tồn vẫn trỏ mã cũ").
+       */
+      method: "POST", path: "/api/orders/:maDon/dong/:maDong/doi-mau", access: ACCESS.admin,
+      rateLimit: { calls: 120, windowMs: TEN_MINUTES },
+      handle: async (ctx, request) => {
+        const body = await bodyOf(request.json);
+        const maDong = decodeURIComponent(request.params["maDong"] ?? "");
+        const bought = (await ctx.services["mua-ho"]?.purchasedByLine())?.get(maDong) ?? 0;
+        return swapLine(ctx, {
+          orderId: request.params["maDon"] ?? "",
+          lineId: maDong,
+          ma: text(body["ma"]),
+          size: text(body["size"]),
+          lyDo: text(body["lyDo"]),
+          daMua: bought,
+          actor: actorOf(request)
+        });
+      }
+    },
+    {
+      // Hai đường KẾT THÚC một đơn — tách khỏi `viec` vì chúng đụng tồn kho, tiền và hãng vận
+      // chuyển, và vì "Hàng hoàn" bắt buộc có lý do.
+      method: "POST", path: "/api/orders/:maDon/ket-thuc", access: ACCESS.admin,
+      rateLimit: { calls: 120, windowMs: TEN_MINUTES },
+      handle: async (ctx, request) => {
+        const body = await bodyOf(request.json);
+        return endOrder(ctx, {
+          id: request.params["maDon"] ?? "",
+          mode: text(body["cach"]),
+          lyDo: text(body["lyDo"]),
+          giuCoc: text(body["giuCoc"]),
+          actor: actorOf(request)
+        });
+      }
+    },
+    {
+      method: "POST", path: "/api/orders/:maDon/viec", access: ACCESS.admin,
+      rateLimit: { calls: 300, windowMs: TEN_MINUTES },
+      handle: async (ctx, request) => {
+        const body = await bodyOf(request.json);
+        return runQuickAction(ctx, {
+          id: request.params["maDon"] ?? "",
+          viec: text(body["viec"]),
+          ghiChu: text(body["ghiChu"]),
+          actor: actorOf(request)
+        });
       }
     },
     {
@@ -316,7 +543,7 @@ export const manifest = defineModule<Config, Services>({
       handle: async (ctx, request) => {
         const body = await bodyOf(request.json);
         const outcome = await changeStatus(ctx, {
-          id: request.params["maDon"] ?? "", status: text(body["status"]), note: text(body["note"]), actor: "quan-tri"
+          id: request.params["maDon"] ?? "", status: text(body["status"]), note: text(body["note"]), actor: actorOf(request)
         });
         return { status: outcome.ok ? 200 : 404, body: outcome.ok ? { ok: true } : { ok: false, viSao: outcome.reason } };
       }
@@ -325,17 +552,156 @@ export const manifest = defineModule<Config, Services>({
       // The owner edits recipient, money, shipping and lines. Lines move stock (old back, new taken).
       method: "PUT", path: "/api/orders/:maDon", access: ACCESS.admin,
       rateLimit: { calls: 300, windowMs: TEN_MINUTES },
-      handle: async (ctx, request) => editOrder(ctx, request.params["maDon"] ?? "", await bodyOf(request.json), "quan-tri")
+      handle: async (ctx, request) => editOrder(ctx, request.params["maDon"] ?? "", await bodyOf(request.json), actorOf(request))
     },
     {
+      // Xoá = move to the bin AND give the stock back. Permanent removal is the door below.
       method: "DELETE", path: "/api/orders/:maDon", access: ACCESS.admin,
       rateLimit: { calls: 120, windowMs: TEN_MINUTES },
-      handle: async (ctx, request) => deleteOrder(ctx, request.params["maDon"] ?? "", "quan-tri")
+      handle: async (ctx, request) => deleteOrder(ctx, request.params["maDon"] ?? "", actorOf(request))
+    },
+    {
+      // The shop's decisions about ONE line: which warehouse buys it, whether it is pushed to the
+      // buying list, what kind of thing it is. How much has already been bought is counted from
+      // Purchasing's slips HERE, at the route — never inside `search`/`read`, which Purchasing calls.
+      method: "PATCH", path: "/api/orders/:maDon/dong/:maDong", access: ACCESS.admin,
+      rateLimit: { calls: 300, windowMs: TEN_MINUTES },
+      handle: async (ctx, request) => {
+        const body = await bodyOf(request.json);
+        const maDong = decodeURIComponent(request.params["maDong"] ?? "");
+        const bought = (await ctx.services["mua-ho"]?.purchasedByLine())?.get(maDong) ?? 0;
+        return writeLineState(ctx, {
+          orderId: request.params["maDon"] ?? "",
+          lineId: maDong,
+          ...(body["maDoiTac"] === undefined ? {} : { maDoiTac: text(body["maDoiTac"]) }),
+          ...(body["maKho"] === undefined ? {} : { maKho: text(body["maKho"]) }),
+          ...(body["tenKho"] === undefined ? {} : { tenKho: text(body["tenKho"]) }),
+          ...(body["dayMua"] === undefined ? {} : { dayMua: body["dayMua"] === true }),
+          ...(body["loaiSanPham"] === undefined ? {} : { loaiSanPham: text(body["loaiSanPham"]) }),
+          daMua: bought,
+          actor: actorOf(request)
+        });
+      }
+    },
+    {
+      method: "POST", path: "/api/orders/:maDon/khoi-phuc", access: ACCESS.admin,
+      rateLimit: { calls: 120, windowMs: TEN_MINUTES },
+      handle: async (ctx, request) => restoreOrder(ctx, request.params["maDon"] ?? "", actorOf(request))
+    },
+    {
+      // Emptying the bin. Refuses an order that is not in it — see `purgeOrder`.
+      method: "DELETE", path: "/api/orders/:maDon/vinh-vien", access: ACCESS.admin,
+      rateLimit: { calls: 60, windowMs: TEN_MINUTES },
+      handle: async (ctx, request) => purgeOrder(ctx, request.params["maDon"] ?? "", actorOf(request))
+    },
+    {
+      /**
+       * GIÁ VỐN — ba cửa cho màn Tài chính.
+       *
+       * Ở đây chứ không ở màn Đơn hàng: giá vốn là việc của người làm sổ, và nó là con số nhạy
+       * cảm nhất trên một dòng đơn — ai đứng sau lưng người bán hàng cũng đọc được nếu nó nằm
+       * trên bảng đơn.
+       */
+      method: "GET", path: "/api/tien/gia-von/thieu", access: ACCESS.admin,
+      rateLimit: { calls: 120, windowMs: TEN_MINUTES },
+      handle: async (ctx, request) => linesMissingCost(ctx, Number(request.query["gioiHan"] ?? 200))
+    },
+    {
+      method: "POST", path: "/api/tien/gia-von", access: ACCESS.admin,
+      rateLimit: { calls: 120, windowMs: TEN_MINUTES },
+      handle: async (ctx, request) => {
+        const body = await bodyOf(request.json);
+        const rows = Array.isArray(body["dong"]) ? body["dong"] : [];
+        return writeCostPrices(ctx, rows.map((x) => {
+          const r = (x ?? {}) as Record<string, unknown>;
+          return { maDon: text(r["maDon"]), maDong: text(r["maDong"]), giaVon: Number(r["giaVon"] ?? 0) };
+        }), actorOf(request));
+      }
+    },
+    {
+      // Bù tự động từ phiếu mua của đối tác. Chạy lại bao nhiêu lần cũng được — chỉ điền chỗ trống.
+      method: "POST", path: "/api/tien/gia-von/bu-tu-phieu", access: ACCESS.admin,
+      rateLimit: { calls: 30, windowMs: TEN_MINUTES },
+      handle: async (ctx, request) => {
+        const body = await bodyOf(request.json);
+        return backfillCostPrices(ctx, { maDon: text(body["maDon"]), actor: actorOf(request) });
+      }
     },
     {
       // Customers as the owner sees them: accounts, and everyone known from orders.
       method: "GET", path: "/api/admin/khach", access: ACCESS.admin,
       handle: async (ctx, request) => listCustomers(ctx, text(request.query["q"]), Number(request.query["limit"] || 200))
+    },
+    // ----- Đ2 (17/09/2026): the owner's customer book, Sales Desk's `customerProfiles` -----
+    {
+      method: "GET", path: "/api/admin/ho-so-khach", access: ACCESS.admin,
+      handle: async (ctx, request) => listProfiles(ctx, text(request.query["q"]), Number(request.query["limit"] || 300))
+    },
+    {
+      // Exact phone — the order editor's "Tìm khách". Its own path so no router can read the word as a profile id.
+      method: "GET", path: "/api/admin/ho-so-khach-theo-so", access: ACCESS.admin,
+      handle: async (ctx, request) => {
+        const row = await findProfileByPhone(ctx, text(request.query["dienThoai"]));
+        return row ? readProfile(ctx, text(row["ma"])) : reply.json({ ok: true, khach: null }, 200, NO_STORE);
+      }
+    },
+    {
+      method: "GET", path: "/api/admin/ho-so-khach/:ma", access: ACCESS.admin,
+      handle: async (ctx, request) => readProfile(ctx, request.params["ma"] ?? "")
+    },
+    {
+      method: "POST", path: "/api/admin/ho-so-khach", access: ACCESS.admin,
+      rateLimit: { calls: 240, windowMs: TEN_MINUTES },
+      handle: async (ctx, request) => saveProfile(ctx, await bodyOf(request.json))
+    },
+    {
+      method: "POST", path: "/api/admin/ho-so-khach/:ma/dia-chi", access: ACCESS.admin,
+      rateLimit: { calls: 240, windowMs: TEN_MINUTES },
+      handle: async (ctx, request) => saveProfileAddress(ctx, request.params["ma"] ?? "", await bodyOf(request.json))
+    },
+    {
+      method: "DELETE", path: "/api/admin/ho-so-khach/:ma/dia-chi/:maDiaChi", access: ACCESS.admin,
+      rateLimit: { calls: 240, windowMs: TEN_MINUTES },
+      handle: async (ctx, request) => deleteProfileAddress(ctx, request.params["ma"] ?? "", request.params["maDiaChi"] ?? "")
+    },
+    {
+      // A web order whose buyer is not in the book yet ("Chờ duyệt khách"): link it to a profile,
+      // or make a new profile from what the order says (Desk `confirm-remote-*-customer`).
+      method: "POST", path: "/api/orders/:maDon/duyet-khach", access: ACCESS.admin,
+      rateLimit: { calls: 240, windowMs: TEN_MINUTES },
+      handle: async (ctx, request) => reviewOrderCustomer(ctx, request.params["maDon"] ?? "", await bodyOf(request.json), actorOf(request))
+    },
+    {
+      // A NEW lookup secret for an order (the old one cannot be shown again: only its hash is kept).
+      method: "POST", path: "/api/orders/:maDon/ma-tra-cuu", access: ACCESS.admin,
+      rateLimit: { calls: 60, windowMs: TEN_MINUTES },
+      handle: async (ctx, request) => rotateLookupSecret(ctx, request.params["maDon"] ?? "", actorOf(request))
+    },
+    {
+      // The contact book of the warehouse page: a customer typed in by hand (see returns-and-contacts.ts).
+      method: "GET", path: "/api/admin/so-khach", access: ACCESS.admin,
+      handle: async (ctx, request) => reply.json({ ok: true, khach: await listContacts(ctx, Number(request.query["limit"] || 500)) }, 200, NO_STORE)
+    },
+    {
+      method: "POST", path: "/api/admin/so-khach", access: ACCESS.admin,
+      rateLimit: { calls: 120, windowMs: TEN_MINUTES },
+      handle: async (ctx, request) => saveContact(ctx, await bodyOf(request.json))
+    },
+    {
+      // A partial return of one line into a chosen warehouse (the warehouse page's "Hoàn").
+      method: "POST", path: "/api/orders/:maDon/dong/:maDong/tra-hang", access: ACCESS.admin,
+      rateLimit: { calls: 120, windowMs: TEN_MINUTES },
+      handle: async (ctx, request) => {
+        const body = await bodyOf(request.json);
+        return returnLine(ctx, {
+          orderId: request.params["maDon"] ?? "", lineId: request.params["maDong"] ?? "",
+          quantity: body["soLuong"], warehouseId: body["maKho"], note: body["ghiChu"], actor: actorOf(request)
+        });
+      }
+    },
+    {
+      method: "GET", path: "/api/admin/hoan-hang", access: ACCESS.admin,
+      handle: async (ctx, request) => reply.json({ ok: true, hoanHang: await listReturns(ctx, Number(request.query["limit"] || 500)) }, 200, NO_STORE)
     },
 
     // ---------------- Sales Desk of TopRun (kept as on the running site) ----------------

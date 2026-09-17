@@ -10,7 +10,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { ROLE, type IncomingRequest } from "../dist/contract/index.js";
-import { FakeHttpClient, FixedWindowRateLimiter, JsonFileStore, Kernel, ManualClock, MemoryLogger, TokenAuth, jsonResponse } from "../dist/kernel/index.js";
+import { FakeHttpClient, FixedWindowRateLimiter, MemoryUploadPort, JsonFileStore, Kernel, ManualClock, MemoryLogger, TokenAuth, jsonResponse } from "../dist/kernel/index.js";
 import { manifest as inbox, type Config } from "../dist/modules/hop-thu/module.js";
 
 const ADMIN = "ma-quan-tri-thu";
@@ -26,7 +26,7 @@ function build() {
   const config: Config = { verifyToken: "", appSecret: "", pageToken: "", brain: { address: "https://xeon.test", token: "ma-nhan-tin", tenant: "toprun" } };
   const kernel = new Kernel({
     ports: {
-      store, logger, clock, http, rateLimiter: new FixedWindowRateLimiter(clock),
+      store, logger, clock, http, rateLimiter: new FixedWindowRateLimiter(clock), uploads: new MemoryUploadPort(),
       auth: new TokenAuth({ keys: [{ token: ADMIN, name: "quan-tri", role: ROLE.admin }, { token: SERVICE, name: "xeon", role: ROLE.service }], clock })
     },
     logger,

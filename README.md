@@ -48,7 +48,7 @@ tải lên bằng File Manager, không đặt `PORT`.
 | Giao kèo | Cổng (`DataStore`, `AuthPort`, `HttpClient`…), request/reply, tờ khai module + bộ kiểm (`ManifestValidator`), mã lỗi, tên sự kiện | `src/contract` |
 | Khung | `Kernel` (nạp module, phát cổng, chuỗi canh cửa: khớp đường → chặn gọi dồn → quyền → mảnh → hạn thân), `Router`, `EventBus`, HTTP adapter, luật kiến trúc, adapter cổng thật + giả | `src/kernel` |
 | Dùng chung | Bọc kiểu lên `../chung/ve-may.js` và `../chung/order-money-kit.js`; giờ MySQL; cookie phiên | `src/shared` |
-| Module | 11 module, mỗi cái một thư mục với `module.ts` là tờ khai; `index.ts` là sổ đăng ký | `src/modules` |
+| Module | 13 module, mỗi cái một thư mục với `module.ts` là tờ khai; `index.ts` là sổ đăng ký | `src/modules` |
 | Composition root | `app.ts` đọc env, cắm adapter, dựng kernel, chạy lược đồ, đăng ký Xeon; `main.ts` nghe cổng | `src` |
 | Công cụ | Bộ cài, nạp danh mục / đơn / cộng tác viên thật (chỉ đọc máy cũ, chỉ ghi 3307) | `src/tools` |
 | Mặt web cũ | Tệp trình duyệt/PHP chép nguyên từ bản đang chạy, module Gian hàng trả qua cổng tệp tĩnh | `modules/<id>/goc` |
@@ -70,10 +70,18 @@ module import giá trị từ module khác, import khung, hay tự mở `fs`/`ht
 | `ctv` | gian-hang | Cộng tác viên: mật khẩu PBKDF2 (giữ nguyên định dạng cũ), thiết bị duyệt, tải ảnh |
 | `thong-ke` | gian-hang | Đếm lượt xem web: cửa công khai cho trình duyệt bắn sự kiện, báo cáo cho Desk/OMI; bảng `analytics_events` kế thừa từ bản đang chạy |
 | `khung-nen-tang` | — | Nội dung trang, phiên bản đang chạy, đăng ký Xeon, màn "landing này là shop nào" |
+| `xuong-noi-dung` | content | Content 5 bước, luật soạn bài, bộ não viết hộ |
+| `quan-tri` | — | Quản trị web `/admin` (trang cũ + lớp dịch `admin-api.js`), tài khoản người, phiên, máy được vào, `/admin/nguoi` |
+
+Trang web nội bộ (chỉ mở khi đã đăng nhập quản trị): `/admin`, `/admin/nguoi`, `/warehouse` (kho: sổ biến động,
+phiếu nhập, chuyển kho, hoàn hàng — `hang-kho/goc` + `warehouse-api.js`). Ảnh người dùng tải lên nằm ở
+`<THU_MUC_DU_LIEU>/tai-len` (hoặc `THU_MUC_TAI_LEN`), không nằm trong mã.
 
 ## Test
 
-`test/*.test.mts` (không cần MySQL) và `test-mysql/*.test.mts` (cần 3307), TypeScript chạy
+`test/*.test.mts` (không cần MySQL), `test-mysql/*.test.mts` (cần 3307) và `test-ui/*.test.mts`
+(`npm run test:ui`: dựng landing thật trên cơ sở dữ liệu tạm ở 3307, nạp đơn/đối tác/CTV thật từ
+`D:\projects\toprunvn\data`, rồi điều khiển Chrome đăng nhập và bấm từng màn), TypeScript chạy
 thẳng trên Node 24, import từ `dist/`. Mỗi luật kiến trúc có một bài "phá thì gãy"; danh sách
 cửa công khai được ghim ở `test/route-table.test.mts` — mở thêm một cửa là bài đó đỏ, cố ý.
 

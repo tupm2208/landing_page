@@ -14,6 +14,7 @@ import {
   SHOP_SETTINGS_DOCUMENT, forScreen, mergeSettings, settingsOf, type ShopSettingsDocument
 } from "./shop-settings";
 import { readXeonRegistration, registerWithXeon, saveXeonRegistration, summariseXeonRegistration } from "./xeon-registration";
+import { xeonOutdated } from "../../shared/xeon-call";
 
 /** Document name — on-disk contract. */
 export const PAGE_CONTENT_DOCUMENT = "khung-nen-tang-noi-dung";
@@ -41,6 +42,13 @@ export interface PlatformServices {
   moneySettings(): Promise<MoneySettings>;
   xeon(): Promise<XeonInboxTarget | null>;
   /**
+   * Registers again with the stored key when Xeon refused the inbox token (401): Xeon keeps ONE
+   * token per merchant and a later registration elsewhere kills ours. Spaced out (see
+   * `RENEWAL_MIN_GAP_MS`) so two landings on one key cannot take the token from each other in a
+   * tight loop. Returns the fresh target, or `null` when too soon / not registered / refused.
+   */
+  renewXeon(): Promise<XeonInboxTarget | null>;
+  /**
    * The shop's own keys and addresses — what used to be Sales Desk's `.env`. Secrets in the
    * clear: this is a module-to-module service, never an HTTP reply (see `shop-settings.ts`).
    */
@@ -48,6 +56,27 @@ export interface PlatformServices {
 }
 
 type Ctx = ModuleContext<Config>;
+
+/** Minimum time between two automatic re-registrations. */
+export const RENEWAL_MIN_GAP_MS = 60 * 1000;
+/** Last automatic re-registration per store — per landing, not per process (tests run many kernels). */
+const lastRenewal = new WeakMap<object, number>();
+
+/** Registers with Xeon (fields from `overrides`, else the stored registration, else config), stores it and hands the key to auth. THROWS on refusal. */
+async function renewRegistration(ctx: Ctx, overrides: { diaChiXeon?: string; key?: string; diaChiLanding?: string } = {}) {
+  const previous = await readXeonRegistration(ctx.ports.store);
+  const fresh = await registerWithXeon({
+    http: ctx.ports.http,
+    xeonAddress: overrides.diaChiXeon || previous?.diaChiXeon || ctx.config.xeonAddress,
+    key: overrides.key || previous?.key || "",
+    landingAddress: overrides.diaChiLanding || previous?.diaChiLanding || ctx.config.landingAddress
+  });
+  const now = ctx.ports.clock.now();
+  await saveXeonRegistration(ctx.ports.store, fresh, now);
+  ctx.ports.auth.setXeon({ keyId: fresh.keyId, publicKeyPem: fresh.khoaCongPem, shop: fresh.shop });
+  ctx.ports.logger.info(`[khung-nen-tang] dang ky voi Xeon ${fresh.diaChiXeon}: shop "${fresh.shop}"`);
+  return { fresh, now };
+}
 
 async function readPageContent(ctx: Ctx): Promise<PageContent> {
   const stored = await ctx.ports.store.document<Partial<PageContent>>(PAGE_CONTENT_DOCUMENT).read(null);
@@ -78,7 +107,7 @@ export const manifest = defineModule<Config>({
   tier: "khung",
   runsOn: "server-khach",
   version: "0.3.0",
-  ports: ["auth", "logger", "config", "store", "clock", "http"],
+  ports: ["auth", "logger", "config", "store", "clock", "http", "mail"],
 
   provides: {
     // The money module reads deposit percent / shipping fee / transfer prefix from here, so the
@@ -89,6 +118,21 @@ export const manifest = defineModule<Config>({
     "khung-nen-tang.xeon": async (ctx): Promise<XeonInboxTarget | null> => {
       const doc = await readXeonRegistration(ctx.ports.store);
       return doc ? { shop: doc.shop, diaChiXeon: doc.diaChiXeon, maNhanTin: doc.maNhanTin } : null;
+    },
+    "khung-nen-tang.renewXeon": async (ctx): Promise<XeonInboxTarget | null> => {
+      if (!(await readXeonRegistration(ctx.ports.store))?.key) return null;
+      const now = ctx.ports.clock.now().getTime();
+      const last = lastRenewal.get(ctx.ports.store);
+      if (last !== undefined && now - last < RENEWAL_MIN_GAP_MS) return null;
+      lastRenewal.set(ctx.ports.store, now);
+      try {
+        const { fresh } = await renewRegistration(ctx);
+        ctx.ports.logger.warn("[khung-nen-tang] Xeon tu choi ma nhan tin — da dang ky lai. Neu lap lai: co landing khac dang dung cung key.");
+        return { shop: fresh.shop, diaChiXeon: fresh.diaChiXeon, maNhanTin: fresh.maNhanTin };
+      } catch (e) {
+        ctx.ports.logger.warn(`[khung-nen-tang] dang ky lai Xeon that bai: ${e instanceof Error ? e.message : String(e)}`);
+        return null;
+      }
     },
     // Shipping reads its carrier keys here, Money its Telegram bot: one place the owner edits in
     // OMI, no `.env` on the shop's server to hand-edit and no redeploy to pick a key up.
@@ -114,18 +158,8 @@ export const manifest = defineModule<Config>({
       bodyLimit: 4 * 1024,
       handle: async (ctx, request) => {
         const body = asObject(await request.json()) ?? {};
-        const previous = await readXeonRegistration(ctx.ports.store);
         try {
-          const fresh = await registerWithXeon({
-            http: ctx.ports.http,
-            xeonAddress: text(body["diaChiXeon"]) || previous?.diaChiXeon || ctx.config.xeonAddress,
-            key: text(body["key"]) || previous?.key || "",
-            landingAddress: text(body["diaChiLanding"]) || previous?.diaChiLanding || ctx.config.landingAddress
-          });
-          const now = ctx.ports.clock.now();
-          await saveXeonRegistration(ctx.ports.store, fresh, now);
-          ctx.ports.auth.setXeon({ keyId: fresh.keyId, publicKeyPem: fresh.khoaCongPem, shop: fresh.shop });
-          ctx.ports.logger.info(`[khung-nen-tang] dang ky voi Xeon ${fresh.diaChiXeon}: shop "${fresh.shop}"`);
+          const { fresh, now } = await renewRegistration(ctx, { diaChiXeon: text(body["diaChiXeon"]), key: text(body["key"]), diaChiLanding: text(body["diaChiLanding"]) });
           return reply.json({ ok: true, xeon: summariseXeonRegistration({ ...fresh, dangKyLuc: now.toISOString() }) }, 200, NO_STORE);
         } catch (e) {
           const message = e instanceof Error ? e.message : String(e);
@@ -184,6 +218,60 @@ export const manifest = defineModule<Config>({
           ctx.ports.logger.info(`[khung-nen-tang] cấu hình shop đã đổi: ${changed.join(", ")}`);
         }
         return reply.json({ ok: true, daDoi: changed, nhom: forScreen(next) }, 200, NO_STORE);
+      }
+    },
+    {
+      // Đ9 VIDEO STUDIO: OMI → here → Xeon `/video/ve` with the private inbox token. The answer is the
+      // address OMI opens in its own window, carrying a five-minute one-use ticket signed by Xeon.
+      method: "POST", path: "/api/admin/video-studio/ve", access: ACCESS.admin,
+      rateLimit: { calls: 30, windowMs: TEN_MINUTES },
+      bodyLimit: 1024,
+      handle: async (ctx) => {
+        const doc = await readXeonRegistration(ctx.ports.store);
+        if (!doc?.diaChiXeon || !doc.maNhanTin) return reply.json({ ok: false, error: "chua_dang_ky_xeon", message: "Landing chưa đăng ký với Xeon — Video Studio chạy trên Xeon nên chưa mở được." }, 503, NO_STORE);
+        try {
+          const response = await ctx.ports.http.fetch(`${doc.diaChiXeon.replace(/\/+$/, "")}/video/ve`, {
+            method: "POST", timeoutMs: 15_000, headers: { "Content-Type": "application/json", Authorization: `Bearer ${doc.maNhanTin}` }, body: "{}"
+          });
+          const answer = asObject(await response.json().catch(() => ({}))) ?? {};
+          const url = text(answer["diaChi"]);
+          if (response.status === 404 && !text(answer["message"])) {
+            return reply.json({ ok: false, error: "xeon_ban_cu", message: xeonOutdated("/video/ve") }, 502, NO_STORE);
+          }
+          if (!response.ok || !/^https?:\/\/[^\s]+\/video-studio\/\?ve=VS1\./.test(url)) {
+            return reply.json({ ok: false, error: String(answer["error"] ?? "xeon_tu_choi"), message: String(answer["message"] ?? `Xeon không cấp vé Video Studio (HTTP ${response.status}).`) }, response.status === 503 ? 503 : 502, NO_STORE);
+          }
+          return reply.json({ ok: true, diaChi: url, hetLuc: text(answer["hetLuc"]) }, 200, NO_STORE);
+        } catch (e) {
+          return reply.json({ ok: false, error: "khong_goi_duoc_xeon", message: `Không gọi được Xeon: ${e instanceof Error ? e.message : String(e)}` }, 502, NO_STORE);
+        }
+      }
+    },
+    {
+      // Đ9 "Gửi thử" next to the shop's SMTP settings: one e-mail to the address typed, through the SAME
+      // mail port customers' e-mails use — so a pass here means order confirmations will go out too.
+      method: "POST", path: "/api/admin/cau-hinh/thu-email", access: ACCESS.admin,
+      rateLimit: { calls: 10, windowMs: TEN_MINUTES },
+      bodyLimit: 4 * 1024,
+      handle: async (ctx, request) => {
+        const body = asObject(await request.json()) ?? {};
+        const to = text(body["den"]);
+        if (!/^[^\s@]{1,64}@[^\s@]{1,190}\.[a-z]{2,}$/i.test(to)) return reply.json({ ok: false, error: "email_khong_hop_le", message: "Nhập một địa chỉ email nhận thư thử." }, 400, NO_STORE);
+        const settings = await readShopSettings(ctx);
+        const source = settings["smtp_host"] && settings["smtp_user"] && settings["smtp_pass"] ? "shop" : "env";
+        try {
+          const r = await ctx.ports.mail.send({
+            to, subject: "Thư thử cấu hình SMTP",
+            text: `Landing gửi thư thử lúc ${ctx.ports.clock.now().toISOString()}. Nhận được thư này là email xác nhận đơn và quên mật khẩu sẽ gửi được.`
+          });
+          const message = r.ok ? `Đã gửi thư thử tới ${to} (SMTP ${source === "shop" ? "của shop" : "trong .env"}).`
+            : r.configured ? "SMTP từ chối gửi — kiểm lại host, cổng, tài khoản, mật khẩu (Gmail cần mật khẩu ứng dụng)." : "Chưa cấu hình SMTP — điền host, user, pass rồi lưu.";
+          ctx.ports.logger.info(`[khung-nen-tang] thu email: ${r.ok ? "gui duoc" : r.reason ?? "hong"} (smtp ${source})`);
+          return reply.json({ ok: r.ok, nguon: source, daCauHinh: r.configured, message }, r.ok ? 200 : 502, NO_STORE);
+        } catch (e) {
+          if (e instanceof Error && e.name === "TrialModeBlockedError") return reply.json({ ok: false, nguon: source, error: "che_do_thu", message: "Landing đang chạy CHẾ ĐỘ THỬ nên không gửi email thật. Bật CHE_DO_THAT=1 rồi thử lại." }, 409, NO_STORE);
+          throw e;
+        }
       }
     },
     {

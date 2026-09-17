@@ -82,6 +82,22 @@ export interface RestockInput {
 
 export type RestockResult = { ok: true } | { ok: false; reason: string };
 
+/** Một dòng tồn như Hàng hoá trả về. Tên trường là của Hàng hoá. */
+export interface StockLine {
+  variantId: string;
+  size: string;
+  quantity: number;
+  price: number;
+  warehouseId: string;
+  /** Thứ tự ưu tiên kho: nhỏ hơn giao trước. */
+  rank: number;
+}
+
+/** Câu trả lời của `hang-kho.stock`. */
+export type StockAnswer =
+  | { found: false; available: false; reason: string; lines: StockLine[] }
+  | { found: true; available: boolean; code: string; name: string; lines: StockLine[] };
+
 /** The slice of page content's money settings this module reads (the transfer prefix). */
 export interface PageMoneySettings {
   tienToChuyenKhoan?: string | null;
@@ -94,12 +110,38 @@ export interface Services {
     release(input: ReleaseInput): Promise<ReleaseResult>;
     commit(input: CommitInput): Promise<CommitResult>;
     restock(input: RestockInput): Promise<RestockResult>;
+    /**
+     * Tồn của một mã hàng, cho gợi ý gom kho. Tuỳ chọn: bài kiểm tra cắm kho giả chỉ có bốn cửa
+     * giữ/trả/chốt/hoàn, và thiếu nó thì màn hình đơn giản là không có gợi ý.
+     */
+    stock?(input: { code?: string; size?: string }): Promise<StockAnswer>;
+    /** Returned pairs into a chosen warehouse, written in the stock book (warehouse page). Optional. */
+    restockInto?(input: { code: string; size: string; warehouseId: string; quantity: number; note?: string; actor?: string; reference?: string }):
+      Promise<{ ok: true; after: number } | { ok: false; reason: string; message: string }>;
   };
   "tien-doi-soat"?: {
     orderMoney(orderId: string): Promise<OrderMoneySummary | null>;
   };
   "khung-nen-tang"?: {
     moneySettings(): Promise<PageMoneySettings>;
+    /** Đ10: the shop's settings — the twin site's slug (`site_doi_ma`) and address (`site_doi_dia_chi`). Optional. */
+    settings?(): Promise<Record<string, string>>;
+  };
+  /**
+   * How much each order line has been bought. OPTIONAL: a shop may not have bought Purchasing —
+   * then every line counts as unbought, nothing is locked, and the per-line buttons still work.
+   *
+   * ONLY the routes call this, never `search`/`read`: Purchasing itself calls `don-khach.search`,
+   * so calling back from there would close a loop the kernel cannot see.
+   */
+  /** Collaborators: who brought an order in (session or referral cookie). Optional: a shop may have none. */
+  "ctv"?: {
+    attributionFor(headers: Record<string, string | undefined>): Promise<{ maCtv: string; maGioiThieu: string; nguon: string } | null>;
+  };
+  "mua-ho"?: {
+    purchasedByLine(partnerId?: string): Promise<Map<string, number>>;
+    /** Giá vốn thật của từng dòng, bình quân theo số đôi — để bù giá vốn cho đơn cũ. */
+    costByLine?(partnerId?: string): Promise<Map<string, number>>;
   };
 }
 

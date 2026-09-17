@@ -49,9 +49,26 @@ export interface QuickEditPatch {
   listPrice?: number | undefined;
   discountPercent?: number | undefined;
   status?: string | undefined;
+  /** The name shown on the web (the running site's admin edited it inline). */
+  name?: string | undefined;
+  /**
+   * The sale price typed on the fast screen. Since Đ5 it is the MANUAL price (Desk's rule): it sells
+   * while it is not below the source price; "về giá nguồn" clears it.
+   */
+  price?: number | undefined;
+  brand?: string | undefined;
+  productKind?: string | undefined;
+  category?: string | undefined;
+  gender?: string | undefined;
 }
 
 /** What the bulk edit did: the codes really written, and the ones nothing matched. */
+/** `hang.tim` filters: only items with a size / a source still in stock. */
+export interface SearchFilter {
+  size?: string;
+  source?: string;
+}
+
 export interface QuickEditResult {
   changed: string[];
   missing: string[];
@@ -68,12 +85,14 @@ export type ItemRow = {
   duong_dan: string; gia_niem_yet: number; phan_tram_giam: number; trang_thai: string; vi_sao_an: string;
   anh_dai_dien: string; anh_lon: string; anh_khac_json: string; mo_ta_ngan: string; mo_ta: string;
   uu_tien_kho_json: string; nguon: Source; ten_nguon: string; sua_luc: string;
+  nhom_hang: string; seo_tieu_de: string; seo_mo_ta: string; seo_tu_khoa: string; chinh_sach: string; gia_nguon: number;
 };
 
 /** A row of `hang_kho_bien_the` as written by this module. */
 export type VariantRow = {
   ma_bien_the: string; ma_mon: string; size: string; ma_kho: string; ton: number; gia: number; gia_niem_yet: number;
   thu_tu_kho: number; nguon: Source; ma_chien_dich: string; ma_dong_doi_tac: string; sua_luc: string;
+  ma_sku: string; gia_von: number; gia_nguon: number;
 };
 
 /** A normalised item -> its item row plus one variant row per size line (lines without a size dropped). */
@@ -99,24 +118,36 @@ export function itemToRows(item: NormalisedItem, source: Source, at: string): { 
     uu_tien_kho_json: JSON.stringify(stringList(item.warehousePriorityIds)),
     nguon: source,
     ten_nguon: item.sourceName || "",
-    sua_luc: at
+    sua_luc: at,
+    nhom_hang: item.division || "",
+    seo_tieu_de: (item.seoTitle || "").slice(0, 255),
+    seo_mo_ta: (item.seoDescription || "").slice(0, 500),
+    seo_tu_khoa: (item.seoKeywords || "").slice(0, 500),
+    chinh_sach: item.policy || "",
+    gia_nguon: item.price || 0
   };
 
   const variantRows: VariantRow[] = item.sizes
-    .map((line): VariantRow => ({
-      ma_bien_the: variantId(item, line),
-      ma_mon: item.code,
-      size: String(line.size || "").trim(),
-      ma_kho: String(line.warehouseId || "").trim() || warehouseKey(line.warehouse || line.warehouseName),
-      ton: Math.max(0, Math.trunc(Number(line.qty ?? line.available ?? line.stockQty ?? 0))),
-      gia: firstPositive(line.suggestedPrice, line.salePrice, line.sellPrice, line.price),
-      gia_niem_yet: firstPositive(line.listPrice, line.originalPrice, item.listPrice),
-      thu_tu_kho: Math.min(warehouseRank(item, line), 2147483647),
-      nguon: source,
-      ma_chien_dich: String(line.campaignId || item.campaignId || "").trim(),
-      ma_dong_doi_tac: String(line.partnerCampaignLineId || "").trim(),
-      sua_luc: at
-    }))
+    .map((line): VariantRow => {
+      const price = firstPositive(line.suggestedPrice, line.salePrice, line.sellPrice, line.price);
+      return {
+        ma_bien_the: variantId(item, line),
+        ma_mon: item.code,
+        size: String(line.size || "").trim(),
+        ma_kho: String(line.warehouseId || "").trim() || warehouseKey(line.warehouse || line.warehouseName),
+        ton: Math.max(0, Math.trunc(Number(line.qty ?? line.available ?? line.stockQty ?? 0))),
+        gia: price,
+        gia_niem_yet: firstPositive(line.listPrice, line.originalPrice, item.listPrice),
+        thu_tu_kho: Math.min(warehouseRank(item, line), 2147483647),
+        nguon: source,
+        ma_chien_dich: String(line.campaignId || item.campaignId || "").trim(),
+        ma_dong_doi_tac: String(line.partnerCampaignLineId || "").trim(),
+        sua_luc: at,
+        ma_sku: String(line.sku || line.variantSku || "").trim().slice(0, 128),
+        gia_von: firstPositive(line.costPrice, line.cost),
+        gia_nguon: price
+      };
+    })
     .filter((row) => row.size !== "");
 
   return { itemRow, variantRows };
@@ -137,7 +168,16 @@ export type StoredSize = {
   nguon: string;
   stockMode?: "ready";
   partnerCampaignLineId: string;
+  /** SKU of this size (Desk "Mã SKU biến thể"). */
+  sku: string;
+  /** Cost price of this size — house view only, `publicSize` never copies it. */
+  costPrice: number;
+  /** The price the source wrote; `price` differs from it while a manual price sells. */
+  sourcePrice: number;
 };
+
+/** How the selling price was decided (Desk `priceMode`). Values are wire. */
+export type PriceMode = "source" | "manual" | "source_higher_than_manual";
 
 /** An item read back from the tables — the house view (`publicView` strips it for the web). */
 export type StoredItem = {
@@ -167,6 +207,18 @@ export type StoredItem = {
   suggestedPrice: number;
   salePrice: number;
   sizes: StoredSize[];
+  division: string;
+  seoTitle: string;
+  seoDescription: string;
+  seoKeywords: string;
+  policy: string;
+  /** The product page text written in OMI (`PUT /api/hang-kho/mon/:ma/noi-dung-web`). */
+  webContent: Record<string, unknown>;
+  manualPrice: number;
+  sourcePrice: number;
+  priceMode: PriceMode;
+  priceManual: boolean;
+  priceWarning: string;
 };
 
 /** Table rows -> the item shape `publicView` and the services read. */
@@ -177,6 +229,10 @@ export function rowsToItem(itemRow: Row, variantRows: Row[], reserved: ReadonlyM
   const price = inStock.length ? Math.min(...inStock) : (any.length ? Math.min(...any) : 0);
   const discountPercent = Number(itemRow["phan_tram_giam"] || 0);
   const source = String(itemRow["nguon"] || "");
+  const manualPrice = Number(itemRow["gia_tay"] || 0);
+  const sourcePrice = Number(itemRow["gia_nguon"] || 0);
+  const priceMode: PriceMode = manualPrice <= 0 ? "source" : sourcePrice > manualPrice ? "source_higher_than_manual" : "manual";
+  const webContent = parseJson(itemRow["noi_dung_web_json"], {});
   return {
     code: String(itemRow["ma"]),
     originalCode: String(itemRow["ma_goc"] || itemRow["ma"]),
@@ -203,6 +259,17 @@ export function rowsToItem(itemRow: Row, variantRows: Row[], reserved: ReadonlyM
     price,
     suggestedPrice: price,
     salePrice: price,
+    division: String(itemRow["nhom_hang"] || ""),
+    seoTitle: String(itemRow["seo_tieu_de"] || ""),
+    seoDescription: String(itemRow["seo_mo_ta"] || ""),
+    seoKeywords: String(itemRow["seo_tu_khoa"] || ""),
+    policy: String(itemRow["chinh_sach"] || ""),
+    webContent: webContent && typeof webContent === "object" && !Array.isArray(webContent) ? (webContent as Record<string, unknown>) : {},
+    manualPrice,
+    sourcePrice,
+    priceMode,
+    priceManual: manualPrice > 0,
+    priceWarning: priceMode === "source_higher_than_manual" ? `Giá nguồn ${sourcePrice} cao hơn giá tay ${manualPrice}.` : "",
     sizes: variantRows.map((v): StoredSize => {
       const id = String(v["ma_bien_the"]);
       const lineSource = String(v["nguon"] || "");
@@ -217,7 +284,10 @@ export function rowsToItem(itemRow: Row, variantRows: Row[], reserved: ReadonlyM
         selectionRank: Number(v["thu_tu_kho"] ?? 2147483647),
         nguon: lineSource,
         ...(lineSource === SOURCE.ready ? { stockMode: "ready" as const } : {}),
-        partnerCampaignLineId: String(v["ma_dong_doi_tac"] || "")
+        partnerCampaignLineId: String(v["ma_dong_doi_tac"] || ""),
+        sku: String(v["ma_sku"] || ""),
+        costPrice: Number(v["gia_von"] || 0),
+        sourcePrice: Number(v["gia_nguon"] || 0) || Number(v["gia"] || 0)
       };
     })
   };
@@ -383,8 +453,11 @@ export class CatalogRepository {
    * Items by code or name — one statement, never the whole catalogue.
    * Exact code first, then code prefix, then name containing the query.
    */
-  async searchItems(query: unknown, limit = 10): Promise<StoredItem[]> {
+  async searchItems(query: unknown, limit = 10, filter: SearchFilter = {}): Promise<StoredItem[]> {
     const text = String(query || "").trim();
+    const size = String(filter.size || "").trim();
+    const source = String(filter.source || "").trim();
+    if (size !== "" || source !== "") return this.searchFiltered(text, limit, size, source);
     // No query = the whole catalogue (the storefront needs it). Still capped — but the cap must
     // SAY when it is hit: on 12/09/2026 the real catalogue (house + ready + campaign) reached
     // 5,154 items, hit the old cap of 5,000 and 154 items quietly never reached the web. Exactly
@@ -422,6 +495,98 @@ export class CatalogRepository {
       out.push(rowsToItem(itemRow, variants, reserved));
     }
     return out;
+  }
+
+  /**
+   * Search narrowed to items that HAVE a size / a source in stock (Đ5, OMI `hang.tim`). One
+   * statement: the size and source test is an EXISTS on the variant table, the text test the same
+   * scoring as `searchItems`. A size is compared as written ("42", "M") — the catalogue stores EU sizes.
+   */
+  private async searchFiltered(text: string, limit: number, size: string, source: string): Promise<StoredItem[]> {
+    const n = Math.min(Math.max(1, Number(limit) || 50), 1000);
+    const exists = `EXISTS (SELECT 1 FROM ${TABLES.variants} b WHERE b.ma_mon = m.ma AND b.ton > 0
+      AND (? = '' OR LOWER(b.size) = LOWER(?)) AND (? = '' OR b.nguon = ?))`;
+    const rows = await this.store.rows(
+      `SELECT m.*,
+              CASE WHEN ? = '' THEN 1
+                   WHEN LOWER(m.ma) = LOWER(?) THEN 100
+                   WHEN LOWER(m.ma) LIKE CONCAT(LOWER(?), '%') THEN 80
+                   WHEN LOWER(m.ten) LIKE CONCAT('%', LOWER(?), '%') THEN 60
+                   WHEN LOWER(m.hang) LIKE CONCAT('%', LOWER(?), '%') THEN 40
+                   ELSE 0 END AS diem
+         FROM ${TABLES.items} m
+        WHERE ${exists}
+       HAVING diem > 0
+        ORDER BY diem DESC, m.ten ASC
+        LIMIT ?`,
+      [text, text, text, text, text, size, size, source, source, n]
+    );
+    const blocked = await this.blockedCodes();
+    const reserved = await this.reservedByVariant();
+    const kept = rows.filter((r) => !blocked.has(String(r["ma"]).toLowerCase()));
+    if (kept.length === 0) return [];
+    const variants = await this.variantsOf(this.store, kept.map((r) => String(r["ma"])));
+    const byCode = new Map<string, Row[]>();
+    for (const v of variants) {
+      const list = byCode.get(String(v["ma_mon"]));
+      if (list) list.push(v); else byCode.set(String(v["ma_mon"]), [v]);
+    }
+    return kept.map((r) => rowsToItem(r, byCode.get(String(r["ma"])) ?? [], reserved));
+  }
+
+  /**
+   * THE PRICE RULE after any write (Desk `applyLandingManualPricePolicy`): the item's source price is
+   * the smallest source price of its sizes; a manual price sells on every size while it is not below
+   * that source price, otherwise every size sells at its own source price. `codes` = null: every item
+   * that carries a manual price (after a whole-catalogue upload).
+   */
+  async reprice(store: DataStore, codes: string[] | null): Promise<void> {
+    if (codes !== null && codes.length === 0) return;
+    const where = codes === null ? "m.gia_tay > 0" : `m.ma IN (${codes.map(() => "?").join(", ")})`;
+    const params = codes ?? [];
+    const sourceOfVariant = "IF(b.gia_nguon > 0, b.gia_nguon, b.gia)";
+    await store.execute(
+      `UPDATE ${TABLES.items} m
+          SET m.gia_nguon = COALESCE((SELECT MIN(${sourceOfVariant}) FROM ${TABLES.variants} b WHERE b.ma_mon = m.ma AND ${sourceOfVariant} > 0), 0)
+        WHERE ${where}`,
+      params
+    );
+    await store.execute(
+      `UPDATE ${TABLES.variants} b JOIN ${TABLES.items} m ON m.ma = b.ma_mon
+          SET b.gia = CASE WHEN m.gia_tay > 0 AND m.gia_tay >= m.gia_nguon THEN m.gia_tay ELSE ${sourceOfVariant} END
+        WHERE ${where}`,
+      params
+    );
+  }
+
+  /** "Dùng lại giá nguồn": drops the manual price of one item. `false` = no such item. */
+  async resetManualPrice(code: string, at: Date): Promise<boolean> {
+    const done = await this.store.table(TABLES.items).update({ ma: code }, { gia_tay: 0, gia_tay_luc: null, sua_luc: mysqlTime(at) });
+    if (done === 0) return false;
+    await this.reprice(this.store, [code]);
+    return true;
+  }
+
+  /** The web texts of one item (SEO + the product page content). `false` = no such item. */
+  async writeWebContent(code: string, input: { seoTitle: string; seoDescription: string; seoKeywords: string; content: Record<string, unknown> }, at: Date): Promise<boolean> {
+    const done = await this.store.table(TABLES.items).update({ ma: code }, {
+      seo_tieu_de: input.seoTitle.slice(0, 255), seo_mo_ta: input.seoDescription.slice(0, 500), seo_tu_khoa: input.seoKeywords.slice(0, 500),
+      noi_dung_web_json: JSON.stringify(input.content), sua_luc: mysqlTime(at)
+    });
+    return done > 0;
+  }
+
+  /**
+   * Sales Desk "Đổi giá" on a ready-stock line (`rs-price`): the price of ONE size in ONE warehouse
+   * of ONE source. It is a source price (the shop's own list), so the price rule runs after it.
+   */
+  async setVariantPrice(input: { code: string; size: string; warehouseId: string; source: Source; price: number }, at: Date): Promise<number> {
+    const done = await this.store.table(TABLES.variants).update(
+      { ma_mon: input.code, size: input.size, ma_kho: input.warehouseId, nguon: input.source },
+      { gia: input.price, gia_nguon: input.price, sua_luc: mysqlTime(at) }
+    );
+    if (done > 0) await this.reprice(this.store, [input.code]);
+    return done;
   }
 
   /** How many items the catalogue holds — the brain's "we do not sell X" gate uses this number; no item is read. */
@@ -551,6 +716,8 @@ export class CatalogRepository {
         await tx.table(TABLES.items).upsert(row);
         written += 1;
       }
+      // A new upload must not silently undo the manual prices the shop typed in OMI.
+      await this.reprice(tx, null);
     });
 
     if (yielded > 0) {
@@ -594,6 +761,7 @@ export class CatalogRepository {
         await tx.table(TABLES.items).upsert(itemRow);
         written += 1;
       }
+      await this.reprice(tx, list.map((m) => m.code));
     });
     return {
       itemCount: list.length, variantCount, written, yielded,
@@ -659,8 +827,18 @@ export class CatalogRepository {
       if (patch.listPrice !== undefined) columns["gia_niem_yet"] = Math.max(0, Math.round(Number(patch.listPrice) || 0));
       if (patch.discountPercent !== undefined) columns["phan_tram_giam"] = Math.min(99, Math.max(0, Math.round(Number(patch.discountPercent) || 0)));
       if (patch.status !== undefined) columns["trang_thai"] = String(patch.status) === "hidden" ? "hidden" : "orderable";
+      const name = patch.name === undefined ? "" : String(patch.name).trim().slice(0, 255);
+      if (name !== "") columns["ten"] = name;
+      // Đ5 text fields: an empty value CLEARS (the seller erased a wrong brand), unlike the name.
+      if (patch.brand !== undefined) columns["hang"] = String(patch.brand).trim().slice(0, 190);
+      if (patch.productKind !== undefined) columns["loai"] = String(patch.productKind).trim().slice(0, 190);
+      if (patch.category !== undefined) columns["nhom"] = String(patch.category).trim().slice(0, 190);
+      if (patch.gender !== undefined) columns["gioi_tinh"] = String(patch.gender).trim().slice(0, 64);
+      const price = patch.price === undefined ? 0 : Math.round(Number(patch.price) || 0);
+      if (price > 0) { columns["gia_tay"] = price; columns["gia_tay_luc"] = mysqlTime(at); }
       if (Object.keys(columns).length === 0) continue;
       const done = await this.store.table(TABLES.items).update({ ma: code }, { ...columns, sua_luc: mysqlTime(at) });
+      if (done > 0 && price > 0) await this.reprice(this.store, [code]);
       if (done > 0) changed.push(code); else missing.push(code);
     }
     return { changed, missing };

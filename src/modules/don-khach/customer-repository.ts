@@ -199,7 +199,8 @@ export class CustomerRepository {
    */
   async listFromOrders(q: string, limit: number): Promise<Row[]> {
     const like = `%${q}%`;
-    const where = q ? "WHERE phone LIKE ? OR customer_name LIKE ?" : "";
+    // An order in the bin must not count towards a customer's order count or spend.
+    const where = q ? "WHERE deleted_at IS NULL AND (phone LIKE ? OR customer_name LIKE ?)" : "WHERE deleted_at IS NULL";
     const params = q ? [like, like] : [];
     return this.store.rows(
       `SELECT phone, MAX(customer_name) AS customer_name, MAX(email) AS email, MAX(province) AS province,

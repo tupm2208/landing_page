@@ -90,6 +90,25 @@ test("real MySQL", { ...skip }, async (t) => {
     );
   });
 
+  await t.test("a column the inherited table already has is skipped — only in a one-clause ALTER", async () => {
+    await store.execute("DROP TABLE IF EXISTS thu_bang_co_san");
+    await store.execute("CREATE TABLE thu_bang_co_san (x INT, shipping_fee DECIMAL(14,2))");
+    await store.runSchema("thu-bang", [{
+      name: "005-cot-co-san", tables: ["thu_bang_co_san"],
+      sql: "ALTER TABLE thu_bang_co_san ADD COLUMN shipping_fee DECIMAL(14,2) NOT NULL DEFAULT 0; ALTER TABLE thu_bang_co_san ADD COLUMN tags VARCHAR(10) NOT NULL DEFAULT ''"
+    }], { inheritedTables: ["thu_bang_co_san"] });
+    const cols = await store.rows("SELECT column_name AS c FROM information_schema.columns WHERE table_schema = DATABASE() AND table_name = 'thu_bang_co_san'");
+    assert.ok(cols.some((r) => String(r["c"]).toLowerCase() === "tags"), "the next statement still ran");
+    await assert.rejects(
+      () => store.runSchema("thu-bang", [{
+        name: "006-nhieu-menh-de", tables: ["thu_bang_co_san"],
+        sql: "ALTER TABLE thu_bang_co_san ADD COLUMN x2 INT, ADD COLUMN shipping_fee INT"
+      }], { inheritedTables: ["thu_bang_co_san"] }),
+      /Duplicate column/
+    );
+    await store.execute("DROP TABLE IF EXISTS thu_bang_co_san");
+  });
+
   await t.test("insert, find, count, update, delete", async () => {
     const table = store.table(TABLE);
     await table.insert({ ma: "D1", khach: "Anh A", tien: 100000, tao_luc: "2026-09-12 10:00:00" });

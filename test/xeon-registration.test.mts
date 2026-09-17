@@ -13,7 +13,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import {
-  FixedWindowRateLimiter, JsonFileStore, Kernel, ManualClock, MemoryLogger, ROLE, TokenAuth, TrialModeHttpClient, buildLandingApp,
+  FixedWindowRateLimiter, MemoryUploadPort, MemoryMailer, JsonFileStore, Kernel, ManualClock, MemoryLogger, ROLE, TokenAuth, TrialModeHttpClient, buildLandingApp,
   generateSigningKey, jsonResponse, loadEnvFile, readXeonRegistration, registerWithXeon, saveXeonRegistration, signTicket, summariseXeonRegistration,
   type HttpClient, type HttpRequestInit, type IncomingRequest, type SigningKeyPair
 } from "../dist/index.js";
@@ -80,7 +80,7 @@ function buildKernel({ http, store = new JsonFileStore(tmp()) }: { http: HttpCli
   const logger = new MemoryLogger();
   const auth = new TokenAuth({ keys: [{ token: ADMIN, name: "quan-tri", role: ROLE.admin }], clock, logger });
   const kernel = new Kernel({
-    ports: { store, logger, clock, http, auth, rateLimiter: new FixedWindowRateLimiter(clock) },
+    ports: { store, logger, clock, http, auth, rateLimiter: new FixedWindowRateLimiter(clock), uploads: new MemoryUploadPort(), mail: new MemoryMailer() },
     logger, modules: [platform, inbox],
     config: {
       "khung-nen-tang": { deployId: "thu", xeonAddress: XEON, landingAddress: "https://shop.vn" },
@@ -200,4 +200,51 @@ test("real startup (buildLandingApp): reads .env, registers with LICENSE_KEY, do
   } finally {
     globalThis.fetch = originalFetch;
   }
+});
+
+test("Xeon forgot our inbox token (registered again elsewhere): the inbox registers again and resends once; spaced out so two landings cannot fight in a loop", async () => {
+  const signingKey = generateSigningKey();
+  let issued = 0;
+  let valid = "";
+  const calls: { url: string; init: HttpRequestInit }[] = [];
+  const http: HttpClient = {
+    async fetch(url, init = {}) {
+      calls.push({ url: String(url), init });
+      if (String(url) === `${XEON}/license/landing-dang-ky`) {
+        issued += 1;
+        valid = `nt-lan-${issued}-xxxxxxxxxxxxxxxxxxxx`;
+        return jsonResponse({ ok: true, shop: "toprun", tenShop: "TopRun", keyId: signingKey.keyId, khoaCongPem: signingKey.khoaCongPem, maNhanTin: valid, diaChiXeon: XEON });
+      }
+      if (String(url) === `${XEON}/tin-den`) {
+        return String(init.headers?.["Authorization"]) === `Bearer ${valid}` ? jsonResponse({ ok: true }) : jsonResponse({ ok: false, error: "thieu_ma" }, 401);
+      }
+      return jsonResponse({ ok: true });
+    }
+  };
+  const { kernel, call, clock, logger, store } = buildKernel({ http });
+  assert.equal((await call("POST", "/api/admin/xeon/dang-ky", { body: { key: KEY } })).status, 200);
+
+  // Someone else registers the same key: Xeon now holds a token this landing never saw.
+  valid = "nt-cua-landing-khac-xxxxxxxxxxxx";
+  const pushes = () => calls.filter((c) => c.url.endsWith("/tin-den")).map((c) => String(c.init.headers?.["Authorization"]));
+
+  assert.equal((await kernel.handle(metaWebhook())).status, 200);
+  await new Promise((r) => setTimeout(r, 30));
+  assert.deepEqual(pushes(), ["Bearer nt-lan-1-xxxxxxxxxxxxxxxxxxxx", "Bearer nt-lan-2-xxxxxxxxxxxxxxxxxxxx"], "refused once, registered again, resent with the new token");
+  assert.equal((await readXeonRegistration(store))!.maNhanTin, "nt-lan-2-xxxxxxxxxxxxxxxxxxxx", "the new token is stored");
+  assert.ok(!logger.has(/bo nao tu choi tin/), "the resend went through");
+
+  // Taken again right away: no second re-registration inside the gap — the message is only refused.
+  valid = "nt-lai-bi-lay-xxxxxxxxxxxxxxxxxx";
+  assert.equal((await kernel.handle(metaWebhook())).status, 200);
+  await new Promise((r) => setTimeout(r, 30));
+  assert.equal(issued, 2);
+  assert.ok(logger.has(/bo nao tu choi tin: HTTP 401/));
+
+  // After the gap it recovers again.
+  clock.advance(61 * 1000);
+  assert.equal((await kernel.handle(metaWebhook())).status, 200);
+  await new Promise((r) => setTimeout(r, 30));
+  assert.equal(issued, 3);
+  assert.equal(pushes().at(-1), "Bearer nt-lan-3-xxxxxxxxxxxxxxxxxxxx");
 });

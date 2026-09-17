@@ -1,0 +1,41 @@
+﻿<!doctype html>
+<html lang="vi">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>TopRun Admin</title>
+  <link rel="stylesheet" href="/admin.css?v=20260917-bo-cuc">
+</head>
+<body>
+  <main class="admin-shell">
+    <header class="admin-topbar">
+      <div>
+        <strong>TopRun Admin</strong>
+        <span id="admin-subtitle">Quan ly online landing page</span>
+      </div>
+      <div class="topbar-actions">
+        <a class="topbar-link" href="/admin/desk">Bàn bán hàng</a>
+        <a class="topbar-link" href="/warehouse">Kho</a>
+        <a class="topbar-link" href="/admin/nguoi">Người &amp; máy</a>
+        <button id="refresh-button" type="button">Tai lai</button>
+        <button id="logout-button" type="button">Dang xuat</button>
+      </div>
+    </header>
+
+    <nav class="admin-tabs" aria-label="Admin modules">
+      <button class="active" data-view="dashboard" type="button">Tong quan</button>
+      <button data-view="products" type="button">San pham</button>
+      <button data-view="orders" type="button">Don hang</button>
+      <button data-view="partners" type="button">Doi tac</button>
+      <button data-view="shipping" type="button">Van don</button>
+      <button data-view="fanpage" type="button">Fanpage</button>
+      <button data-view="ctv" type="button">Cong tac vien</button>
+    </nav>
+
+    <section id="message" class="message" hidden></section>
+    <section id="app" class="admin-content"></section>
+  </main>
+  <script src="/admin-api.js?v=20260917-bo-cuc"></script>
+  <script src="/admin.js?v=20260917-bo-cuc"></script>
+</body>
+</html>

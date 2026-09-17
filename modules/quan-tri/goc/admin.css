@@ -1,0 +1,1567 @@
+* {
+  box-sizing: border-box;
+}
+
+.ctv-create-form { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 12px; margin: 16px 0; }
+.ctv-create-form label { display: grid; gap: 6px; font-weight: 700; }
+.ctv-create-form label span { font-size: 13px; }
+.ctv-create-form input { min-width: 0; min-height: 44px; border: 1px solid #ccd7cd; border-radius: 10px; padding: 0 12px; }
+.ctv-create-form button, .ctv-form-note { grid-column: 1 / -1; }
+.ctv-form-note { margin: 0; color: #667066; font-size: 13px; }
+.ctv-device-list { display: grid; gap: 8px; padding: 8px 0; }
+.ctv-device-row { display: grid; grid-template-columns: minmax(0, 1fr) auto auto; align-items: center; gap: 10px; padding: 9px 10px; border: 1px solid #dfe7df; border-radius: 10px; background: #f8faf7; }
+.ctv-device-row small { display: block; color: #667066; }
+
+@media (max-width: 760px) {
+  .ctv-create-form, .ctv-device-row { grid-template-columns: 1fr; }
+}
+
+body {
+  margin: 0;
+  font-family: Arial, sans-serif;
+  color: #172018;
+  background: #f4f6f3;
+}
+
+button,
+input,
+select {
+  min-height: 40px;
+  border-radius: 7px;
+  font: inherit;
+}
+
+button {
+  border: 0;
+  padding: 0 14px;
+  background: #1f7a4f;
+  color: #fff;
+  font-weight: 700;
+  cursor: pointer;
+}
+
+button.secondary,
+.admin-tabs button,
+.small,
+.button-link {
+  border: 1px solid #cbd7c8;
+  background: #fff;
+  color: #173d2b;
+}
+
+input,
+select {
+  min-width: 0;
+  border: 1px solid #cbd7c8;
+  padding: 0 10px;
+  background: #fff;
+}
+
+.admin-shell {
+  min-height: 100vh;
+}
+
+.admin-topbar {
+  min-height: 64px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 12px 18px;
+  background: #173d2b;
+  color: #fff;
+}
+
+.admin-topbar > div:first-child {
+  display: grid;
+  gap: 2px;
+}
+
+.admin-topbar span {
+  color: #cfe2d4;
+  font-size: 13px;
+}
+
+.topbar-actions {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+}
+
+.admin-tabs {
+  display: flex;
+  gap: 8px;
+  overflow-x: auto;
+  padding: 10px 18px;
+  background: #e8efe8;
+  border-bottom: 1px solid #d6e1d8;
+}
+
+.admin-tabs button {
+  flex: 0 0 auto;
+  min-height: 38px;
+}
+
+.admin-tabs button.active {
+  background: #173d2b;
+  color: #fff;
+}
+
+.admin-content,
+.message {
+  width: min(1280px, calc(100% - 24px));
+  margin: 14px auto;
+}
+
+.message {
+  border: 1px solid #bfe0cd;
+  border-radius: 8px;
+  padding: 10px 12px;
+  background: #f0fbf3;
+  color: #1f6b44;
+}
+
+.message.error {
+  border-color: #efc7c2;
+  background: #fff8f7;
+  color: #a13b31;
+}
+
+.metric-grid {
+  display: grid;
+  grid-template-columns: repeat(6, minmax(120px, 1fr));
+  gap: 10px;
+  margin-bottom: 14px;
+}
+
+.metric-card,
+.panel,
+.card,
+.quick-card {
+  border: 1px solid #dfe7da;
+  border-radius: 8px;
+  background: #fff;
+}
+
+.metric-card {
+  display: grid;
+  gap: 5px;
+  padding: 12px;
+}
+
+.metric-card span,
+.metric-card small,
+.muted,
+td span,
+.card small,
+.card span {
+  color: #667066;
+  font-size: 13px;
+}
+
+.metric-card strong {
+  font-size: 24px;
+}
+
+.panel {
+  padding: 14px;
+}
+
+.panel + .panel {
+  margin-top: 14px;
+}
+
+.panel-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 12px;
+}
+
+.panel-head h2,
+.panel-head p {
+  margin: 0;
+}
+
+.panel-head p {
+  color: #667066;
+  margin-top: 4px;
+}
+
+.quick-grid,
+.partner-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(230px, 1fr));
+  gap: 10px;
+}
+
+.quick-card {
+  display: grid;
+  gap: 8px;
+  min-height: 86px;
+  padding: 14px;
+  text-align: left;
+  color: #173d2b;
+}
+
+.quick-card strong {
+  font-size: 26px;
+}
+
+.toolbar {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 180px;
+  gap: 10px;
+  margin-bottom: 12px;
+}
+
+.order-status-tabs {
+  display: flex;
+  gap: 8px;
+  margin-bottom: 10px;
+  overflow-x: auto;
+}
+
+.order-status-tab {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  min-height: 38px;
+  padding: 8px 13px;
+  border: 1px solid #a9c4a6;
+  border-radius: 999px;
+  background: #eaf3e7;
+  color: #23492f;
+  font-weight: 700;
+  white-space: nowrap;
+}
+
+.order-status-tab span {
+  min-width: 22px;
+  padding: 2px 6px;
+  border-radius: 999px;
+  background: #d3e6cf;
+  color: #14351f;
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.order-status-tab.is-active {
+  border-color: #14512f;
+  background: #1f6b45;
+  color: #fff;
+  box-shadow: 0 2px 6px rgba(20, 81, 47, 0.35);
+}
+
+.order-status-tab.is-active span {
+  background: #14512f;
+  color: #fff;
+}
+
+.shipping-order-check {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  margin-bottom: 5px;
+  color: #1f6b45;
+  font: 700 12px/1.2 Georgia, serif;
+}
+
+.shipping-order-check input {
+  width: 16px;
+  height: 16px;
+}
+
+.table-wrap {
+  overflow-x: auto;
+}
+
+table {
+  width: 100%;
+  border-collapse: collapse;
+  min-width: 760px;
+}
+
+th,
+td {
+  border-top: 1px solid #e5ede3;
+  padding: 9px;
+  text-align: left;
+  vertical-align: top;
+}
+
+td:first-child {
+  display: grid;
+  gap: 3px;
+}
+
+.cell-input {
+  width: 130px;
+}
+
+.name-input {
+  width: min(320px, 100%);
+}
+
+.card-list {
+  display: grid;
+  gap: 10px;
+}
+
+.card {
+  padding: 12px;
+}
+
+.order-card {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 150px;
+  gap: 10px;
+}
+
+.order-card > div:first-child {
+  display: grid;
+  gap: 4px;
+}
+
+.order-money {
+  display: grid;
+  align-content: start;
+  justify-items: end;
+  gap: 4px;
+}
+
+.warehouse-suggestion {
+  display: inline-flex;
+  width: fit-content;
+  border-radius: 999px;
+  padding: 4px 8px;
+  background: #e8f2ed;
+  color: #285240;
+  font-weight: 700;
+}
+
+.warehouse-suggestion.split,
+.warehouse-suggestion.missing {
+  background: #fff5dc;
+  color: #815700;
+}
+
+.action-row {
+  grid-column: 1 / -1;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.quick-payment-row {
+  grid-column: 1 / -1;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+}
+
+.quick-payment-label {
+  font-weight: 600;
+  font-size: 13px;
+}
+
+.quick-payment-row input {
+  width: 150px;
+  padding: 6px 8px;
+  border: 1px solid #cdd9c8;
+  border-radius: 6px;
+}
+
+.quick-payment-row small {
+  color: #667066;
+}
+
+.customer-contact-panel {
+  grid-column: 1 / -1;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  border-top: 1px solid #e2e9e0;
+  padding-top: 10px;
+}
+
+.customer-contact-panel > span {
+  color: #667066;
+  font-size: 13px;
+  font-weight: 700;
+}
+
+.customer-contact-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  justify-content: flex-end;
+}
+
+.remote-order-create {
+  margin: 14px 0;
+  padding: 14px;
+  border: 1px solid var(--line, #d9e1dc);
+  border-radius: 14px;
+  background: #f7faf7;
+}
+
+.remote-order-create summary {
+  cursor: pointer;
+  font-weight: 800;
+  color: #174f35;
+}
+
+.remote-order-form { margin-top: 14px; }
+.remote-order-form button { margin-top: 12px; }
+
+.remote-order-items { display: grid; gap: 9px; margin: 12px 0; }
+.remote-order-item {
+  display: grid;
+  grid-template-columns: 30px minmax(200px, 2fr) minmax(120px, 1fr) 110px 70px auto;
+  gap: 8px;
+  align-items: start;
+  padding: 9px;
+  border: 1px solid #dfe7e1;
+  border-radius: 12px;
+  background: #fff;
+}
+
+.remote-address-scheme {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 12px;
+  margin: 10px 0 6px;
+  font-size: 14px;
+}
+
+.remote-address-scheme label {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  margin: 0;
+  font-weight: 600;
+}
+
+.remote-product-search {
+  display: grid;
+  gap: 4px;
+  position: relative;
+}
+
+.remote-product-picked {
+  color: #1f7a4f;
+  font-weight: 700;
+}
+
+.remote-address-field {
+  display: grid;
+  gap: 4px;
+}
+
+.remote-product-suggest,
+.remote-suggest {
+  display: grid;
+  gap: 4px;
+  max-height: 190px;
+  overflow-y: auto;
+}
+
+.remote-product-suggest button,
+.remote-suggest button {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  align-items: baseline;
+  width: 100%;
+  min-height: 34px;
+  padding: 6px 8px;
+  border: 1px solid #dfe7e1;
+  border-radius: 8px;
+  background: #f7faf7;
+  color: #173d2b; /* nut mac dinh chu trang - phai ghi de khong thi trang tren nen trang */
+  font-weight: 600;
+  text-align: left;
+  cursor: pointer;
+  font-size: 13px;
+}
+
+.remote-product-suggest button:hover,
+.remote-suggest button:hover {
+  background: #e8f3ea;
+}
+
+.remote-product-suggest button strong {
+  color: #174f35;
+}
+
+.remote-product-suggest button span {
+  color: #667066;
+  font-weight: 500;
+}
+.remote-order-item-number { font-weight: 900; color: #174f35; text-align: center; }
+.remote-order-item .danger { margin: 0; }
+
+.sync-pill {
+  display: inline-flex;
+  width: fit-content;
+  padding: 3px 8px;
+  border-radius: 999px;
+  font-size: 11px;
+  font-weight: 800;
+}
+
+.sync-pill.remote { color: #174f35; background: #e4f1e8; }
+.sync-pill.online { color: #245d78; background: #e5f1f7; }
+
+.remote-partner-action {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  padding-top: 10px;
+  border-top: 1px solid #e1e7e2;
+}
+
+.remote-partner-action select { min-width: 190px; }
+.remote-partner-action small { color: #667269; }
+
+.order-card { display: block; }
+.order-compact-head { display: grid; grid-template-columns: minmax(0, 1fr) auto auto; gap: 12px; align-items: center; }
+.order-compact-head > div { display: flex; gap: 10px; align-items: center; min-width: 0; }
+.order-compact-head span { color: #68746c; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.order-compact-head > b { color: #174f35; white-space: nowrap; }
+.order-quick-body, .order-full-body { margin-top: 12px; padding-top: 12px; border-top: 1px solid #e1e7e2; }
+.order-quick-body { display: grid; gap: 10px; }
+.order-quick-body > div:first-child { display: flex; gap: 10px; flex-wrap: wrap; }
+.order-quick-items { display: flex; gap: 8px 14px; flex-wrap: wrap; color: #56645b; }
+.order-full-body { display: grid; gap: 12px; }
+.price-drift-pill { background: #fdecea; color: #c0392b; border: 1px solid #f5c6c0; margin: 0 6px; }
+.price-drift-inline { color: #c0392b; font-weight: 700; margin-left: 6px; white-space: nowrap; }
+.price-drift-note { margin: 4px 0 0; color: #c0392b; font-weight: 600; font-size: 13px; }
+
+@media (max-width: 760px) {
+  .remote-order-item { grid-template-columns: 28px 1fr 1fr; }
+  .remote-order-item .remote-product-search { grid-column: 2 / -1; }
+  .order-compact-head { grid-template-columns: 1fr auto; }
+  .order-compact-head > div { grid-column: 1 / -1; }
+}
+
+.order-edit-grid {
+  grid-column: 1 / -1;
+  display: grid;
+  grid-template-columns: 160px 180px repeat(3, minmax(120px, 1fr)) auto;
+  gap: 8px;
+}
+
+.warehouse-panel {
+  grid-column: 1 / -1;
+  display: grid;
+  gap: 8px;
+  border: 1px solid #dfe7da;
+  border-radius: 8px;
+  background: #f7faf5;
+  padding: 10px;
+}
+
+.warehouse-panel-head,
+.warehouse-stock-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 8px;
+  align-items: start;
+}
+
+.warehouse-panel-head span {
+  color: #5f6f63;
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.warehouse-stock-list {
+  display: grid;
+  gap: 8px;
+}
+
+.warehouse-stock-row {
+  border-top: 1px solid #e5ede3;
+  padding-top: 8px;
+}
+
+.warehouse-stock-row small {
+  display: block;
+  color: #66746a;
+}
+
+.warehouse-stock-chips {
+  grid-column: 1 / -1;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.warehouse-purchase-action {
+  grid-column: 1 / -1;
+  display: grid;
+  grid-template-columns: minmax(190px, 1fr) auto auto;
+  gap: 10px;
+  align-items: center;
+  padding-top: 10px;
+  border-top: 1px solid #e4ebe6;
+}
+
+.warehouse-purchase-action select,
+.warehouse-purchase-action button {
+  min-height: 42px;
+}
+
+.warehouse-purchase-action button.primary {
+  background: #166534;
+  border-color: #166534;
+  color: #fff;
+}
+
+.warehouse-stock-chip,
+.need-pill {
+  display: inline-flex;
+  align-items: center;
+  min-height: 26px;
+  border-radius: 999px;
+  padding: 0 8px;
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.warehouse-stock-chip.enough {
+  background: #e7f4ec;
+  color: #246142;
+}
+
+.warehouse-stock-chip.short {
+  background: #fff2d6;
+  color: #805500;
+}
+
+.warehouse-stock-chip.selected {
+  outline: 2px solid #1f7a4f;
+  outline-offset: 1px;
+}
+
+.need-pill {
+  background: #eef3ee;
+  color: #4f5f55;
+}
+
+.small {
+  min-height: 34px;
+  padding: 0 10px;
+  font-size: 13px;
+}
+
+.partner-card {
+  display: grid;
+  gap: 12px;
+}
+
+.partner-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.partner-head > div {
+  display: grid;
+  gap: 3px;
+}
+
+.pill {
+  display: inline-flex;
+  width: fit-content;
+  align-items: center;
+  min-height: 28px;
+  border-radius: 999px;
+  padding: 0 9px;
+  background: #e8f2ed;
+  color: #285240;
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.mini-metrics {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 8px;
+}
+
+.mini-metrics div {
+  display: grid;
+  gap: 3px;
+  border-radius: 7px;
+  background: #f5f8f4;
+  padding: 8px;
+}
+
+.need-line {
+  display: flex;
+  justify-content: space-between;
+  gap: 8px;
+  border-top: 1px solid #edf2ec;
+  padding: 7px 0;
+}
+
+.session-list {
+  display: grid;
+  gap: 8px;
+}
+
+.session-row {
+  border: 1px solid #e5ede3;
+  border-radius: 8px;
+  padding: 10px;
+  background: #fbfdfb;
+}
+
+.session-row summary {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(110px, auto) minmax(110px, auto);
+  gap: 10px;
+  align-items: center;
+  cursor: pointer;
+}
+
+.empty-state {
+  color: #667066;
+}
+
+.button-link {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 36px;
+  border-radius: 7px;
+  padding: 0 12px;
+  text-decoration: none;
+  font-weight: 700;
+}
+
+.fanpage-layout {
+  display: grid;
+  grid-template-columns: 300px minmax(0, 1fr);
+  gap: 12px;
+}
+
+.conversation-list {
+  display: grid;
+  gap: 8px;
+  align-content: start;
+}
+
+.conversation-list button {
+  display: grid;
+  gap: 4px;
+  min-height: 58px;
+  text-align: left;
+  background: #fff;
+  color: #172018;
+  border: 1px solid #dfe7da;
+}
+
+.conversation-list button.active {
+  border-color: #1f7a4f;
+  background: #f1fbf5;
+}
+
+.conversation-detail {
+  min-width: 0;
+  border: 1px solid #dfe7da;
+  border-radius: 8px;
+  padding: 12px;
+}
+
+.conversation-head {
+  display: flex;
+  justify-content: space-between;
+  gap: 10px;
+  margin-bottom: 10px;
+}
+
+.conversation-head > div {
+  display: grid;
+  gap: 3px;
+}
+
+.message-list {
+  display: grid;
+  gap: 8px;
+  max-height: 300px;
+  overflow: auto;
+  margin-bottom: 12px;
+}
+
+.chat-bubble {
+  width: fit-content;
+  max-width: min(560px, 90%);
+  border-radius: 12px;
+  padding: 8px 10px;
+  background: #edf2ec;
+}
+
+.chat-bubble.out {
+  justify-self: end;
+  background: #d9efe2;
+}
+
+.picker-overlay {
+  position: fixed;
+  inset: 0;
+  background: rgba(20, 30, 20, 0.45);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 60;
+  padding: 12px;
+}
+
+.picker-panel {
+  background: #fff;
+  border-radius: 12px;
+  width: min(640px, 100%);
+  max-height: 85vh;
+  display: flex;
+  flex-direction: column;
+  padding: 14px;
+  gap: 10px;
+  overflow: hidden;
+}
+
+.picker-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+}
+
+.picker-head button {
+  background: none;
+  border: none;
+  font-size: 16px;
+  cursor: pointer;
+}
+
+.picker-filters {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+  align-items: center;
+}
+
+.picker-filters #picker-query {
+  flex: 1;
+  min-width: 160px;
+}
+
+.picker-stock {
+  display: flex;
+  gap: 4px;
+  align-items: center;
+  font-size: 13px;
+}
+
+.picker-results {
+  overflow-y: auto;
+  display: grid;
+  gap: 8px;
+}
+
+.picker-row {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  border: 1px solid #e5ede3;
+  border-radius: 8px;
+  padding: 6px 8px;
+}
+
+.picker-row img {
+  width: 44px;
+  height: 44px;
+  object-fit: cover;
+  border-radius: 6px;
+}
+
+.picker-noimg {
+  width: 44px;
+  text-align: center;
+  font-size: 22px;
+}
+
+.picker-info {
+  flex: 1;
+  display: grid;
+  min-width: 0;
+}
+
+.picker-info strong {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.picker-info span {
+  font-size: 12px;
+  color: #5b6b58;
+}
+
+.picker-actions {
+  display: flex;
+  gap: 4px;
+}
+
+.picker-actions a,
+.picker-actions button {
+  border: 1px solid #dbe7d8;
+  background: #f6faf4;
+  border-radius: 6px;
+  padding: 4px 6px;
+  cursor: pointer;
+  text-decoration: none;
+  font-size: 14px;
+}
+
+.suggest-panel {
+  width: min(420px, 100%);
+}
+
+.suggest-panel label {
+  display: grid;
+  gap: 4px;
+  font-size: 13px;
+  margin-bottom: 8px;
+}
+
+.suggest-panel input,
+.suggest-panel textarea {
+  font: inherit;
+  padding: 8px;
+  border: 1px solid #cfe0cb;
+  border-radius: 8px;
+}
+
+.suggest-source {
+  font-style: italic;
+  margin: 0 0 8px;
+}
+
+.fanpage-cart {
+  border-top: 1px solid #e5ede3;
+  padding-top: 12px;
+}
+
+.fanpage-cart-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+}
+
+.fanpage-cart-head button {
+  font-size: 16px;
+  border: 1px solid #dbe7d8;
+  background: #f6faf4;
+  border-radius: 6px;
+  padding: 4px 8px;
+  cursor: pointer;
+}
+
+.cart-badge {
+  background: #2f6b2f;
+  color: #fff;
+  border-radius: 10px;
+  padding: 0 8px;
+  font-size: 12px;
+}
+
+.cart-rows {
+  display: grid;
+  gap: 6px;
+  margin: 8px 0;
+}
+
+.cart-row {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+}
+
+.cart-row .cart-name {
+  flex: 1;
+}
+
+.cart-row input {
+  width: 60px;
+}
+
+.cart-total {
+  text-align: right;
+}
+
+.message-list .chat-bubble {
+  -webkit-touch-callout: none;
+}
+
+@media (max-width: 900px) {
+  .message-list .chat-bubble {
+    user-select: none;
+    -webkit-user-select: none;
+  }
+}
+
+.chat-bubble.pending {
+  opacity: 0.75;
+  border: 1px dashed #b8ceb2;
+}
+
+.pending-tag {
+  display: block;
+  margin-top: 4px;
+  font-size: 11px;
+  opacity: 0.9;
+}
+
+.fanpage-reply-form {
+  display: flex;
+  gap: 8px;
+  align-items: flex-end;
+  margin-bottom: 6px;
+}
+
+.fanpage-reply-form textarea {
+  flex: 1;
+  resize: vertical;
+  min-height: 44px;
+  padding: 8px 10px;
+  border: 1px solid #cfe0cb;
+  border-radius: 8px;
+  font: inherit;
+}
+
+.fanpage-reply-form button {
+  white-space: nowrap;
+}
+
+.fanpage-reply-hint {
+  margin: 0 0 12px;
+  font-size: 12px;
+}
+
+.fanpage-order-form {
+  border-top: 1px solid #e5ede3;
+  padding-top: 12px;
+}
+
+.fanpage-order-form h3 {
+  margin: 0 0 10px;
+}
+
+.form-grid {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 8px;
+  margin-bottom: 10px;
+}
+
+.login-page {
+  min-height: 100vh;
+  background: linear-gradient(135deg, #173d2b, #355f45 46%, #f4f6f3 46%);
+}
+
+.login-shell {
+  min-height: 100vh;
+  display: grid;
+  place-items: center;
+  padding: 20px;
+}
+
+.login-panel {
+  width: min(430px, 100%);
+  border: 1px solid #dfe7da;
+  border-radius: 10px;
+  background: #fff;
+  padding: 24px;
+  box-shadow: 0 20px 50px rgba(10, 30, 20, 0.18);
+}
+
+.login-panel h1 {
+  margin: 0 0 8px;
+}
+
+.login-panel p {
+  color: #667066;
+}
+
+.eyebrow {
+  margin: 0 0 8px;
+  color: #1f7a4f;
+  font-weight: 800;
+  letter-spacing: 0;
+}
+
+.login-panel form,
+.login-panel label {
+  display: grid;
+  gap: 8px;
+}
+
+.login-panel form {
+  gap: 12px;
+}
+
+@media (max-width: 900px) {
+  .metric-grid,
+  .quick-grid {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+  }
+
+  .fanpage-layout,
+  .toolbar,
+  .order-card,
+  .order-edit-grid,
+  .session-row summary,
+  .form-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .order-money {
+    justify-items: start;
+  }
+}
+
+@media (max-width: 560px) {
+  .admin-topbar {
+    align-items: flex-start;
+    flex-direction: column;
+  }
+
+  .topbar-actions,
+  .topbar-actions button {
+    width: 100%;
+  }
+
+  /* Dien thoai: 3 chi so moi dong cho de quet mat, thu nho chu/padding de khong trao dong. */
+  .metric-grid,
+  .quick-grid,
+  .mini-metrics {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+    gap: 6px;
+  }
+
+  .metric-card,
+  .quick-card {
+    padding: 8px 6px;
+    min-height: 0;
+  }
+
+  .metric-card span,
+  .metric-card small,
+  .quick-card span {
+    font-size: 11px;
+    line-height: 1.25;
+    overflow-wrap: break-word;
+  }
+
+  .metric-card strong,
+  .quick-card strong {
+    font-size: 17px;
+  }
+
+  .warehouse-purchase-action {
+    grid-template-columns: 1fr;
+  }
+}
+
+/* ===== Man don hang desktop: bang kieu Sales Desk ===== */
+.orders-table-wrap {
+  overflow-x: auto;
+  margin-top: 10px;
+}
+
+.orders-table {
+  width: 100%;
+  min-width: 1120px;
+  border-collapse: collapse;
+  table-layout: fixed;
+  font-size: 13px;
+  background: #fff;
+}
+
+.orders-table th,
+.orders-table td {
+  padding: 8px 6px;
+  border-bottom: 1px solid #e2e9e0;
+  vertical-align: top;
+  text-align: left;
+}
+
+.orders-table thead th {
+  background: #eef3ec;
+  font-size: 12px;
+  color: #33413a;
+}
+
+.orders-table .col-check { width: 30px; }
+.orders-table .col-code { width: 148px; }
+.orders-table .col-source { width: 82px; }
+.orders-table .col-time { width: 104px; }
+.orders-table .col-customer { width: 110px; }
+.orders-table .col-total { width: 92px; text-align: right; }
+.orders-table .col-status { width: 112px; }
+.orders-table .col-tracking { width: 86px; }
+.orders-table .col-actions { width: 64px; }
+
+.orders-table td.col-code strong { display: block; word-break: break-all; }
+.orders-table td small { display: block; color: #68746c; }
+.orders-table td.col-customer strong { display: block; }
+.orders-table tr.is-cancelled td { opacity: 0.62; }
+.orders-table .paid-note { color: #1f6b45; font-weight: 700; }
+.orders-table-empty { text-align: center; color: #68746c; padding: 24px 0; }
+
+.order-line-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px 10px;
+  padding: 4px 0;
+  border-bottom: 1px dashed #e2e9e0;
+}
+
+.order-line-row:last-of-type { border-bottom: 0; }
+.order-line-info em { color: #1f6b45; font-style: normal; }
+
+.order-line-picker {
+  display: inline-flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  align-items: center;
+}
+
+.order-line-picker select {
+  max-width: 170px;
+  padding: 4px 6px;
+  font-size: 12px;
+  min-height: 28px;
+}
+
+.order-line-picker button {
+  font-size: 11px;
+  padding: 4px 8px;
+  min-height: 28px;
+}
+
+.order-quick-actions {
+  display: grid;
+  gap: 4px;
+  margin-top: 6px;
+  max-width: 110px;
+}
+
+.order-quick-actions button {
+  font-size: 11px;
+  padding: 4px 6px;
+  min-height: 28px;
+}
+
+.order-expand-cell {
+  background: #f7faf6;
+  padding: 12px 14px;
+}
+
+.order-expand-editor { display: grid; gap: 10px; }
+.order-expand-address { margin: 0; color: #33413a; }
+
+/* ===== Mobile: menu tac vu + tab 2x4 ghim + the don rut gon ===== */
+.order-code { color: #68746c; font-size: 12px; white-space: nowrap; }
+
+.order-compact-items {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 12px;
+  margin-top: 6px;
+  color: #56645b;
+  font-size: 12px;
+}
+
+.order-status-grid {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 6px;
+  overflow: visible;
+  margin-bottom: 0;
+}
+
+/* O tab mobile: chu dai ("Cho xac nhan hang") tu xuong dong trong o, badge nam duoi — het tran chu. */
+.order-status-grid .order-status-tab {
+  flex-direction: column;
+  justify-content: center;
+  padding: 6px 4px;
+  font-size: 12.5px;
+  font-weight: 700;
+  line-height: 1.15;
+  min-height: 52px;
+  border-radius: 10px;
+  gap: 3px;
+  white-space: normal;
+  text-align: center;
+  overflow: hidden;
+}
+
+.order-status-grid .order-status-tab span {
+  min-width: 20px;
+  padding: 1px 6px;
+  font-size: 11px;
+}
+
+.mobile-order-sticky {
+  position: sticky;
+  top: 0;
+  z-index: 30;
+  background: #fff;
+  display: grid;
+  gap: 8px;
+  margin: -14px -14px 10px;
+  padding: 10px 14px 12px;
+  border-bottom: 1px solid #e2e9e0;
+  border-radius: 8px 8px 0 0;
+}
+
+.mobile-order-sticky input {
+  width: 100%;
+  box-sizing: border-box;
+  min-height: 44px;
+}
+
+.mobile-task-menu .task-menu-list { display: grid; gap: 10px; }
+
+.task-menu-item {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  width: 100%;
+  text-align: left;
+  padding: 14px;
+  min-height: 62px;
+  border: 1px solid #cfdccc;
+  border-radius: 12px;
+  background: #fff;
+}
+
+.task-menu-item .task-menu-text { display: grid; gap: 3px; }
+.task-menu-item small { color: #68746c; }
+.task-menu-arrow { font-size: 22px; color: #9aa79c; }
+
+/* ===== Editor chi tiet don full-page (clone bo cuc orderEditorTemplate cua Sales Desk) ===== */
+
+.order-editor-shell {
+  display: grid;
+  grid-template-columns: 320px 1fr;
+  gap: 14px;
+  align-items: start;
+}
+
+.order-editor-aside { display: grid; gap: 12px; position: sticky; top: 10px; }
+.order-editor-main { display: grid; gap: 12px; min-width: 0; }
+
+.editor-block {
+  border: 1px solid #dbe4d8;
+  border-radius: 10px;
+  background: #fff;
+  padding: 12px;
+  display: grid;
+  gap: 10px;
+}
+
+.editor-block h3 { margin: 0; font-size: 15px; }
+.editor-block input, .editor-block select { min-height: 38px; }
+
+.editor-manual-product { border-top: 1px dashed #dbe4d8; padding-top: 8px; display: grid; gap: 8px; }
+.editor-manual-product summary { cursor: pointer; color: #3c5a3a; font-size: 13px; }
+.editor-manual-product input { width: 100%; box-sizing: border-box; }
+
+.editor-cart-table td input { width: 90px; min-height: 34px; }
+.editor-cart-table td input[data-editor-item-field="size"] { width: 70px; }
+.editor-cart-table td small { display: block; color: #68746c; }
+
+.editor-total-summary {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px 18px;
+  border-top: 1px dashed #dbe4d8;
+  padding-top: 8px;
+  font-size: 13.5px;
+}
+
+.editor-delivery-methods { display: flex; flex-wrap: wrap; gap: 8px; }
+
+.editor-delivery-card {
+  border: 1px solid #cfdccc;
+  border-radius: 10px;
+  padding: 8px 12px;
+  cursor: pointer;
+  background: #f7faf6;
+  font-size: 13.5px;
+}
+
+.editor-delivery-card.is-active { border-color: #2f6b2b; background: #e8f3e6; font-weight: 600; }
+
+.editor-lock-note {
+  margin: 0 0 10px;
+  padding: 8px 12px;
+  border-radius: 8px;
+  background: #fdf3e0;
+  border: 1px solid #ecd9ae;
+  color: #7a5b17;
+  font-size: 13px;
+}
+
+.order-quick-actions { display: flex; flex-wrap: wrap; gap: 4px; margin-top: 6px; }
+.order-quick-actions .small { font-size: 12px; padding: 3px 8px; }
+
+.col-actions { white-space: nowrap; }
+.col-actions .small { display: block; width: 100%; margin: 2px 0; }
+
+@media (max-width: 900px) {
+  .order-editor-shell { grid-template-columns: 1fr; }
+  .order-editor-aside { position: static; order: 2; }
+  .order-editor-main { order: 1; }
+  .editor-cart-table td input { width: 64px; }
+}
+
+/* ===== O CK ngoai don (cot Tong tien) + menu "Thao tac" thu gon (2026-08-08) ===== */
+
+.quick-payment-cell { display: grid; gap: 3px; margin-top: 6px; min-width: 150px; }
+.quick-payment-inline { display: flex; gap: 4px; }
+.quick-payment-inline input { width: 100px; min-height: 32px; font-size: 12.5px; padding: 3px 8px; }
+.quick-payment-cell small { color: #6b7280; font-size: 11.5px; }
+
+.order-actions-menu { position: relative; margin-top: 6px; display: inline-block; }
+.order-actions-menu summary {
+  list-style: none;
+  cursor: pointer;
+  font-size: 12px;
+  padding: 4px 12px;
+  border: 1px solid #cfd6cf;
+  border-radius: 7px;
+  background: #fff;
+  display: inline-block;
+  white-space: nowrap;
+  user-select: none;
+}
+.order-actions-menu summary::-webkit-details-marker { display: none; }
+.order-actions-menu[open] summary { border-color: #8fa78d; }
+
+.order-actions-pop {
+  position: absolute;
+  z-index: 40;
+  top: calc(100% + 4px);
+  left: 0;
+  min-width: 190px;
+  background: #fff;
+  border: 1px solid #d7ded6;
+  border-radius: 9px;
+  box-shadow: 0 8px 22px rgba(25, 40, 30, 0.16);
+  padding: 6px;
+  display: grid;
+  gap: 4px;
+}
+
+.order-actions-pop .small { display: block; width: 100%; text-align: left; }
+
+.order-card .order-actions-menu { display: block; }
+.order-card .order-actions-pop { position: static; box-shadow: none; border-style: dashed; margin-top: 4px; }
+.order-card .quick-payment-inline input { flex: 1; width: auto; }
+
+/* Fanpage: khoi Don hang & chuyen khoan (🧾) */
+.fanpage-ck select { width: 100%; margin: 8px 0; min-height: 34px; }
+.ck-percent-row { display: flex; flex-wrap: wrap; gap: 10px; align-items: flex-end; margin: 8px 0; }
+.ck-percent-row label { display: flex; flex-direction: column; gap: 4px; font-size: 12px; color: #4b5563; }
+.ck-percent-row input { width: 120px; min-height: 32px; }
+.ck-percent-row button.active { background: #111827; color: #fff; border-color: #111827; }
+.ck-amount-line { margin: 6px 0; font-size: 13.5px; }
+.ck-amount-line strong { color: #b91c1c; font-size: 15px; }
+.ck-qr { width: 190px; max-width: 100%; border: 1px solid #e5e7eb; border-radius: 10px; display: block; margin: 8px 0; background: #fff; }
+.ck-actions { display: flex; flex-wrap: wrap; gap: 8px; margin: 10px 0 6px; }
+.chat-bubble .pending-image { max-width: 210px; display: block; border-radius: 8px; margin-bottom: 4px; }
+
+/* Mobile fanpage: 1 man mot luc — nut quay lai danh sach + khung chat cao thoai mai hon */
+.fanpage-back-button { margin-bottom: 10px; }
+@media (max-width: 900px) {
+  .message-list { max-height: 45vh; }
+  .fanpage-reply-form textarea { font-size: 16px; }
+}
+
+/* ===== Sửa bố cục web mới (17/09/2026) =====
+ * admin.css chép nguyên từ web cũ, nên mang theo các chỗ vỡ đã có từ trước. Mỗi dòng dưới đây sửa một
+ * chỗ đo được bằng Chrome (tràn ô, chồng nút) — không đổi màu hay bố cục chung.
+ */
+
+/* `td:first-child { display: grid }` làm ô đầu không còn là ô bảng: hàng có colspan (thiết bị CTV)
+   bị ép vào cột 1, viền các hàng lệch nhau. Giữ ô bảng, chỉ xếp nội dung thành từng dòng. */
+td:first-child { display: table-cell; }
+td:first-child > :is(strong, small, b, input, select) { display: block; }
+td:first-child > * + * { margin-top: 3px; }
+td:first-child > .ctv-name-link { display: block; text-align: left; }
+
+/* Link trên thanh đầu trang (Kho, Người & máy) trông như nút cạnh "Tai lai". */
+.topbar-link {
+  display: inline-flex;
+  align-items: center;
+  min-height: 40px;
+  padding: 0 14px;
+  border-radius: 7px;
+  border: 1px solid rgba(255, 255, 255, 0.35);
+  color: #fff;
+  font-weight: 700;
+  text-decoration: none;
+}
+.topbar-link:hover { background: rgba(255, 255, 255, 0.12); }
+
+/* Bảng đơn / vận đơn: ô CK + nút Lưu tràn sang cột trạng thái, nút "Sửa nhanh" tràn khỏi cột thao tác. */
+.orders-table { min-width: 1240px; }
+.orders-table .col-code { width: 156px; }
+.orders-table .col-source { width: 84px; }
+.orders-table .col-time { width: 84px; }
+.orders-table .col-customer { width: 112px; }
+.orders-table .col-total { width: 168px; }
+.orders-table .col-status { width: 124px; }
+.orders-table .col-tracking { width: 104px; overflow-wrap: anywhere; }
+.orders-table .col-actions { width: 96px; }
+.orders-table td { overflow-wrap: break-word; }
+.quick-payment-cell { min-width: 0; }
+.quick-payment-inline input { flex: 1 1 0; width: 0; min-width: 0; }
+.quick-payment-inline button { flex: 0 0 auto; }
+.col-actions .small { white-space: normal; }
+.order-actions-menu { display: block; }
+
+/* Thẻ đối tác: "1.260.000 ₫" tràn khỏi ô công nợ. */
+.partner-grid { grid-template-columns: repeat(auto-fill, minmax(250px, 1fr)); }
+.mini-metrics { grid-template-columns: minmax(0, 0.8fr) minmax(0, 0.8fr) minmax(0, 1.4fr); }
+.mini-metrics div { min-width: 0; }
+.mini-metrics strong { font-size: 15px; overflow-wrap: anywhere; }
+
+/* Fanpage: tin cuối dài làm chữ tràn khỏi nút hội thoại và đè lên khung chat. */
+.conversation-list { max-height: 75vh; overflow-y: auto; padding-right: 2px; }
+.conversation-list button { min-width: 0; padding: 8px 12px; overflow: hidden; }
+.conversation-list button strong { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.conversation-list button span {
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+  overflow: hidden;
+  overflow-wrap: anywhere;
+  font-weight: 400;
+}
+.conversation-detail { overflow-wrap: anywhere; }

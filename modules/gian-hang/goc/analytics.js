@@ -173,3 +173,49 @@
     track("page_view", {}, { onceKey: `${location.pathname}${location.search}` });
   });
 })();
+
+// Dot D9 (17/09/2026): ma quang cao theo "Website Channels" cua OMI (GA4, Meta Pixel, TikTok Pixel).
+// May chu da kiem dung dang tung ma; o day chi nap the chuan cua tung nen tang. Chua gan ma = khong nap gi.
+(() => {
+  if (window.__omiPixelLoaded) return;
+  window.__omiPixelLoaded = true;
+  function addScript(src) {
+    const s = document.createElement("script");
+    s.async = true;
+    s.src = src;
+    document.head.appendChild(s);
+  }
+  fetch("/api/kenh-web/theo-doi", { headers: { Accept: "application/json" } })
+    .then((r) => (r.ok ? r.json() : null))
+    .then((cfg) => {
+      if (!cfg || cfg.ok !== true) return;
+      const ga4 = /^G-[A-Z0-9]{4,20}$/.test(cfg.ga4MeasurementId || "") ? cfg.ga4MeasurementId : "";
+      const meta = /^\d{8,20}$/.test(cfg.metaPixelId || "") ? cfg.metaPixelId : "";
+      const tiktok = /^[A-Z0-9]{10,30}$/.test(cfg.tiktokPixelId || "") ? cfg.tiktokPixelId : "";
+      if (ga4) {
+        window.dataLayer = window.dataLayer || [];
+        window.gtag = function gtag() { window.dataLayer.push(arguments); };
+        window.gtag("js", new Date());
+        window.gtag("config", ga4);
+        addScript(`https://www.googletagmanager.com/gtag/js?id=${encodeURIComponent(ga4)}`);
+      }
+      if (meta && !window.fbq) {
+        const fbq = function fbq() { fbq.callMethod ? fbq.callMethod.apply(fbq, arguments) : fbq.queue.push(arguments); };
+        fbq.push = fbq; fbq.loaded = true; fbq.version = "2.0"; fbq.queue = [];
+        window.fbq = fbq; window._fbq = fbq;
+        addScript("https://connect.facebook.net/en_US/fbevents.js");
+        window.fbq("init", meta);
+        window.fbq("track", "PageView");
+      }
+      if (tiktok && !window.ttq) {
+        const ttq = [];
+        ttq.methods = ["page", "track", "identify", "instances", "debug", "on", "off", "once", "ready", "alias", "group", "enableCookie", "disableCookie"];
+        ttq.setAndDefer = (t, e) => { t[e] = function () { t.push([e].concat(Array.prototype.slice.call(arguments, 0))); }; };
+        ttq.methods.forEach((m) => ttq.setAndDefer(ttq, m));
+        window.ttq = ttq;
+        addScript(`https://analytics.tiktok.com/i18n/pixel/events.js?sdkid=${encodeURIComponent(tiktok)}&lib=ttq`);
+        ttq.page();
+      }
+    })
+    .catch(() => { /* khong co ma thi thoi */ });
+})();

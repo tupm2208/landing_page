@@ -26,7 +26,7 @@ loginForm?.addEventListener("submit", async (event) => {
       throw new Error(payload.message || "Không đăng nhập được.");
     }
     sessionStorage.removeItem("partnerLoginMessage");
-    location.replace(`/partner-${payload.token}`);
+    location.replace(`/partner/${payload.token}`);
   } catch (error) {
     setLoginMessage(error.message || "Không đăng nhập được.", true);
   } finally {

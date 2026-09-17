@@ -14,12 +14,16 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 
-import { FakeHttpClient, FixedWindowRateLimiter, Kernel, ManualClock, MemoryLogger, TokenAuth, openMysqlStore } from "../dist/kernel/index.js";
+import {
+  FakeHttpClient, FakeStaticFilePort, FixedWindowRateLimiter, Kernel, ManualClock, MemoryLogger, TokenAuth, openMysqlStore
+} from "../dist/kernel/index.js";
 import { EVENTS, ROLE, defineModule, type IncomingRequest, type Reply } from "../dist/contract/index.js";
 import { SessionCookie } from "../dist/shared/session-cookie.js";
 import { manifest, type OrderForPurchasing } from "../dist/modules/mua-ho/module.js";
 import { PARTNER_COOKIE, PartnerSession } from "../dist/modules/mua-ho/partner-session.js";
-import { SCHEMA, PARTNERS_TABLE, PURCHASES_TABLE, STOCK_OUTS_TABLE } from "../dist/modules/mua-ho/schema.js";
+import {
+  SCHEMA, LOGIN_FAILURES_TABLE, PACKING_TABLE, PARTNERS_TABLE, PURCHASES_TABLE, SHIPMENT_REQUESTS_TABLE, STOCK_OUTS_TABLE
+} from "../dist/modules/mua-ho/schema.js";
 
 const ADMIN = "ma-quan-tri";
 const SECRET = "bi-mat-phien-doi-tac-dai";
@@ -111,7 +115,9 @@ test("The partner portal on real MySQL", { ...skipWithoutDb }, async (t) => {
   const cleanUp = async () => {
     clock.advance(16 * 60 * 1000);
     pendingOrders.length = 0;
-    for (const table of [STOCK_OUTS_TABLE, PURCHASES_TABLE, PARTNERS_TABLE]) await store.table(table).truncate();
+    for (const table of [STOCK_OUTS_TABLE, PURCHASES_TABLE, PACKING_TABLE, PARTNERS_TABLE, SHIPMENT_REQUESTS_TABLE, LOGIN_FAILURES_TABLE]) {
+      await store.table(table).truncate();
+    }
   };
   await cleanUp();
   t.after(async () => { await cleanUp(); await store.close(); });
@@ -120,16 +126,19 @@ test("The partner portal on real MySQL", { ...skipWithoutDb }, async (t) => {
     ports: {
       store, logger, clock, http: new FakeHttpClient(),
       auth: new TokenAuth({ keys: [{ token: ADMIN, name: "quan-tri", role: ROLE.admin }], clock }),
-      rateLimiter: new FixedWindowRateLimiter(clock)
+      rateLimiter: new FixedWindowRateLimiter(clock),
+      // The portal serves its own pages now, so the module declares `staticFiles`; a kernel without
+      // that port refuses to load it.
+      staticFiles: new FakeStaticFilePort({})
     },
     logger, modules: [fakeOrders, manifest],
     config: { "don-khach": {}, "mua-ho": { sessionSecret: SECRET, sessionHours: 12 } }
   });
 
   const admin = { authorization: `Bearer ${ADMIN}` };
-  const call = (method: string, path: string, { payload, cookie, headers }: { payload?: unknown; cookie?: string; headers?: IncomingRequest["headers"] } = {}) =>
+  const call = (method: string, path: string, { payload, cookie, headers, query }: { payload?: unknown; cookie?: string; headers?: IncomingRequest["headers"]; query?: Record<string, string> } = {}) =>
     kernel.handle({
-      method, path, ip: "1.1.1.1",
+      method, path, ip: "1.1.1.1", query: query ?? {},
       headers: { ...(headers ?? {}), ...(cookie ? { cookie } : {}) },
       json: async () => payload ?? {}
     });
@@ -143,10 +152,14 @@ test("The partner portal on real MySQL", { ...skipWithoutDb }, async (t) => {
   };
   let counter = 0;
   /** An order as the storefront would place it: the customer's price is on the line, the partner must never see it. */
-  const placeOrder = (lines = [{ productCode: PRODUCT.code, productName: PRODUCT.name }]) => {
+  const placeOrder = (lines: { productCode: string; productName: string; partnerId?: string }[] = [{ productCode: PRODUCT.code, productName: PRODUCT.name }]) => {
     counter += 1;
     const id = `ORD-178900000${String(counter).padStart(4, "0")}`;
-    pendingOrders.push({ id, items: lines.map((l) => ({ ...l, size: "42", qty: 1, price: PRODUCT.price })) });
+    // Paid, and every line given to partner A unless said otherwise — the shop already chose the warehouse.
+    pendingOrders.push({
+      id, status: "partner_assigned", paymentStatus: "paid", createdAt: new Date(Date.UTC(2026, 8, 1, 0, counter)).toISOString(),
+      items: lines.map((l) => ({ partnerId: "dt-a", ...l, size: "42", qty: 1, price: PRODUCT.price }))
+    });
     return id;
   };
 
@@ -281,7 +294,7 @@ test("The partner portal on real MySQL", { ...skipWithoutDb }, async (t) => {
     const task = body(await call("GET", "/api/partner-portal", { cookie })).canMua?.[0];
     assert.ok(task);
     const seen: { maDong?: string }[] = [];
-    kernel.bus.on(EVENTS.stockOut, "bai-thu", (d) => { seen.push(d as { maDong?: string }); });
+    kernel.bus.on(EVENTS.partnerStockOut, "bai-thu", (d) => { seen.push(d as { maDong?: string }); });
 
     await call("POST", "/api/partner-portal/out-of-stock", { cookie, payload: { maDong: task.maDong } });
     await new Promise((r) => setImmediate(r));
@@ -336,6 +349,114 @@ test("The partner portal on real MySQL", { ...skipWithoutDb }, async (t) => {
     assert.equal(shop.baoHet[0]?.lyDo, "hết size");
 
     assert.equal((await call("GET", "/api/admin/mua-ho")).status, 401, "the shop's screen is admin only");
+  });
+
+  // ---------- the partner's own list, and the doors of 16/09 ----------
+
+  const PORTAL_CODE_B = "link-rieng-cua-doi-tac-B";
+  const addPartnerB = () => call("POST", "/api/admin/partners", { headers: admin, payload: { ma: "dt-b", ten: "Đối tác B", maCong: PORTAL_CODE_B } });
+  const loginB = async () => {
+    const r = await call("POST", "/api/partner-portal/login", { payload: { token: PORTAL_CODE_B } });
+    return `toprun_partner_session=${(r.headers?.["Set-Cookie"] ?? "").split("=")[1]?.split(";")[0]}`;
+  };
+
+  await t.test("BREAKS IF a partner sees, or buys, a line the shop gave to ANOTHER partner", async () => {
+    await cleanUp(); await addPartner(); await addPartnerB();
+    placeOrder([{ productCode: "CUA-A", productName: "Của A" }, { productCode: "CUA-B", productName: "Của B", partnerId: "dt-b" }]);
+    const cookieA = await login();
+    const cookieB = await loginB();
+
+    const seenByA = body(await call("GET", "/api/partner-portal", { cookie: cookieA })).canMua ?? [];
+    assert.deepEqual(seenByA.map((x) => x.maMon), ["CUA-A"]);
+    const lineOfB = (body(await call("GET", "/api/partner-portal", { cookie: cookieB })).canMua ?? [])[0];
+    assert.equal(lineOfB?.maMon, "CUA-B");
+
+    // A replays B's line id: refused, nothing written.
+    const r = await call("POST", "/api/partner-portal/purchases", { cookie: cookieA, payload: { maDong: lineOfB?.maDong, soLuong: 1, maLenh: "trom" } });
+    assert.equal(r.status, 400);
+    assert.equal((r.body as { error?: string }).error, "dong_khong_thuoc_doi_tac");
+    // And by product code: A has no waiting CUA-B line.
+    const byCode = await call("POST", "/api/partner-portal/purchases", { cookie: cookieA, payload: { productCode: "CUA-B", size: "42", quantity: 1, commandId: "trom-2" } });
+    assert.equal(byCode.status, 400);
+    assert.equal(await store.table(PURCHASES_TABLE).count(), 0);
+  });
+
+  await t.test("a partner's cookie opened on ANOTHER partner's link is not a session", async () => {
+    await cleanUp(); await addPartner(); await addPartnerB();
+    const cookieA = await login();
+    assert.equal((await call("GET", "/api/partner-portal", { cookie: cookieA, query: { token: PORTAL_CODE_B } })).status, 401);
+    assert.equal((await call("GET", "/api/partner-portal", { cookie: cookieA, query: { token: PORTAL_CODE } })).status, 200);
+  });
+
+  await t.test("the page's shape: one tap spread over two orders is ONE session, returned with the reply", async () => {
+    await cleanUp(); await addPartner();
+    const first = placeOrder();
+    const second = placeOrder();
+    const cookie = await login();
+    const r = await call("POST", "/api/partner-portal/purchases", { cookie, payload: { productCode: PRODUCT.code, size: "42", quantity: 2, actualUnitCost: 1900000, commandId: "cham-1" } });
+    assert.equal(r.status, 200, JSON.stringify(r.body));
+    const session = (r.body as { session?: { id: string; quantity: number; allocations: { orderId: string }[] } }).session;
+    assert.equal(session?.id, "cham-1");
+    assert.equal(session?.quantity, 2);
+    assert.deepEqual(session?.allocations.map((a) => a.orderId).sort(), [first, second].sort());
+
+    // Undo the row of ONE order: only that order's slip goes, and the session still shows the other.
+    const undo = await call("POST", "/api/partner-portal/purchases/undo", { cookie, payload: { sessionId: "cham-1", orderId: first, lineIndex: 0 } });
+    assert.equal(undo.status, 200, JSON.stringify(undo.body));
+    const left = (undo.body as { session?: { allocations: { orderId: string }[] } }).session;
+    assert.deepEqual(left?.allocations.map((a) => a.orderId), [second]);
+    assert.equal(await store.table(PURCHASES_TABLE).count(), 1);
+  });
+
+  await t.test("what is owed counts EVERY slip, not the newest fifty", async () => {
+    await cleanUp();
+    await call("POST", "/api/admin/partners", { headers: admin, payload: { ma: "dt-a", ten: "Đối tác A", maCong: PORTAL_CODE, congMoiMon: 10000, congMoiDon: 0, cachTinh: "moi-mon" } });
+    const now = clock.now().getTime();
+    await store.table(PURCHASES_TABLE).insertMany(Array.from({ length: 60 }, (_, i) => ({
+      ma_phieu: `cu_${i}`, ma_doi_tac: "dt-a", ma_don: `ORD-CU-${i}`, ma_dong: `ORD-CU-${i}#1`, ma_mon: "X", size: "42",
+      so_luong: 1, gia_von: 1, gia_he_thong: 0, ma_lenh: `cu_${i}`, ghi_chu: "",
+      tao_luc: new Date(now - i * 60000).toISOString().slice(0, 23).replace("T", " ")
+    })));
+    const cookie = await login();
+    const summary = (body(await call("GET", "/api/partner-portal", { cookie })) as { summary?: { feeAmount: number; purchasedQty: number } }).summary;
+    assert.equal(summary?.purchasedQty, 60);
+    assert.equal(summary?.feeAmount, 600000);
+  });
+
+  await t.test("five wrong passwords lock the login for fifteen minutes — the right one included", async () => {
+    await cleanUp();
+    await call("POST", "/api/admin/partners", { headers: admin, payload: { ma: "dt-a", ten: "Đối tác A", maCong: PORTAL_CODE, dangNhap: "doitaca", matKhau: "mat-khau-dung-1" } });
+    for (let i = 0; i < 5; i += 1) {
+      assert.equal((await call("POST", "/api/partner-portal/login", { payload: { login: "doitaca", password: "sai-sai-sai" } })).status, 401);
+    }
+    assert.equal((await call("POST", "/api/partner-portal/login", { payload: { login: "doitaca", password: "mat-khau-dung-1" } })).status, 429);
+    clock.advance(16 * 60 * 1000);
+    assert.equal((await call("POST", "/api/partner-portal/login", { payload: { login: "doitaca", password: " mat-khau-dung-1 " } })).status, 200, "unlocked, and a stray space is forgiven");
+    assert.equal((await call("POST", "/api/partner-portal/login", { payload: { login: "dt-a", password: "mat-khau-dung-1" } })).status, 200, "the partner id works as a login, as it did");
+  });
+
+  await t.test("BREAKS IF the portal code alone opens a partner who HAS a password", async () => {
+    await cleanUp();
+    await call("POST", "/api/admin/partners", { headers: admin, payload: { ma: "dt-a", ten: "Đối tác A", maCong: PORTAL_CODE, dangNhap: "doitaca", matKhau: "mat-khau-dung-1" } });
+    const r = await call("POST", "/api/partner-portal/login", { payload: { token: PORTAL_CODE } });
+    assert.equal(r.status, 401);
+    assert.ok(!r.headers?.["Set-Cookie"], "no session handed out");
+  });
+
+  await t.test("packing an order that is not on the partner's list writes nothing", async () => {
+    await cleanUp(); await addPartner();
+    const cookie = await login();
+    const r = await call("POST", "/api/partner-portal/order-packing", { cookie, payload: { orderId: "ORD-KHONG-CO", status: "packed" } });
+    assert.equal(r.status, 404);
+    assert.equal(await store.table(PACKING_TABLE).count(), 0);
+  });
+
+  await t.test("the shop previews a partner's portal as the partner sees it", async () => {
+    await cleanUp(); await addPartner(); placeOrder();
+    const r = await call("GET", "/api/admin/mua-ho/portal", { headers: admin, query: { doiTac: "dt-a" } });
+    assert.equal(r.status, 200);
+    assert.equal((r.body as { needs: unknown[] }).needs.length, 1);
+    assert.equal((await call("GET", "/api/admin/mua-ho/portal", { query: { doiTac: "dt-a" } })).status, 401);
   });
 
   await t.test("the partner list is admin only", async () => {

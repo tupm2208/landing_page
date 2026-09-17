@@ -14,6 +14,8 @@ import type { OrderServices } from "../don-khach/module";
 import type { Order } from "../don-khach/order-repository";
 import type { PlatformServices } from "../khung-nen-tang/module";
 import type { ShippingServices } from "../van-chuyen/module";
+import type { InboxServices } from "../hop-thu/module";
+import type { AssistantServices } from "../tro-ly-ai/module";
 
 /** `ctx.config` as `app.ts` builds it (`moduleConfigFromEnv`). */
 export interface Config {
@@ -36,6 +38,8 @@ export interface Services {
   "khung-nen-tang"?: Pick<PlatformServices, "content">;
   "don-khach"?: Pick<OrderServices["don-khach"], "read" | "search">;
   "van-chuyen"?: Pick<ShippingServices, "track">;
+  "hop-thu"?: Pick<InboxServices, "thread">;
+  "tro-ly-ai"?: Pick<AssistantServices, "knowledge">;
 }
 
 export type GatewayContext = ModuleContext<Config, Services>;

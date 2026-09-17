@@ -9,7 +9,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import {
-  FixedWindowRateLimiter, JsonFileStore, Kernel, ManualClock, MemoryLogger, ROLE, TokenAuth, TrialModeHttpClient, jsonResponse,
+  FixedWindowRateLimiter, MemoryUploadPort, JsonFileStore, Kernel, ManualClock, MemoryLogger, ROLE, TokenAuth, TrialModeHttpClient, jsonResponse,
   type AnyManifest, type HttpClient
 } from "../dist/index.js";
 import { manifest as inbox } from "../dist/modules/hop-thu/module.js";
@@ -24,7 +24,7 @@ function trialKernel(modules: AnyManifest[], config: Record<string, unknown>, re
   const realCalls: string[] = [];
   const real: HttpClient = { async fetch(url) { realCalls.push(String(url)); return jsonResponse(realAnswer); } };
   const kernel = new Kernel({
-    ports: { store: new JsonFileStore(tmp()), logger, clock, http: new TrialModeHttpClient({ real, logger }), auth: new TokenAuth({ keys: [{ token: ADMIN, name: "quan-tri", role: ROLE.admin }], clock }), rateLimiter: new FixedWindowRateLimiter(clock) },
+    ports: { store: new JsonFileStore(tmp()), logger, clock, http: new TrialModeHttpClient({ real, logger }), auth: new TokenAuth({ keys: [{ token: ADMIN, name: "quan-tri", role: ROLE.admin }], clock }), rateLimiter: new FixedWindowRateLimiter(clock), uploads: new MemoryUploadPort() },
     logger, modules, config
   });
   return { kernel, realCalls };

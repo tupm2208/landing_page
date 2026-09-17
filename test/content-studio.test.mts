@@ -328,10 +328,10 @@ test("the whole flow: plan a day, write, judge, fix, schedule — and no step ca
   const toSchedule = await call("POST", `/api/noi-dung/lo/${batch["ma"]}/buoc`, { huong: "toi" });
   assert.equal((toSchedule.body as Body)["buoc"], "len-lich");
 
+  // Đ8: scheduling is real now — without the publishing module it says so instead of pretending.
   const scheduled = await call("POST", `/api/noi-dung/lo/${batch["ma"]}/len-lich`);
-  assert.equal(scheduled.status, 200, JSON.stringify(scheduled.body));
-  assert.equal((scheduled.body as Body)["soBai"], 2);
-  assert.equal((scheduled.body as Body)["chuaDang"], true, "lên lịch KHÔNG gọi Meta — đăng thật là việc sau");
+  assert.equal(scheduled.status, 503, JSON.stringify(scheduled.body));
+  assert.equal((scheduled.body as Body)["error"], "chua_bat_dang_bai");
 
   const list = (await call("GET", "/api/noi-dung/lo")).body as Body;
   assert.equal(list["lo"][0]["soDat"], 2);

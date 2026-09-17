@@ -109,7 +109,7 @@ export class Kernel {
   private portsFor(manifest: AnyManifest): ModulePorts {
     const wanted = new Set(manifest.ports ?? []);
     const ports = {} as ModulePorts;
-    for (const name of ["store", "logger", "clock", "http", "auth", "staticFiles", "mail"] as const) {
+    for (const name of ["store", "logger", "clock", "http", "auth", "staticFiles", "mail", "uploads"] as const) {
       if (wanted.has(name)) {
         const port = this.ports[name];
         if (port === undefined) throw new Error(`Module "${manifest.id}" asks for port "${name}" but the kernel has no such port.`);
@@ -209,7 +209,10 @@ export class Kernel {
   /** Handles one request without Node's http objects — tests call this directly. */
   async handle(incoming: IncomingRequest): Promise<Reply> {
     const match = this.router.match(incoming.method, incoming.path);
-    if (match.kind === "none") return { status: 404, body: { ok: false, error: ERROR_CODES.notFound } };
+    // An unknown route is almost always an OMI newer than this landing: say so, and name the route.
+    if (match.kind === "none") {
+      return { status: 404, body: { ok: false, error: ERROR_CODES.notFound, khongCoDuong: true, message: `Landing chưa có chức năng này (${incoming.method} ${incoming.path}) — landing đang chạy bản cũ hơn OMI, hoặc chưa bật mảnh chứa nó. Cập nhật mã landing, build lại và bật lại landing.` } };
+    }
     if (match.kind === "wrong-method") {
       return { status: 405, body: { ok: false, error: ERROR_CODES.badRequest, message: "Phương thức không đúng cho đường này." } };
     }
@@ -232,7 +235,7 @@ export class Kernel {
 
     // Access is checked HERE, once. Modules never check it themselves, so nobody can forget.
     if (route.access !== ACCESS.public) {
-      const refused = this.checkAccess(route.access, route.feature, request, route.path);
+      const refused = await this.checkAccess(route.access, route.feature, request, route.path);
       if (refused) return refused;
     }
 
@@ -254,24 +257,29 @@ export class Kernel {
     }
   }
 
-  private checkAccess(access: string, feature: string | null, request: KernelRequest, routePath: string): Reply | null {
+  private async checkAccess(access: string, feature: string | null, request: KernelRequest, routePath: string): Promise<Reply | null> {
     const auth: AuthPort | undefined = this.ports.auth;
     if (!auth) {
       this.logger.warn(`[khung] đường ${request.method} ${request.path} khai quyền "${access}" nhưng khung không có cổng quyền`);
       return { status: 500, body: { ok: false, error: ERROR_CODES.internal } };
     }
-    if (!auth.allows(request, access as never)) {
+    // Resolved ONCE: a token or ticket, else a person's session cookie (which needs a table lookup).
+    const caller = await auth.resolve(request);
+    if (!auth.callerAllows(caller, access as never)) {
       // Log WHO was refused, not just that someone was — it is what gets traced when something happens.
-      const caller = auth.identify(request);
       this.logger.warn(`[khung] từ chối ${request.method} ${routePath}: cần "${access}", người gọi là "${caller.name || "không rõ"}" (${caller.via})`);
       return { status: 401, body: { ok: false, error: ERROR_CODES.unauthenticated, message: "Thiếu mã hoặc mã không đủ quyền cho đường này." } };
     }
     // Feature gate: the ticket lists what the shop bought; a route of an unbought feature is 403
     // and names the feature, so OMI shows "chưa mua mảnh X" instead of a mystery error.
-    if (feature && auth.lacksFeature(request, feature)) {
-      const caller = auth.identify(request);
+    if (feature && auth.callerLacksFeature(caller, feature)) {
       this.logger.warn(`[khung] từ chối ${request.method} ${routePath}: "${caller.name}" chưa mua mảnh "${feature}"`);
       return { status: 403, body: { ok: false, error: ERROR_CODES.featureNotBought, manh: feature, message: `Shop chưa mua mảnh "${feature}".` } };
+    }
+    request.caller = caller;
+    // A person changing something is written down: the web admin has no machine name to trace.
+    if (caller.via === "phien-nguoi" && request.method !== "GET") {
+      this.logger.info(`[khung] ${caller.name} ${request.method} ${routePath}`);
     }
     return null;
   }

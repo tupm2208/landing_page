@@ -12,11 +12,13 @@
  */
 
 import { blindWarehouseId } from "./blind-warehouse-id";
+import { findInCatalog } from "./catalog-find";
 import type { CatalogItem, GatewayContext, OrderRecord, StockLine } from "./context";
 
 export type ToolName =
   | "catalog.search" | "stock.lookup" | "order.lookup" | "payment.status" | "shipment.track" | "storefront.link"
-  | "catalog.count" | "variant.chart" | "policy.get" | "purchase.eta" | "customer.recognize";
+  | "catalog.count" | "variant.chart" | "policy.get" | "purchase.eta" | "customer.recognize"
+  | "catalog.find" | "shop.bankAccount" | "conversation.recent" | "training.knowledge";
 
 /** The tool's input as the brain sent it — checked field by field inside each handler. */
 export type ToolInput = Record<string, unknown>;
@@ -244,6 +246,71 @@ class CustomerRecognize implements ToolHandler {
   }
 }
 
+// ---- Three tools for the AI agent on Xeon (16/09/2026) — Sales Desk's level-2 agent moved there.
+
+/** The whole public catalogue, kept one minute: the finder scans every item on each call. */
+const CATALOG_CACHE_MS = 60 * 1000;
+const catalogCache = new WeakMap<object, { at: number; items: CatalogItem[] }>();
+
+async function wholeCatalog(ctx: GatewayContext): Promise<CatalogItem[]> {
+  const now = ctx.ports.clock.now().getTime();
+  const cached = catalogCache.get(ctx.services["hang-kho"]);
+  if (cached && now - cached.at < CATALOG_CACHE_MS) return cached.items;
+  const items = await ctx.services["hang-kho"].search({ query: "", limit: 20000 });
+  catalogCache.set(ctx.services["hang-kho"], { at: now, items });
+  return items;
+}
+
+/** Sales Desk's `tra_kho`: in-stock items by name / code / size / purpose / gender (see `catalog-find.ts`). */
+class CatalogFind implements ToolHandler {
+  readonly name = "catalog.find" as const;
+  readonly needs = ["hang-kho", "search"] as const;
+  async run(ctx: GatewayContext, input: ToolInput): Promise<unknown> {
+    return { ketQua: findInCatalog(await wholeCatalog(ctx), input, String(ctx.config.siteUrl ?? "")) };
+  }
+}
+
+/**
+ * The shop's bank account — the agent checks a customer's transfer screenshot against it.
+ * Already public (the storefront shows it for transfers), so nothing new leaves the machine.
+ */
+class ShopBankAccount implements ToolHandler {
+  readonly name = "shop.bankAccount" as const;
+  readonly needs = ["khung-nen-tang", "content"] as const;
+  async run(ctx: GatewayContext): Promise<unknown> {
+    const content = await ctx.services["khung-nen-tang"]!.content();
+    return {
+      nganHang: content.bankName, maNganHang: content.bankCode,
+      soTaiKhoan: content.bankAccountNumber, chuTaiKhoan: content.bankAccountName
+    };
+  }
+}
+
+/**
+ * The recent messages of THIS conversation, so the agent answers in context and knows whether a
+ * human is on it. Read from the landing's inbox on every turn; Xeon keeps none of it.
+ */
+class ConversationRecent implements ToolHandler {
+  readonly name = "conversation.recent" as const;
+  readonly needs = ["hop-thu", "thread"] as const;
+  async run(ctx: GatewayContext, input: ToolInput): Promise<unknown> {
+    const messages = await ctx.services["hop-thu"]!.thread({ maHoiThoai: text(input["conversationId"]), limit: Number(input["limit"] || 20) });
+    return { tin: messages.map((m) => ({ chieu: m.chieu, boi: m.boi, chu: m.chu, soAnh: m.soAnh, luc: m.luc })) };
+  }
+}
+
+/**
+ * Đ7: what the shop approved for the AI (Q&A, rules, style examples, fit notes, libraries, sample
+ * profiles) and the external product settled on in this conversation. Approved items only.
+ */
+class TrainingKnowledge implements ToolHandler {
+  readonly name = "training.knowledge" as const;
+  readonly needs = ["tro-ly-ai", "knowledge"] as const;
+  async run(ctx: GatewayContext, input: ToolInput): Promise<unknown> {
+    return ctx.services["tro-ly-ai"]!.knowledge({ q: text(input["q"]), maHoiThoai: text(input["conversationId"]) });
+  }
+}
+
 /** The tool table, in the order the brain lists them. */
 export const DEFAULT_TOOL_HANDLERS: readonly ToolHandler[] = [
   new CatalogSearch(),
@@ -256,5 +323,9 @@ export const DEFAULT_TOOL_HANDLERS: readonly ToolHandler[] = [
   new VariantChart(),
   new PolicyGet(),
   new PurchaseEta(),
-  new CustomerRecognize()
+  new CustomerRecognize(),
+  new CatalogFind(),
+  new ShopBankAccount(),
+  new ConversationRecent(),
+  new TrainingKnowledge()
 ];

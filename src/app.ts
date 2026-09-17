@@ -12,10 +12,13 @@ import fs from "node:fs";
 import path from "node:path";
 import { ROLE, type AuthPort, type DataStore, type HttpClient, type Logger, type Mailer } from "./contract";
 import {
-  ConsoleLogger, DiskStaticFilePort, FetchHttpClient, FixedWindowRateLimiter, JsonFileStore, Kernel, SmtpMailer, SystemClock,
-  TokenAuth, TrialModeHttpClient, TrialModeMailer, UnconfiguredMailer, openMysqlStore, selectModules, smtpConfigured, unsplitModules
+  ConsoleLogger, DiskStaticFilePort, DiskUploadPort, FetchHttpClient, FixedWindowRateLimiter, JsonFileStore, Kernel, SmtpMailer, SystemClock,
+  ShopSettingsMailer, TokenAuth, TrialModeHttpClient, TrialModeMailer, UnconfiguredMailer, openMysqlStore, selectModules, smtpConfigured, unsplitModules
 } from "./kernel";
 import { BUILTIN_MODULES } from "./modules";
+import { manifest as quanTri } from "./modules/quan-tri/module";
+import { AdminSessionResolver, seedOwnerFromEnv } from "./modules/quan-tri/sessions";
+import { SHOP_SETTINGS_DOCUMENT, settingsOf, type ShopSettingsDocument } from "./modules/khung-nen-tang/shop-settings";
 import {
   normaliseAddress, normaliseLicenseKey, readXeonRegistration, registerWithXeon, saveXeonRegistration,
   type StoredXeonRegistration
@@ -53,7 +56,8 @@ export function moduleConfigFromEnv(env: Env, { siteUrl, xeonAddress }: { siteUr
     "hop-thu": {
       verifyToken: text(env["FACEBOOK_VERIFY_TOKEN"]),
       appSecret: text(env["FACEBOOK_APP_SECRET"]),
-      pageToken: text(env["FACEBOOK_PAGE_TOKEN"])
+      pageToken: text(env["FACEBOOK_PAGE_TOKEN"]),
+      siteUrl
     },
     "gian-hang": {
       // The real site origin, for OG tags (Facebook's crawler reads them when a customer shares a link).
@@ -93,7 +97,17 @@ export function moduleConfigFromEnv(env: Env, { siteUrl, xeonAddress }: { siteUr
       // session can be signed and partners cannot enter.
       sessionSecret: text(env["BI_MAT_PHIEN_DOI_TAC"]),
       sessionHours: Number(env["PHIEN_DOI_TAC_GIO"] || 12),
-      https: text(env["PHIEN_HTTPS"]) === "1"
+      https: text(env["PHIEN_HTTPS"]) === "1",
+      // READING A PRODUCT LABEL WITH THE CAMERA ("quét tem"): the partner photographs the label, a
+      // vision model reads the article code and size, and the result is matched against what they
+      // still have to buy. The key is the OPERATOR'S, not the shop's — which is why it lives here
+      // and not in the shop settings screen (see the note at the top of `shop-settings.ts`).
+      // Unset = the scan door answers "not configured"; nothing is ever guessed from a blurred photo.
+      scanAi: {
+        apiKey: text(env["SCAN_AI_API_KEY"]),
+        baseUrl: text(env["SCAN_AI_BASE_URL"]) || "https://ai.elevenvoice.site/v1",
+        model: text(env["SCAN_AI_MODEL"]) || "ag/gemini-3.7-flash-low"
+      }
     },
     "van-chuyen": {
       defaultCarrier: text(env["VAN_CHUYEN_MAC_DINH"] || "spx"),
@@ -120,6 +134,11 @@ export function moduleConfigFromEnv(env: Env, { siteUrl, xeonAddress }: { siteUr
         groupAddressId: text(env["VTP_GROUP_ADDRESS_ID"])
       }
     },
+    "dang-bai": {
+      // Meta downloads album pictures from this origin; link comments point at it and are signed like thong-ke's.
+      siteUrl: siteUrl || "https://toprun.site",
+      attributionSecret: text(env["TOPRUN_ATTRIBUTION_SECRET"] || env["LANDING_ORDERS_TOKEN"])
+    },
     "xuong-noi-dung": {
       // Links in the first comment must point at the shop's own site — Desk had `toprun.site` in a regex.
       siteUrl: siteUrl || "https://toprun.site"
@@ -128,6 +147,11 @@ export function moduleConfigFromEnv(env: Env, { siteUrl, xeonAddress }: { siteUr
       deployId: text(env["DEPLOY_ID"]) || "chua-dat",
       xeonAddress,
       landingAddress: siteUrl
+    },
+    "quan-tri": {
+      // Web-admin sessions: a random token in a cookie, its hash in a table (revocable at once).
+      sessionDays: Number(env["PHIEN_QUAN_TRI_NGAY"] || 14),
+      https: text(env["PHIEN_HTTPS"]) === "1"
     },
     "ctv": {
       // Collaborator sessions are signed with this. Missing = collaborators cannot log in (and the startup log says so).
@@ -155,6 +179,7 @@ export function disabledFeatures(env: Env, registered: boolean): string[] {
   if (!text(env["SMTP_HOST"]) || !text(env["SMTP_USER"]) || !text(env["SMTP_PASS"])) off.push("e-mail cho khách: quên mật khẩu, xác thực đổi hồ sơ (thiếu SMTP_HOST / SMTP_USER / SMTP_PASS; link vẫn tạo và in ra nhật ký)");
   if (!text(env["KHO_TEN"]) || !text(env["KHO_DIEN_THOAI"])) off.push("tạo vận đơn từ đơn (thiếu địa chỉ kho: KHO_TEN, KHO_DIEN_THOAI, KHO_TINH, KHO_HUYEN, KHO_XA, KHO_DIA_CHI)");
   if (!text(env["FACEBOOK_VERIFY_TOKEN"])) off.push("nhận tin Fanpage (thiếu FACEBOOK_VERIFY_TOKEN)");
+  if (!text(env["SCAN_AI_API_KEY"])) off.push("quét tem bằng camera ở cổng đối tác (thiếu SCAN_AI_API_KEY; đối tác vẫn gõ tay bình thường)");
   return off;
 }
 
@@ -220,7 +245,10 @@ export async function buildLandingApp(options: BuildOptions): Promise<LandingApp
     host: text(env["SMTP_HOST"]), port: Number(env["SMTP_PORT"] || 587), secure: /^(1|true|yes|on)$/i.test(text(env["SMTP_SECURE"])),
     user: text(env["SMTP_USER"]), pass: text(env["SMTP_PASS"]), from: text(env["SMTP_FROM"])
   };
-  const mail: Mailer = !realMode ? new TrialModeMailer(logger) : smtpConfigured(smtp) ? new SmtpMailer(smtp, logger) : new UnconfiguredMailer(logger);
+  const envMailer: Mailer = smtpConfigured(smtp) ? new SmtpMailer(smtp, logger) : new UnconfiguredMailer(logger);
+  // Đ9: the shop's own SMTP (typed in OMI, kept in khung-nen-tang settings) wins over SMTP_* of .env.
+  const mail: Mailer = !realMode ? new TrialModeMailer(logger)
+    : new ShopSettingsMailer(async () => settingsOf(await store.document<Partial<ShopSettingsDocument>>(SHOP_SETTINGS_DOCUMENT).read(null)), envMailer, logger);
 
   const auth = new TokenAuth({
     // Long-lived NAMED keys — TopRun's internal tools (Desk, Image Tool). Not feature-gated.
@@ -242,7 +270,10 @@ export async function buildLandingApp(options: BuildOptions): Promise<LandingApp
       store, logger, clock, http, auth, mail,
       rateLimiter: new FixedWindowRateLimiter(clock),
       // The storefront: a module sees only its own `goc/`, and only the declared file extensions.
-      staticFiles: new DiskStaticFilePort(STATIC_ROOT, logger)
+      staticFiles: new DiskStaticFilePort(STATIC_ROOT, logger),
+      // What people upload (product photos, invoice images): outside the code, so a deploy never
+      // wipes it and git never sees it. `THU_MUC_TAI_LEN` moves it (e.g. to a bigger disk on hosting).
+      uploads: new DiskUploadPort(text(env["THU_MUC_TAI_LEN"]) || path.join(options.dataDirectory, "tai-len"))
     },
     logger,
     // Behind hosting/Cloudflare the real address is in a header. ON only behind a real proxy —
@@ -257,6 +288,14 @@ export async function buildLandingApp(options: BuildOptions): Promise<LandingApp
     for (const m of modules) {
       if ((m.schema ?? []).length > 0) await store.runSchema(m.id, m.schema ?? [], { inheritedTables: m.inheritedTables ?? [] });
     }
+  }
+
+  // PEOPLE LOG IN TO THE WEB ADMIN (16/09/2026): the auth port reads their session cookie through
+  // the module that owns the session table. The first owner comes from the running site's own
+  // `.env` variables, once, so a shop moved over logs in with the password it already has.
+  if (store.supportsTables && modules.some((m) => m.id === quanTri.id)) {
+    auth.usePersonSessions(new AdminSessionResolver(store, clock));
+    await seedOwnerFromEnv(store, env, clock, logger);
   }
 
   // REGISTER WITH XEON (decided 14/09): the landing identifies itself by licence key and receives

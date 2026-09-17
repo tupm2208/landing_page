@@ -1,0 +1,56 @@
+<!doctype html>
+<html lang="vi">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Quản lý kho đối tác</title>
+  <link rel="stylesheet" href="/warehouse.css?v=20260917-bo-cuc">
+</head>
+<body>
+  <div class="desk">
+    <aside class="rail">
+      <div class="brand">
+        <div class="mark">K</div>
+        <div>
+          <h1>Kho đối tác</h1>
+          <p>Kho sẵn và kho order</p>
+        </div>
+      </div>
+      <nav class="tabs" aria-label="Chức năng">
+        <button class="tab active" data-view="lookup" type="button">Tra cứu</button>
+        <button class="tab" data-view="orderWarehouse" type="button">Kho order</button>
+        <button class="tab" data-view="orders" type="button">Đơn hàng</button>
+        <button class="tab" data-view="products" type="button">Sản phẩm</button>
+        <button class="tab" data-view="customers" type="button">Khách hàng</button>
+        <button class="tab" data-view="stock" type="button">Nhập/chuyển kho</button>
+        <button class="tab" data-view="users" type="button">Phân quyền</button>
+      </nav>
+      <div class="rail-note">
+        <b>Luồng kho</b>
+        <span>Bán kho order là trừ thật. Hoàn đơn luôn nhập về kho sẵn.</span>
+      </div>
+    </aside>
+
+    <main class="workspace">
+      <header class="top">
+        <div>
+          <p class="eyebrow">Phần mềm riêng cho đối tác</p>
+          <h2 id="page-title">Tra cứu lấy hàng</h2>
+        </div>
+        <div class="top-actions">
+          <button id="desktop-preview-btn" class="ghost" type="button">Máy tính</button>
+          <button id="mobile-preview-btn" class="ghost" type="button">Điện thoại</button>
+          <button id="refresh-btn" class="ghost" type="button">Làm mới</button>
+        </div>
+      </header>
+
+      <section id="stats" class="stats" aria-label="Tổng quan"></section>
+      <section id="view" class="view"></section>
+    </main>
+  </div>
+
+  <div id="toast" class="toast" role="status" aria-live="polite"></div>
+  <script src="/warehouse-api.js?v=20260917-bo-cuc"></script>
+  <script src="/warehouse.js?v=20260917-bo-cuc"></script>
+</body>
+</html>

@@ -14,10 +14,19 @@ export const EVENTS = {
   paymentRefunded: "tien-doi-soat.da-hoan",
   stockOut: "hang-kho.het-hang",
   stockBack: "hang-kho.ve-lai",
+  /** Một đối tác vừa báo đã mua một dòng đơn. Đơn hàng nghe để khoá kho của dòng đó. */
+  purchaseReported: "mua-ho.da-mua",
+  /**
+   * Một đối tác báo KHÔNG mua được một dòng đơn (hết hàng ở chỗ họ). Khác `stockOut` của kho:
+   * đây là một dòng đơn cần tìm nguồn khác, không phải một biến thể trong danh mục hết tồn.
+   */
+  partnerStockOut: "mua-ho.bao-het",
   shipmentCreated: "van-chuyen.da-tao-van-don",
   shipmentStatusChanged: "van-chuyen.doi-trang-thai",
   messageIn: "hop-thu.tin-den",
-  messageOut: "hop-thu.tin-di"
+  messageOut: "hop-thu.tin-di",
+  /** Đ10: a person the shop listed (`lenh_ton_zalo`) wrote in Zalo — maybe a stock command (tồn / hết / hoàn). Not for the bot. */
+  stockCommand: "hop-thu.lenh-ton"
 } as const;
 
 export type EventName = (typeof EVENTS)[keyof typeof EVENTS];

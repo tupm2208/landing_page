@@ -5,19 +5,25 @@
  * forget the call, and a door is open. Here modules never check: the route declares `access` (and
  * `feature`) and the kernel refuses before the module runs (decided 12/09/2026).
  *
- * TWO WAYS IN (decided 14/09/2026 — the 15-minute ticket and machine pairing are gone):
+ * THREE WAYS IN (decided 14/09/2026 — the 15-minute ticket and machine pairing are gone; the third 16/09):
  *   1. A MACHINE TICKET signed by Xeon (`VM1.…`). The owner's console carries role "quan-tri";
  *      the brain carries "dich-vu". The landing verifies with Xeon's PUBLIC key (received at
  *      registration) and never calls Xeon. The ticket names the shop (must be this one) and the
  *      features the shop bought (the kernel gates routes on them).
  *   2. A LONG-LIVED NAMED KEY (Sales Desk, Image Tool of TopRun). Not feature-gated: internal tools.
+ *   3. A PERSON'S SESSION COOKIE (the web admin, `/admin`). Looked up in a table through the
+ *      `PersonSessionResolver` the composition root plugs in, so it can be revoked at once. Only
+ *      read when the request carries no token: a token always decides.
  *
  * Three ways to present a credential, exactly as Desk and Image Tool do today:
  *   Authorization: Bearer <token>  |  x-landing-token: <token>  |  ?token=<token>
  */
 
 import crypto from "node:crypto";
-import { ACCESS, ROLE, type Access, type AuthPort, type Caller, type Clock, type CredentialSource, type Logger, type Role, type XeonPublicKey } from "../../contract";
+import {
+  ACCESS, ROLE, type Access, type AuthPort, type Caller, type Clock, type CredentialSource, type Logger, type PersonSessionResolver, type Role,
+  type XeonPublicKey
+} from "../../contract";
 import { isTicket, verifyTicket } from "../../shared/ticket-kit";
 
 export interface NamedKey {
@@ -63,6 +69,7 @@ export class TokenAuth implements AuthPort {
   private myShop = "";
   private readonly clock: Clock;
   private readonly logger: Logger;
+  private personSessions: PersonSessionResolver | null = null;
 
   constructor(options: TokenAuthOptions = {}) {
     this.clock = options.clock ?? { now: () => new Date() };
@@ -113,19 +120,41 @@ export class TokenAuth implements AuthPort {
     return ANONYMOUS("ma-la");
   }
 
-  allows(request: CredentialSource, access: Access): boolean {
+  usePersonSessions(resolver: PersonSessionResolver): void {
+    this.personSessions = resolver;
+  }
+
+  async resolve(request: CredentialSource): Promise<Caller> {
+    const byToken = this.identify(request);
+    if (byToken.via !== "khong-co-ma" || !this.personSessions) return byToken;
+    try {
+      return (await this.personSessions.resolve(request)) ?? byToken;
+    } catch (e) {
+      // A broken lookup must fail CLOSED, and loudly: nobody gets in on a database hiccup.
+      this.logger.warn(`[quyen] không tra được phiên người: ${e instanceof Error ? e.message : String(e)}`);
+      return ANONYMOUS("loi-tra-phien");
+    }
+  }
+
+  callerAllows(caller: Caller, access: Access): boolean {
     if (access === ACCESS.public) return true;
-    const { role } = this.identify(request);
-    if (access === ACCESS.admin) return role === ROLE.admin;
-    if (access === ACCESS.service) return role === ROLE.service || role === ROLE.admin;
+    if (access === ACCESS.admin) return caller.role === ROLE.admin;
+    if (access === ACCESS.service) return caller.role === ROLE.service || caller.role === ROLE.admin;
     return false;
   }
 
-  /** Only ticket callers are feature-gated; keys and anonymous callers are not. */
-  lacksFeature(request: CredentialSource, feature: string): boolean {
-    const caller = this.identify(request);
+  allows(request: CredentialSource, access: Access): boolean {
+    return this.callerAllows(this.identify(request), access);
+  }
+
+  /** Only ticket callers are feature-gated; keys, persons and anonymous callers are not. */
+  callerLacksFeature(caller: Caller, feature: string): boolean {
     if (caller.via !== "ve-xeon") return false;
     return !(Array.isArray(caller.features) && caller.features.includes(feature));
+  }
+
+  lacksFeature(request: CredentialSource, feature: string): boolean {
+    return this.callerLacksFeature(this.identify(request), feature);
   }
 
   isAdmin(request: CredentialSource): boolean { return this.identify(request).role === ROLE.admin; }

@@ -15,7 +15,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { ROLE } from "../dist/contract/index.js";
-import { FakeHttpClient, FixedWindowRateLimiter, JsonFileStore, Kernel, ManualClock, MemoryLogger, TokenAuth } from "../dist/kernel/index.js";
+import { FakeHttpClient, FixedWindowRateLimiter, JsonFileStore, Kernel, ManualClock, MemoryLogger, MemoryMailer, TokenAuth } from "../dist/kernel/index.js";
 import { defaultPageContent, moneySettingsFrom, normalisePageContent } from "../dist/modules/khung-nen-tang/page-content.js";
 import { manifest as platform } from "../dist/modules/khung-nen-tang/module.js";
 
@@ -30,7 +30,7 @@ function build() {
   const kernel = new Kernel({
     ports: {
       store: new JsonFileStore(tmp()), logger, clock, http: new FakeHttpClient(),
-      auth: new TokenAuth({ keys: [{ token: ADMIN, name: "quan-tri", role: ROLE.admin }], clock }), rateLimiter: new FixedWindowRateLimiter(clock)
+      auth: new TokenAuth({ keys: [{ token: ADMIN, name: "quan-tri", role: ROLE.admin }], clock }), rateLimiter: new FixedWindowRateLimiter(clock), mail: new MemoryMailer()
     },
     logger, modules: [platform], config: {}
   });

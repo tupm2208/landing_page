@@ -15,8 +15,8 @@
 import crypto from "node:crypto";
 import { convertToTwoTier, hasBrokenFont } from "../address";
 import {
-  errorMessage, isAbortError, itemPrice, itemQuantity, slipItems, slipTotals,
-  type Carrier, type CarrierDeps, type CreateShipmentResult, type ShippingSlip, type TrackResult
+  deliveryStateFromStatus, errorMessage, firstMoney, isAbortError, itemPrice, itemQuantity, slipItems, slipTotals,
+  type Carrier, type CarrierAnswer, type CarrierDeps, type CreateShipmentResult, type LabelResult, type ShippingSlip, type TrackResult, type TrackSnapshot
 } from "./carrier";
 
 export const SPX_LIVE = "https://spx.vn";
@@ -28,7 +28,12 @@ export const SPX_PATHS = {
   searchOrder: "/open/api/v1/order/search_order",
   cancelOrder: "/open/api/v1/order/cancel_order",
   label: "/open/api/v1/order/shipping_label",
-  pickupTime: "/open/api/v1/order/pickup_time"
+  pickupTime: "/open/api/v1/order/pickup_time",
+  // Đ3 (17/09/2026): the BATCH doors Sales Desk calls in production today (`spx_shipping.js`) for
+  // verify / cancel / label. Create and track keep the running site's doors above, which work.
+  verify: "/open/api/v1/account/verify",
+  batchCancel: "/open/api/v1/order/batch_cancel_order",
+  batchLabel: "/open/api/v1/order/batch_get_shipping_label"
 } as const;
 
 /** SPX credentials and options. Everything optional: "not configured" is a state the carrier reports, not a crash. */
@@ -382,5 +387,48 @@ export class SpxCarrier implements Carrier {
     const data = asRecord(r.data);
     const orders = Array.isArray(data["orders"]) ? data["orders"] as unknown[] : [];
     return { ok: true, don: orders[0] ?? null, duongTra: spxTrackingUrl(trackingNumber) };
+  }
+
+  /** Desk `spxExtractFinance` + the status text of `syncSpxTrackingFromAPI`. */
+  readTrack(record: unknown): TrackSnapshot {
+    const row = asRecord(record);
+    const merged = { ...asRecord(row["fulfillment_info"] ?? row["fulfillmentInfo"]), ...asRecord(row["finance_info"] ?? row["financeInfo"]), ...row };
+    const status = text(row["status"] || row["status_desc"] || row["tracking_status"]) || text(row["status_code"]);
+    return {
+      trangThai: status,
+      trangThaiGiao: deliveryStateFromStatus(status),
+      codDuKien: firstMoney(merged, ["cod_amount", "codAmount", "cod_collection_amount"]),
+      codDaThu: firstMoney(merged, ["cod_collected_amount", "codCollectedAmount", "actual_cod_amount", "actualCodAmount", "collected_cod_amount", "collectedCodAmount"]),
+      phi: firstMoney(merged, ["actual_shipping_fee", "actualShippingFee", "shipping_fee", "shippingFee", "total_shipping_fee", "totalShippingFee"])
+    };
+  }
+
+  async cancel(trackingNumber: string): Promise<CarrierAnswer> {
+    const tn = text(trackingNumber);
+    const r = await this.call(SPX_PATHS.batchCancel, { tracking_no_list: [tn] });
+    if (!r.ok) return { ok: false, loiNhan: `SPX không huỷ được vận đơn: ${r.message}` };
+    const data = asRecord(r.data);
+    const cancelled = (Array.isArray(data["tracking_no_list"]) ? data["tracking_no_list"] as unknown[] : []).map(text);
+    if (cancelled.includes(tn)) return { ok: true, loiNhan: `Đã huỷ vận đơn SPX ${tn}.` };
+    const reasons = (Array.isArray(data["fail_list"]) ? data["fail_list"] as unknown[] : []).map(asRecord)
+      .map((f) => text(f["message"] || f["debug_msg"] || (f["ret_code"] !== undefined ? `ret_code ${String(f["ret_code"])}` : ""))).filter(Boolean);
+    return { ok: false, loiNhan: reasons.join("; ") || "SPX từ chối huỷ vận đơn (chỉ huỷ được khi đơn còn chờ lấy hàng)." };
+  }
+
+  async label(trackingNumber: string): Promise<LabelResult> {
+    const r = await this.call(SPX_PATHS.batchLabel, { tracking_no_list: [text(trackingNumber)] });
+    if (!r.ok) return { ok: false, loiNhan: `SPX không trả phiếu gửi: ${r.message}` };
+    const link = text(asRecord(r.data)["awb_link"]);
+    return link ? { ok: true, duongDan: link, loiNhan: "Đã lấy phiếu gửi SPX." } : { ok: false, loiNhan: "SPX không trả link phiếu gửi (AWB)." };
+  }
+
+  async verify(): Promise<CarrierAnswer> {
+    const missing = missingSpxConfig(this.config);
+    if (missing.length) return { ok: false, loiNhan: `Thiếu cấu hình SPX: ${missing.join(", ")}.` };
+    const r = await this.call(SPX_PATHS.verify, {});
+    if (!r.ok) return { ok: false, loiNhan: `SPX không nhận: ${r.message}` };
+    return asRecord(r.data)["match_result"]
+      ? { ok: true, loiNhan: "Kết nối SPX OK: User ID và Secret Key hợp lệ." }
+      : { ok: false, loiNhan: "SPX phản hồi nhưng User ID/Secret Key không khớp. Kiểm tra lại hai mã trong Hồ sơ Shop trên spx.vn." };
   }
 }

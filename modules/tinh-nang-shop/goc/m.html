@@ -1,0 +1,36 @@
+<!DOCTYPE html>
+<html lang="vi">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta name="theme-color" content="#1f2520">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+  <meta name="apple-mobile-web-app-title" content="OMI">
+  <meta name="robots" content="noindex">
+  <title>OMI — Điện thoại</title>
+  <link rel="stylesheet" href="/m.css?v=20260917-d10">
+</head>
+<body>
+  <!-- Trang điện thoại cho người bán (route /m), dáng theo bản điện thoại của Sales Desk.
+       Ba tab: Đơn · Tra tồn · Kho. Chỉ gọi cửa quản trị sẵn có của landing (phiên đăng nhập). -->
+  <div id="m-app">
+    <header class="m-topbar">
+      <div class="title-block">
+        <h2 id="m-title">Đơn hàng</h2>
+        <div class="sub" id="m-sub"></div>
+      </div>
+      <button class="icon-btn" id="m-reload" type="button" aria-label="Tải lại">↻</button>
+    </header>
+    <main class="m-view" id="m-view"></main>
+    <nav class="m-tabbar" aria-label="Chuyển tab">
+      <button class="m-tab" type="button" data-tab="don"><i>🧾</i>Đơn<span class="dot" id="m-dot-don"></span></button>
+      <button class="m-tab" type="button" data-tab="ton"><i>🔎</i>Tra tồn</button>
+      <button class="m-tab" type="button" data-tab="kho"><i>📦</i>Kho</button>
+    </nav>
+  </div>
+  <div id="m-sheet"></div>
+  <div id="m-toast" aria-live="polite"></div>
+  <script src="/m.js?v=20260917-d10"></script>
+</body>
+</html>

@@ -23,12 +23,16 @@
  */
 
 import crypto from "node:crypto";
-import { ACCESS, ERROR_CODES, defineModule, reply, type KernelRequest, type ModuleContext, type ReplyDraft, type Row } from "../../contract";
+import { ACCESS, ERROR_CODES, EVENTS, defineModule, reply, type KernelRequest, type ModuleContext, type ReplyDraft, type Row } from "../../contract";
 import type { InventoryServices } from "../hang-kho/module";
 import { toMysqlDateTime, isoFromMysql } from "../../shared/mysql-time";
 import { CollaboratorRepository, DEVICE_STATUS, deviceView, downloadView, publicView, type CollaboratorView } from "./collaborator-repository";
 import { hashPassword, hashToken, verifyPassword } from "../../shared/password";
-import { SCHEMA } from "./schema";
+import { ACCOUNT_TABLE, DEFAULT_RESET_MINUTES, DEVICE_TABLE, SCHEMA, SESSION_TABLE } from "./schema";
+import {
+  COMMISSION_SCHEMA, CommissionBook, readAffiliateConfig, updateAffiliateConfig,
+  type AffiliateCampaign, type AffiliateRule, type Attribution, type OrderForCommission
+} from "./commissions";
 import { CollaboratorCookies, DEFAULT_SESSION_HOURS } from "./session";
 
 /** `ctx.config` as built by `moduleConfigFromEnv()` in app.ts. */
@@ -41,6 +45,10 @@ export interface Config {
   https: boolean;
   /** Device-cookie life in hours. Not set by app.ts today; defaults to one year. */
   deviceCookieHours?: number;
+  /** Public URL of the storefront, used in password-reset emails. */
+  siteUrl?: string;
+  /** How many minutes a reset link stays alive (default 30). */
+  resetMinutes?: number;
 }
 
 /**
@@ -130,6 +138,17 @@ async function loggedIn(ctx: Ctx, request: KernelRequest): Promise<LoggedInColla
   return { ...publicView(account), maPhien: sessionHash, maThietBi: deviceId };
 }
 
+/** An order as the commission book needs it, through Orders' service (absent = null). */
+async function readOrderFor(ctx: Ctx, id: string): Promise<OrderForCommission | null> {
+  const read = (ctx.services as Record<string, Record<string, unknown> | undefined>)["don-khach"]?.["read"] as ((id: string) => Promise<OrderForCommission | null>) | undefined;
+  return read ? read(id) : null;
+}
+
+function commissionReader(ctx: Ctx): ((id: string) => Promise<OrderForCommission | null>) | undefined {
+  const read = (ctx.services as Record<string, Record<string, unknown> | undefined>)["don-khach"]?.["read"];
+  return read ? (id: string) => readOrderFor(ctx, id) : undefined;
+}
+
 /** Login: right password AND an approved device. */
 async function login(ctx: Ctx, request: KernelRequest, body: Record<string, unknown>): Promise<ReplyDraft> {
   const loginText = normaliseLogin(body["login"] || body["username"] || body["email"] || body["phone"]);
@@ -193,41 +212,80 @@ async function login(ctx: Ctx, request: KernelRequest, body: Record<string, unkn
   };
 }
 
-/** Admin: create or update an account. The whole row is rebuilt; the hash is kept unless a new password comes in. */
+/**
+ * Admin: create or update an account.
+ *
+ * UPDATE IS PARTIAL (16/09/2026): only the fields sent change. The web admin's "Tạm dừng" sends
+ * `{ma, dangBat:false}` alone; rebuilding the whole row from that erased the name and phone and
+ * minted a new referral code — which orphans every link the collaborator already shared.
+ * CREATE needs a phone OR an e-mail (the running site's rule) and a password. A phone, e-mail,
+ * login or referral code already used by another account is refused (409), as it was.
+ */
 async function saveAccount(ctx: Ctx, request: KernelRequest): Promise<ReplyDraft> {
   const body = asRecord(await request.json());
-  const name = String(body["ten"] || body["name"] || "").trim();
-  const phone = digitsOnly(body["dienThoai"] || body["phone"]);
-  if (!name || phone.length < 9) {
-    return reply.json({ ok: false, error: "thieu_ten_hoac_dien_thoai" }, 400);
-  }
+  const has = (...keys: string[]) => keys.some((k) => body[k] !== undefined);
+  const pick = (...keys: string[]) => { for (const k of keys) if (body[k] !== undefined) return body[k]; return undefined; };
+
   const password = String(body["matKhau"] || body["password"] || "");
   if (password !== "" && password.length < 8) {
     return reply.json({ ok: false, error: "mat_khau_qua_ngan", message: "Mật khẩu phải từ 8 ký tự." }, 400);
   }
 
   const now = ctx.ports.clock.now();
-  const id = String(body["ma"] || "").trim() || `ctv_${now.getTime().toString(36)}_${crypto.randomBytes(3).toString("hex")}`;
   const repo = new CollaboratorRepository(ctx.ports.store);
-  const existing = await repo.findAccount(id);
+  const givenId = String(body["ma"] || body["id"] || "").trim();
+  const existing = givenId ? await repo.findAccount(givenId) : null;
+  if (givenId && !existing && !has("ten", "name", "dienThoai", "phone", "email")) {
+    return reply.json({ ok: false, error: "khong_thay", message: "Không thấy tài khoản cộng tác viên này." }, 404);
+  }
+  const id = givenId || `ctv_${now.getTime().toString(36)}_${crypto.randomBytes(3).toString("hex")}`;
+  const current = (key: string): unknown => existing?.[key];
+
+  const phone = has("dienThoai", "phone") ? digitsOnly(pick("dienThoai", "phone")) : String(current("dien_thoai") ?? "");
+  const email = has("email") ? String(body["email"] ?? "").trim().toLowerCase().slice(0, 190) : String(current("email") ?? "");
+  if (phone === "" && email === "") return reply.json({ ok: false, error: "thieu_dien_thoai_hoac_email", message: "Cần số điện thoại hoặc email." }, 400);
+  if (phone !== "" && phone.length < 9) return reply.json({ ok: false, error: "thieu_ten_hoac_dien_thoai", message: "Số điện thoại chưa đúng." }, 400);
+  if (email !== "" && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) return reply.json({ ok: false, error: "email_sai", message: "Email chưa đúng." }, 400);
+
+  const name = has("ten", "name") ? String(pick("ten", "name") ?? "").trim() : String(current("ten") ?? "");
+  const login = has("tenDangNhap", "username") ? String(pick("tenDangNhap", "username") ?? "").trim() : String(current("ten_dang_nhap") ?? "");
+  const code = has("maGioiThieu", "code")
+    ? String(pick("maGioiThieu", "code") ?? "").trim().toUpperCase().replace(/[^A-Z0-9_-]/g, "").slice(0, 40)
+    : String(current("ma_gioi_thieu") ?? "");
+  const flag = (keys: string[], column: string, fallback: number) => {
+    const v = pick(...keys);
+    if (v === undefined) return existing ? Number(current(column) ?? fallback) : fallback;
+    return v === true || v === 1 || v === "1" ? 1 : 0;
+  };
 
   const row: Row = {
     ma: id,
-    ten: name,
+    ten: (name || phone || email).slice(0, 190),
     dien_thoai: phone,
-    email: String(body["email"] || "").trim().toLowerCase().slice(0, 190),
-    ten_dang_nhap: String(body["tenDangNhap"] || body["username"] || phone).trim().slice(0, 190),
-    ma_gioi_thieu: String(body["maGioiThieu"] || body["code"] || "").trim().toUpperCase().replace(/[^A-Z0-9_-]/g, "").slice(0, 40)
-      || `CTV${crypto.randomBytes(4).toString("hex").toUpperCase()}`,
-    dang_bat: body["dangBat"] === false ? 0 : 1,
-    cho_bo_logo: body["choBoLogo"] === true ? 1 : 0,
-    bam_mat_khau: password !== "" ? await hashPassword(password) : String(existing?.["bam_mat_khau"] || ""),
-    bam_cap_luc: password !== "" ? toMysqlDateTime(now) : (existing?.["bam_cap_luc"] ?? null),
+    email,
+    ten_dang_nhap: (login || phone || email).slice(0, 190),
+    ma_gioi_thieu: code || `CTV${crypto.randomBytes(4).toString("hex").toUpperCase()}`,
+    dang_bat: flag(["dangBat", "active"], "dang_bat", 1),
+    cho_bo_logo: flag(["choBoLogo", "allowNoLogo"], "cho_bo_logo", 0),
+    hoa_hong_mac_dinh: has("hoaHongMacDinh", "defaultCommission")
+      ? String(pick("hoaHongMacDinh", "defaultCommission") ?? "").trim().replace(/[^\d.%]/g, "").slice(0, 16)
+      : String(current("hoa_hong_mac_dinh") ?? ""),
+    bam_mat_khau: password !== "" ? await hashPassword(password) : String(current("bam_mat_khau") || ""),
+    bam_cap_luc: password !== "" ? toMysqlDateTime(now) : (current("bam_cap_luc") ?? null),
     tao_luc: existing ? existing["tao_luc"] : toMysqlDateTime(now),
     sua_luc: toMysqlDateTime(now)
   };
   if (!existing && row["bam_mat_khau"] === "") {
     return reply.json({ ok: false, error: "thieu_mat_khau", message: "Tài khoản mới phải có mật khẩu (từ 8 ký tự)." }, 400);
+  }
+
+  // Two accounts sharing a phone, e-mail, login or referral code cannot both log in / be paid.
+  for (const [column, value, label] of [["dien_thoai", row["dien_thoai"], "Số điện thoại"], ["email", row["email"], "Email"], ["ten_dang_nhap", row["ten_dang_nhap"], "Tên đăng nhập"], ["ma_gioi_thieu", row["ma_gioi_thieu"], "Mã giới thiệu"]] as const) {
+    if (!value) continue;
+    const other = await ctx.ports.store.table(ACCOUNT_TABLE).one({ [column]: value });
+    if (other && String(other["ma"]) !== id) {
+      return reply.json({ ok: false, error: "trung_tai_khoan", message: `${label} đã dùng cho cộng tác viên khác.` }, 409);
+    }
   }
   await repo.saveAccount(row);
 
@@ -236,6 +294,21 @@ async function saveAccount(ctx: Ctx, request: KernelRequest): Promise<ReplyDraft
 
   ctx.ports.logger.info(`[ctv] ${existing ? "sua" : "them"} tai khoan ${id}`);
   return reply.json({ ok: true, ctv: publicView(row) }, 200, NO_STORE);
+}
+
+/** Admin: delete an account for good — its sessions and devices go with it; download history stays. */
+async function deleteAccount(ctx: Ctx, request: KernelRequest): Promise<ReplyDraft> {
+  const body = asRecord(await request.json());
+  const id = String(body["ma"] || body["id"] || "").trim();
+  if (!id) return reply.json({ ok: false, error: "thieu_ma", message: "Thiếu mã cộng tác viên." }, 400);
+  const removed = await ctx.ports.store.transaction(async (tx) => {
+    await tx.table(SESSION_TABLE).delete({ ma_ctv: id });
+    await tx.table(DEVICE_TABLE).delete({ ma_ctv: id });
+    return tx.table(ACCOUNT_TABLE).delete({ ma: id });
+  });
+  if (removed === 0) return reply.json({ ok: false, error: "khong_thay", message: "Không thấy tài khoản cộng tác viên này." }, 404);
+  ctx.ports.logger.info(`[ctv] xoa tai khoan ${id}`);
+  return reply.json({ ok: true, message: "Đã xoá cộng tác viên." }, 200, NO_STORE);
 }
 
 /** Admin: approve or block one device of a collaborator. */
@@ -285,6 +358,114 @@ async function downloadImages(ctx: Ctx, request: KernelRequest): Promise<ReplyDr
   return reply.json({ ok: true, ma: product.code, ten: product.name, anh: unique, choBoLogo: who.choBoLogo }, 200, NO_STORE);
 }
 
+// ---- password reset (CTV) -------------------------------------------------------------------
+
+function isValidEmail(email: string): boolean {
+  return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email);
+}
+
+function resetMinutesOf(ctx: Ctx): number {
+  return Number(ctx.config.resetMinutes) || DEFAULT_RESET_MINUTES;
+}
+
+function siteUrlOf(ctx: Ctx): string {
+  return String(ctx.config.siteUrl || "https://toprun.site").replace(/\/+$/, "");
+}
+
+function escapeHtml(s: string): string {
+  return s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
+}
+
+/** Collaborator forgot password: send a reset link to their registered email. */
+async function forgotPassword(ctx: Ctx, body: Record<string, unknown>): Promise<ReplyDraft> {
+  const email = String(body["email"] ?? "").trim().toLowerCase();
+  if (!email || !isValidEmail(email)) return reply.json({ ok: false, error: "email_khong_hop_le", message: "Vui lòng nhập email hợp lệ." }, 422);
+
+  const repo = new CollaboratorRepository(ctx.ports.store);
+  const account = await repo.findByEmail(email);
+
+  // RULE: same sentence whether or not the email exists — no enumeration.
+  const quiet = "Nếu email tồn tại, shop sẽ gửi link đặt lại mật khẩu.";
+  if (!account) return { status: 200, body: { ok: true, message: quiet } };
+
+  const token = crypto.randomBytes(32).toString("base64url");
+  const now = ctx.ports.clock.now();
+  const minutes = resetMinutesOf(ctx);
+  await repo.setResetToken({
+    id: String(account["ma"]),
+    tokenHash: hashToken(token),
+    expiresAt: new Date(now.getTime() + minutes * 60000),
+    now
+  });
+
+  const url = `${siteUrlOf(ctx)}/ctv-login?reset=${encodeURIComponent(token)}`;
+  const who = String(account["ten"] || "cộng tác viên");
+
+  let mailOk = false;
+  let mailConfigured = false;
+  try {
+    const result = await ctx.ports.mail.send({
+      to: email,
+      subject: "Đặt lại mật khẩu CTV",
+      text: `Xin chào ${who},\n\nBấm link sau để đặt lại mật khẩu trong ${minutes} phút:\n${url}\n\nNếu bạn không yêu cầu, hãy bỏ qua email này.`,
+      html: `<p>Xin chào ${escapeHtml(who)},</p><p>Bấm link sau để đặt lại mật khẩu trong ${minutes} phút:</p><p><a href="${escapeHtml(url)}">Đặt lại mật khẩu</a></p><p>Nếu bạn không yêu cầu, hãy bỏ qua email này.</p>`
+    });
+    mailOk = result.ok;
+    mailConfigured = result.configured;
+  } catch (e) {
+    // Trial mode throws on purpose — report it, do not hide it.
+    ctx.ports.logger.warn(`[ctv] không gửi được e-mail tới ${email}: ${e instanceof Error ? e.message : String(e)}`);
+  }
+
+  return {
+    status: 200,
+    body: {
+      ok: true,
+      message: mailOk
+        ? "Đã gửi link đặt lại mật khẩu nếu email tồn tại."
+        : "Đã tạo link đặt lại mật khẩu, nhưng chưa gửi email (shop chưa cấu hình SMTP hoặc đang chạy thử).",
+      mail: { ok: mailOk, configured: mailConfigured }
+    }
+  };
+}
+
+/** Collaborator resets password with the token from the email link. */
+async function resetPassword(ctx: Ctx, body: Record<string, unknown>): Promise<ReplyDraft> {
+  const token = String(body["token"] ?? "").trim();
+  const password = String(body["password"] ?? "");
+  if (!token) return reply.json({ ok: false, error: "thieu_ma", message: "Link đặt lại mật khẩu không hợp lệ." }, 422);
+  if (password.length < 8) return reply.json({ ok: false, error: "mat_khau_qua_ngan", message: "Mật khẩu cần ít nhất 8 ký tự." }, 422);
+
+  const repo = new CollaboratorRepository(ctx.ports.store);
+  const now = ctx.ports.clock.now();
+  const account = await repo.findByResetToken(hashToken(token), now);
+  if (!account) return reply.json({ ok: false, error: "ma_het_han", message: "Link đặt lại mật khẩu đã hết hạn hoặc không hợp lệ." }, 400);
+
+  const id = String(account["ma"]);
+  await repo.setPassword({ id, passwordHash: await hashPassword(password), now });
+  await repo.deleteSessionsOf(id);
+
+  ctx.ports.logger.info(`[ctv] ${id} dat lai mat khau`);
+  return { status: 200, body: { ok: true, message: "Đã cập nhật mật khẩu. Bạn có thể đăng nhập lại." } };
+}
+
+/** Collaborator download log: fire-and-forget from the image page. */
+async function logDownload(ctx: Ctx, request: KernelRequest): Promise<ReplyDraft> {
+  const who = await loggedIn(ctx, request);
+  if (!who) return reply.json({ ok: false, error: ERROR_CODES.unauthenticated }, 401);
+  const body = asRecord(await request.json());
+  const productCode = String(body["productCode"] || "").trim().slice(0, 128);
+  const imageIndex = Math.max(0, Number(body["imageIndex"]) || 0);
+  if (productCode) {
+    await new CollaboratorRepository(ctx.ports.store).logDownload({
+      ma_ctv: who.ma, ma_hang: productCode, so_anh: imageIndex,
+      dia_chi_ip: String(request.ip || "").slice(0, 64),
+      luc: toMysqlDateTime(ctx.ports.clock.now())
+    });
+  }
+  return reply.json({ ok: true }, 200, NO_STORE);
+}
+
 export const manifest = defineModule<Config, Services>({
   id: "ctv",
   name: "Cộng tác viên",
@@ -292,12 +473,42 @@ export const manifest = defineModule<Config, Services>({
   runsOn: "server-khach",
   feature: "gian-hang",
   version: "0.1.0",
-  ports: ["store", "logger", "clock", "config"],
-  schema: SCHEMA,
+  ports: ["store", "logger", "clock", "config", "mail"],
+  schema: [...SCHEMA, ...COMMISSION_SCHEMA],
 
   // Images of a product code come through the inventory feature. Without it the download route
-  // is off; login and collaborator management still run.
-  requiresOptional: ["hang-kho.read"],
+  // is off; login and collaborator management still run. `don-khach.read`: the commission book
+  // reads each order's status NOW (see commissions.ts) — without Orders nothing is ever approved.
+  requiresOptional: ["hang-kho.read", "don-khach.read"],
+
+  provides: {
+    /** `Set-Cookie` for a `?ref=CODE` landing, when the code belongs to an active collaborator. */
+    "ctv.referralCookieFor": (ctx: Ctx, code: unknown) => new CommissionBook(ctx.ports.store).referralCookie(code, ctx.config.https === true),
+    /**
+     * Who brought this order: the collaborator logged in on the site, else the referral cookie.
+     * Orders asks at placement and puts the answer in `don-khach.da-tao`.
+     */
+    "ctv.attributionFor": async (ctx: Ctx, headers: Record<string, string | undefined>): Promise<Attribution | null> => {
+      const me = await loggedIn(ctx, { headers } as KernelRequest).catch(() => null);
+      if (me) return { maCtv: me.ma, maGioiThieu: me.maGioiThieu, nguon: "affiliate_ctv_session" };
+      return new CommissionBook(ctx.ports.store).referralFromCookie(headers);
+    }
+  },
+
+  events: {
+    emits: [],
+    listens: {
+      // A new order carrying an attribution gets its commission row, at the rate of that moment.
+      [EVENTS.orderCreated]: async (ctx: Ctx, payload: unknown) => {
+        const p = (payload ?? {}) as { maDon?: string; ctv?: Attribution | null };
+        if (!p.maDon || !p.ctv?.maCtv) return;
+        const order = await readOrderFor(ctx, p.maDon);
+        if (!order) return;
+        const written = await new CommissionBook(ctx.ports.store).record(order, p.ctv, ctx.ports.clock.now());
+        if (written) ctx.ports.logger.info(`[ctv] đơn ${p.maDon} ghi nhận cho CTV ${p.ctv.maCtv} (${p.ctv.nguon})`);
+      }
+    }
+  },
 
   routes: [
     {
@@ -332,7 +543,10 @@ export const manifest = defineModule<Config, Services>({
           ok: true,
           data: {
             id: who.ma, affiliateId: who.ma, name: who.ten, email: who.email, username: who.tenDangNhap,
-            code: who.maGioiThieu, allowNoLogo: who.choBoLogo, commissionSummary: {}, orders: [], payments: []
+            code: who.maGioiThieu, allowNoLogo: who.choBoLogo, ...(await (async () => {
+              const book = await new CommissionBook(ctx.ports.store).read(commissionReader(ctx), who.ma);
+              return { commissionSummary: CommissionBook.summary(book), orders: book.commissions, payments: book.payments };
+            })())
           }
         }, 200, NO_STORE);
       }
@@ -342,6 +556,24 @@ export const manifest = defineModule<Config, Services>({
       whyPublic: "Cộng tác viên tải ảnh sản phẩm. Phải có phiên đăng nhập hợp lệ; bản trả về CHỈ có danh sách ảnh, không tồn kho, không giá vốn, không tên kho.",
       rateLimit: { calls: 120, windowMs: MINUTES_10 },
       handle: downloadImages
+    },
+    {
+      method: "POST", path: "/api/ctv/forgot-password", access: ACCESS.public,
+      whyPublic: "Cộng tác viên xin link đặt lại mật khẩu qua e-mail đã đăng ký. Câu trả lời giống nhau dù e-mail có hay không; hạn gọi chặt.",
+      rateLimit: { calls: 10, windowMs: MINUTES_15 },
+      handle: async (ctx, request) => forgotPassword(ctx, asRecord(await request.json()))
+    },
+    {
+      method: "POST", path: "/api/ctv/reset-password", access: ACCESS.public,
+      whyPublic: "Đặt lại mật khẩu bằng mã trong e-mail (sống 30 phút, băm trong bảng); sai mã là 400.",
+      rateLimit: { calls: 10, windowMs: MINUTES_15 },
+      handle: async (ctx, request) => resetPassword(ctx, asRecord(await request.json()))
+    },
+    {
+      method: "POST", path: "/api/ctv/download-log", access: ACCESS.public,
+      whyPublic: "Ghi nhật ký tải ảnh. Gọi fire-and-forget từ trang ảnh CTV; phải có phiên đăng nhập.",
+      rateLimit: { calls: 120, windowMs: MINUTES_10 },
+      handle: logDownload
     },
 
     // ---------- admin screen ----------
@@ -359,6 +591,112 @@ export const manifest = defineModule<Config, Services>({
       method: "POST", path: "/api/admin/ctv", access: ACCESS.admin,
       rateLimit: { calls: 60, windowMs: MINUTES_10 },
       handle: saveAccount
+    },
+    {
+      // The commission book of every collaborator (the web admin's CTV tab).
+      method: "GET", path: "/api/admin/ctv/hoa-hong", access: ACCESS.admin,
+      rateLimit: { calls: 120, windowMs: MINUTES_10 },
+      handle: async (ctx) => reply.json({ ok: true, data: await new CommissionBook(ctx.ports.store).read(commissionReader(ctx)) }, 200, NO_STORE)
+    },
+    {
+      method: "POST", path: "/api/admin/ctv/thanh-toan", access: ACCESS.admin,
+      rateLimit: { calls: 60, windowMs: MINUTES_10 },
+      handle: async (ctx, request) => {
+        const body = asRecord(await request.json());
+        const id = String(body["maCtv"] || body["affiliateId"] || "").trim();
+        const amount = Number(body["soTien"] ?? body["amount"] ?? 0);
+        if (!id || !(amount > 0)) return reply.json({ ok: false, error: "thieu_ctv_hoac_so_tien", message: "Cần CTV và số tiền lớn hơn 0." }, 400);
+        const account = await new CollaboratorRepository(ctx.ports.store).findAccount(id);
+        if (!account) return reply.json({ ok: false, error: "khong_thay", message: "Không thấy cộng tác viên này." }, 404);
+        const paymentId = await new CommissionBook(ctx.ports.store).pay({
+          collaboratorId: id, amount, note: String(body["ghiChu"] ?? body["note"] ?? ""), actor: String(request.caller?.name || "quan-tri"), now: ctx.ports.clock.now()
+        });
+        ctx.ports.logger.info(`[ctv] trả ${Math.round(amount)}đ cho CTV ${id}`);
+        return reply.json({ ok: true, ma: paymentId, message: "Đã ghi thanh toán tiền công." }, 200, NO_STORE);
+      }
+    },
+    {
+      // Đ4: correct / void one payment. The collaborator's own page and the debt follow at once.
+      method: "POST", path: "/api/admin/ctv/thanh-toan/sua", access: ACCESS.admin,
+      rateLimit: { calls: 60, windowMs: MINUTES_10 },
+      handle: async (ctx, request) => {
+        const body = asRecord(await request.json());
+        const amount = Number(body["soTien"] ?? 0);
+        if (!(amount > 0)) return reply.json({ ok: false, error: "so_tien_sai", message: "Số tiền phải lớn hơn 0." }, 400);
+        const changed = await new CommissionBook(ctx.ports.store).correctPayment(String(body["ma"] ?? ""), { amount, note: String(body["ghiChu"] ?? ""), now: ctx.ports.clock.now() });
+        if (changed === 0) return reply.json({ ok: false, error: "khong_thay", message: "Không tìm thấy giao dịch CTV cần sửa (hoặc đã hoàn tác)." }, 404);
+        return reply.json({ ok: true, message: "Đã sửa thanh toán CTV." }, 200, NO_STORE);
+      }
+    },
+    {
+      method: "POST", path: "/api/admin/ctv/thanh-toan/huy", access: ACCESS.admin,
+      rateLimit: { calls: 60, windowMs: MINUTES_10 },
+      handle: async (ctx, request) => {
+        const body = asRecord(await request.json());
+        const changed = await new CommissionBook(ctx.ports.store).voidPayment(String(body["ma"] ?? ""), { reason: String(body["lyDo"] ?? "").trim() || "Nhập nhầm giao dịch", now: ctx.ports.clock.now() });
+        if (changed === 0) return reply.json({ ok: false, error: "khong_thay", message: "Không tìm thấy giao dịch CTV cần hoàn tác (hoặc đã hoàn tác)." }, 404);
+        return reply.json({ ok: true, message: "Đã hoàn tác thanh toán CTV và tính lại công nợ." }, 200, NO_STORE);
+      }
+    },
+    {
+      // Đ4: campaigns + fixed per-product rules. A rule applies to orders placed AFTER it (rates are frozen per order).
+      method: "GET", path: "/api/admin/ctv/cau-hinh", access: ACCESS.admin,
+      handle: async (ctx) => reply.json({ ok: true, ...(await readAffiliateConfig(ctx.ports.store)) }, 200, NO_STORE)
+    },
+    {
+      method: "POST", path: "/api/admin/ctv/chien-dich", access: ACCESS.admin,
+      rateLimit: { calls: 60, windowMs: MINUTES_10 },
+      handle: async (ctx, request) => {
+        const body = asRecord(await request.json());
+        const code = String(body["ma"] ?? "").trim().toUpperCase().slice(0, 60);
+        const name = String(body["ten"] ?? "").trim().slice(0, 190);
+        if (!code || !name) return reply.json({ ok: false, error: "thieu_ten_ma", message: "Cần nhập tên và mã chiến dịch." }, 400);
+        const now = ctx.ports.clock.now();
+        const config = await updateAffiliateConfig(ctx.ports.store, (c) => ({
+          ...c,
+          campaigns: [
+            { id: `camp_${now.getTime()}`, name, code, scope: String(body["phamVi"] ?? "").trim().slice(0, 190), note: String(body["ghiChu"] ?? "").trim().slice(0, 1000), status: "active", createdAt: now.toISOString() },
+            ...c.campaigns.filter((x) => x.code !== code)
+          ]
+        }));
+        return reply.json({ ok: true, ...config, message: "Đã thêm chiến dịch affiliate." }, 200, NO_STORE);
+      }
+    },
+    {
+      method: "POST", path: "/api/admin/ctv/quy-tac", access: ACCESS.admin,
+      rateLimit: { calls: 60, windowMs: MINUTES_10 },
+      handle: async (ctx, request) => {
+        const body = asRecord(await request.json());
+        const value = Number(body["giaTri"] ?? 0);
+        const target = String(body["maSanPham"] ?? "").trim().toUpperCase().slice(0, 128);
+        if (!(value > 0)) return reply.json({ ok: false, error: "thieu_gia_tri", message: "Cần nhập giá trị hoa hồng." }, 400);
+        if (!target) return reply.json({ ok: false, error: "thieu_ma", message: "Cần nhập mã sản phẩm." }, 400);
+        const now = ctx.ports.clock.now();
+        const type = String(body["loai"] ?? "fixed") === "percent" ? "percent" : "fixed";
+        const config = await updateAffiliateConfig(ctx.ports.store, (c) => ({
+          ...c,
+          rules: [{ id: `rule_${now.getTime()}`, scope: "product", targetId: target, type, value, status: "active", createdAt: now.toISOString() }, ...c.rules.filter((r) => !(r.scope === "product" && r.targetId === target))]
+        }));
+        return reply.json({ ok: true, ...config, message: "Đã thêm rule hoa hồng." }, 200, NO_STORE);
+      }
+    },
+    {
+      // Desk `save-affiliate-config`: writes both lists as the screen holds them (e.g. a rule switched off).
+      method: "POST", path: "/api/admin/ctv/cau-hinh", access: ACCESS.admin,
+      rateLimit: { calls: 60, windowMs: MINUTES_10 },
+      handle: async (ctx, request) => {
+        const body = asRecord(await request.json());
+        const config = await updateAffiliateConfig(ctx.ports.store, (c) => ({
+          campaigns: Array.isArray(body["campaigns"]) ? (body["campaigns"] as AffiliateCampaign[]).slice(0, 500) : c.campaigns,
+          rules: Array.isArray(body["rules"]) ? (body["rules"] as AffiliateRule[]).slice(0, 500) : c.rules
+        }));
+        return reply.json({ ok: true, ...config, message: "Đã lưu cấu hình affiliate." }, 200, NO_STORE);
+      }
+    },
+    {
+      method: "POST", path: "/api/admin/ctv/xoa", access: ACCESS.admin,
+      rateLimit: { calls: 60, windowMs: MINUTES_10 },
+      handle: deleteAccount
     },
     {
       method: "POST", path: "/api/admin/ctv/thiet-bi", access: ACCESS.admin,

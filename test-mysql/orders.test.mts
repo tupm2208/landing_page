@@ -14,7 +14,7 @@
 
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { ROLE, defineModule, type Reply, type Row } from "../dist/contract/index.js";
+import { EVENTS, ROLE, defineModule, type Reply, type Row } from "../dist/contract/index.js";
 import { FakeHttpClient, FakeStaticFilePort, FixedWindowRateLimiter, Kernel, ManualClock, MemoryLogger, MemoryMailer, TokenAuth, jsonResponse, openMysqlStore } from "../dist/kernel/index.js";
 import {
   manifest, type CommitInput, type CommitResult, type ReleaseInput, type ReserveInput, type ReserveResult, type RestockInput, type RestockResult
@@ -69,6 +69,18 @@ const fakeInventory = defineModule({
       if (!held) return { ok: false, reason: "khong_co_phieu" };
       tickets.delete(input.ticket);
       return { ok: true, variantId: stock.get(held.key)?.variantId ?? "", quantity: held.quantity };
+    },
+    /**
+     * Tồn của một mã, như Hàng hoá thật trả về. Bài cần nó vì đổi mẫu hỏi tên hàng ở đây —
+     * kho giả thiếu cửa này thì dòng sau khi đổi mất tên, và bài sẽ không thấy.
+     */
+    "hang-kho.stock": (_ctx, input: { code?: string }) => {
+      const code = String(input?.code ?? "");
+      const lines = [...stock.entries()]
+        .filter(([key]) => key.startsWith(`${code}|`))
+        .map(([key, line]) => ({ variantId: line.variantId, size: key.split("|")[1] ?? "", quantity: line.qty, price: line.price, warehouseId: line.warehouseId, rank: 1 }));
+      if (lines.length === 0) return { found: false as const, available: false as const, reason: "khong_co_ma", lines: [] };
+      return { found: true as const, available: lines.some((l) => l.quantity > 0), code, name: `Giày ${code}`, lines };
     },
     "hang-kho.restock": (_ctx, input: RestockInput): RestockResult => {
       for (const line of stock.values()) {
@@ -435,18 +447,474 @@ test("Orders on real MySQL", { ...skip }, async (t) => {
     assert.equal(stock.get("DV1234|42")?.qty, 1);
   });
 
-  await t.test("OWNER: deleting an order gives its pair back and removes head, lines and history", async () => {
+  await t.test("OWNER: deleting an order puts it in the BIN and gives its pair back — the row survives", async () => {
     await cleanUp(); stockUp(1);
     const placed = body<PlacedBody>(await place(SAMPLE_ORDER));
     assert.equal(stock.get("DV1234|42")?.qty, 0);
+
     const gone = await asAdmin("DELETE", `/api/orders/${placed.id}`);
     assert.equal(gone.status, 200, JSON.stringify(gone.body));
-    assert.equal(stock.get("DV1234|42")?.qty, 1, "deleting returns the pair");
+    assert.equal(body<{ daXoa: boolean }>(gone).daXoa, true);
+    assert.equal(stock.get("DV1234|42")?.qty, 1, "the pair goes back on the shelf straight away");
+    // The row is NOT gone: the seller must be able to change their mind.
+    assert.equal(await store.table("orders").count({ id: placed.id }), 1);
+    assert.equal(await store.table("order_items").count({ order_id: placed.id }), 1);
+
+    const listed = body<Order[]>(await kernel.handle({ method: "GET", path: "/api/orders", headers: admin }));
+    assert.ok(!listed.some((o) => o.id === placed.id), "an order in the bin is not in the working list");
+    const bin = body<Order[]>(await kernel.handle({ method: "GET", path: "/api/orders", query: { daXoa: "chi" }, headers: admin }));
+    assert.ok(bin.some((o) => o.id === placed.id), "…but the bin shows it");
+    assert.equal(bin.find((o) => o.id === placed.id)?.daXoa, true);
+  });
+
+  await t.test("deleting TWICE does not return the pair twice", async () => {
+    await cleanUp(); stockUp(1);
+    const placed = body<PlacedBody>(await place(SAMPLE_ORDER));
+    await asAdmin("DELETE", `/api/orders/${placed.id}`);
+    assert.equal(stock.get("DV1234|42")?.qty, 1);
+
+    const again = await asAdmin("DELETE", `/api/orders/${placed.id}`);
+    assert.equal(again.status, 200);
+    assert.equal(body<{ daXoa: boolean }>(again).daXoa, false, "the second delete says it changed nothing");
+    assert.equal(stock.get("DV1234|42")?.qty, 1, "stock must not be invented by clicking twice");
+  });
+
+  await t.test("RESTORING TWICE does not take the pair twice", async () => {
+    await cleanUp(); stockUp(1);
+    const placed = body<PlacedBody>(await place(SAMPLE_ORDER));
+    await asAdmin("DELETE", `/api/orders/${placed.id}`);
+    assert.equal(stock.get("DV1234|42")?.qty, 1);
+
+    const back = await asAdmin("POST", `/api/orders/${placed.id}/khoi-phuc`, {});
+    assert.equal(back.status, 200, JSON.stringify(back.body));
+    assert.equal(body<{ daKhoiPhuc: boolean }>(back).daKhoiPhuc, true);
+    assert.equal(stock.get("DV1234|42")?.qty, 0, "restoring takes the pair again");
+    assert.equal((await readAsAdmin(placed.id)).daXoa, false);
+
+    const twice = await asAdmin("POST", `/api/orders/${placed.id}/khoi-phuc`, {});
+    assert.equal(twice.status, 200);
+    assert.equal(body<{ daKhoiPhuc: boolean }>(twice).daKhoiPhuc, false, "the second restore says it changed nothing");
+    assert.equal(stock.get("DV1234|42")?.qty, 0, "THE BUG THIS GUARDS: a second restore must not take a second pair");
+  });
+
+  await t.test("restoring an order whose stock was sold meanwhile still restores it, and names what is missing", async () => {
+    await cleanUp(); stockUp(1);
+    const placed = body<PlacedBody>(await place(SAMPLE_ORDER));
+    await asAdmin("DELETE", `/api/orders/${placed.id}`);
+    stock.set("DV1234|42", { qty: 0, price: 2890000, variantId: "DV1234-42", warehouseId: "wh_yen" }); // somebody else bought it
+
+    const back = await asAdmin("POST", `/api/orders/${placed.id}/khoi-phuc`, {});
+    assert.equal(back.status, 200, JSON.stringify(back.body));
+    assert.equal(body<{ daKhoiPhuc: boolean }>(back).daKhoiPhuc, true, "one missing line must not block the restore");
+    assert.deepEqual(body<{ stock: ManualBody["stock"] }>(back).stock.thieu, [{ code: "DV1234", size: "42" }], "the seller is told which line is short");
+  });
+
+  await t.test("an order in the bin counts for nothing: not revenue, not a customer's order count", async () => {
+    await cleanUp(); stockUp(2);
+    const placed = body<PlacedBody>(await place(SAMPLE_ORDER));
+    const report = () => kernel.handle({ method: "GET", path: "/api/bao-cao/tong-quan", query: { ngay: "365" }, headers: admin });
+    const before = body<{ tong: { soDon: number } }>(await report());
+    assert.equal(before.tong.soDon, 1);
+
+    await asAdmin("DELETE", `/api/orders/${placed.id}`);
+    const after = body<{ tong: { soDon: number } }>(await report());
+    assert.equal(after.tong.soDon, 0, "a deleted order is not revenue");
+    const customers = body<{ theoDon: { dienThoai: string }[] }>(await kernel.handle({ method: "GET", path: "/api/admin/khach", headers: admin }));
+    assert.ok(!customers.theoDon.some((c) => c.dienThoai === "0911111111"), "nor does it make the customer look like a buyer");
+  });
+
+  await t.test("PERMANENT delete only empties the BIN — an order still in use is refused", async () => {
+    await cleanUp(); stockUp(1);
+    const placed = body<PlacedBody>(await place(SAMPLE_ORDER));
+    const tooSoon = await asAdmin("DELETE", `/api/orders/${placed.id}/vinh-vien`);
+    assert.equal(tooSoon.status, 409, "deleting for good is a decision about something already set aside");
+    assert.equal(body<{ error: string }>(tooSoon).error, "chua_xoa_mem");
+    assert.equal(await store.table("orders").count({ id: placed.id }), 1);
+
+    await asAdmin("DELETE", `/api/orders/${placed.id}`);
+    const gone = await asAdmin("DELETE", `/api/orders/${placed.id}/vinh-vien`);
+    assert.equal(gone.status, 200, JSON.stringify(gone.body));
     assert.equal(await store.table("orders").count({ id: placed.id }), 0);
     assert.equal(await store.table("order_items").count({ order_id: placed.id }), 0);
     assert.equal(await store.table("order_status_logs").count({ order_id: placed.id }), 0);
-    assert.equal((await asAdmin("DELETE", `/api/orders/${placed.id}`)).status, 404);
+    assert.equal(stock.get("DV1234|42")?.qty, 1, "the stock came back at the FIRST delete, and is not doubled here");
     assert.equal((await asAdmin("PUT", `/api/orders/${placed.id}`, { customerName: "X" })).status, 404);
+  });
+
+  await t.test("A LINE KEEPS ITS ID across an edit — the trap of 10/09/2026, closed", async () => {
+    // Two lines, neither with a variant id (the shape 284 of 421 real lines have). Drop the FIRST
+    // one: without a stored id the second line would slide into position 1 and inherit the id the
+    // first line's purchase slips were written against.
+    await cleanUp(); stockUp(2);
+    const made = body<ManualBody>(await asAdmin("POST", "/api/orders/thu-cong", {
+      customerName: "Khách hai dòng", phone: "0911111111",
+      items: [
+        { productCode: "NGOAI-A", size: "41", qty: 1, price: 1000000 },
+        { productCode: "NGOAI-B", size: "42", qty: 1, price: 2000000 }
+      ]
+    }));
+    const before = await readAsAdmin(made.orderId);
+    assert.equal(before.items.length, 2);
+    const idOfB = before.items[1]?.maDong;
+    assert.ok(idOfB, "every line carries a stable id");
+
+    const edited = await asAdmin("PUT", `/api/orders/${made.orderId}`, {
+      items: [{ productCode: "NGOAI-B", size: "42", qty: 1, price: 2000000 }]
+    });
+    assert.equal(edited.status, 200, JSON.stringify(edited.body));
+    const after = await readAsAdmin(made.orderId);
+    assert.equal(after.items.length, 1);
+    assert.equal(after.items[0]?.maDong, idOfB, "the surviving line keeps ITS id — it must not inherit the dropped line's");
+  });
+
+  await t.test("PER-LINE: picking a warehouse writes it on the LINE and moves the order to waiting_partner_confirm", async () => {
+    await cleanUp(); stockUp(1);
+    const placed = body<PlacedBody>(await place(SAMPLE_ORDER));
+    const maDong = (await readAsAdmin(placed.id)).items[0]?.maDong ?? "";
+    assert.ok(maDong, "the line has a stable id to address");
+
+    const r = await asAdmin("PATCH", `/api/orders/${placed.id}/dong/${encodeURIComponent(maDong)}`, {
+      maDoiTac: "partner_wh_yen", maKho: "wh_yen", tenKho: "Yên"
+    });
+    assert.equal(r.status, 200, JSON.stringify(r.body));
+    const line = (await readAsAdmin(placed.id)).items[0];
+    assert.equal(line?.partnerId, "partner_wh_yen");
+    assert.equal(line?.warehouseId, "wh_yen");
+    assert.equal(line?.procurementStatus, "waiting_partner_confirm");
+    assert.equal((await readAsAdmin(placed.id)).status, "waiting_partner_confirm", "every line assigned = the order waits on partners");
+  });
+
+  await t.test("PER-LINE: pushing to the buying list pins the cost price ONCE", async () => {
+    await cleanUp(); stockUp(1);
+    const made = body<ManualBody>(await asAdmin("POST", "/api/orders/thu-cong", {
+      customerName: "A", phone: "0911111111",
+      items: [{ productCode: "DV1234", size: "42", qty: 1, price: 2890000, saleFilePrice: 2000000 }]
+    }));
+    const maDong = (await readAsAdmin(made.orderId)).items[0]?.maDong ?? "";
+    const at = (path: string, payload: unknown) => asAdmin("PATCH", path, payload);
+    const door = `/api/orders/${made.orderId}/dong/${encodeURIComponent(maDong)}`;
+
+    // Pushing without a PARTNER is refused: the line may already know which warehouse it was
+    // reserved from, but nobody has been asked to go and buy it.
+    const tooSoon = await at(door, { dayMua: true });
+    assert.equal(tooSoon.status, 409, JSON.stringify(tooSoon.body));
+    assert.equal(body<{ error: string }>(tooSoon).error, "chua_chon_kho");
+    await at(door, { maDoiTac: "partner_wh_yen", maKho: "wh_yen", tenKho: "Yên" });
+
+    assert.equal((await at(door, { dayMua: true })).status, 200);
+    let line = (await readAsAdmin(made.orderId)).items[0];
+    assert.equal(line?.purchaseAuthorized, true);
+    assert.equal(line?.procurementStatus, "purchase_ready");
+    assert.equal(line?.costPrice, 2000000, "what the shop expects to pay is pinned at the moment of the decision");
+
+    // Pulling it back and pushing again must not re-read a price that may have changed since.
+    await at(door, { dayMua: false });
+    await at(door, { dayMua: true });
+    line = (await readAsAdmin(made.orderId)).items[0];
+    assert.equal(line?.costPrice, 2000000, "the pinned price is not rewritten by a second push");
+  });
+
+  await t.test("PER-LINE: a line with a purchase slip against it CANNOT change warehouse", async () => {
+    await cleanUp(); stockUp(1);
+    const placed = body<PlacedBody>(await place(SAMPLE_ORDER));
+    const maDong = (await readAsAdmin(placed.id)).items[0]?.maDong ?? "";
+    const door = `/api/orders/${placed.id}/dong/${encodeURIComponent(maDong)}`;
+    await asAdmin("PATCH", door, { maDoiTac: "partner_wh_yen", maKho: "wh_yen", tenKho: "Yên" });
+
+    // A partner bought it: Purchasing announces it on the bus, Orders stamps the line.
+    kernel.bus.emit(EVENTS.purchaseReported, { maDon: placed.id, maDong, maMon: "DV1234", soLuong: 1, boi: "partner_wh_yen" });
+    for (let i = 0; i < 40 && (await readAsAdmin(placed.id)).items[0]?.purchaseLockedAt === ""; i += 1) {
+      await new Promise((done) => setTimeout(done, 25));
+    }
+    assert.notEqual((await readAsAdmin(placed.id)).items[0]?.purchaseLockedAt, "", "the line is stamped as bought");
+
+    const swap = await asAdmin("PATCH", door, { maDoiTac: "partner_wh_khac", maKho: "wh_khac", tenKho: "Khác" });
+    assert.equal(swap.status, 409, "swapping now would orphan the partner's slip");
+    assert.equal(body<{ error: string }>(swap).error, "khoa_kho");
+    assert.equal((await readAsAdmin(placed.id)).items[0]?.partnerId, "partner_wh_yen", "the warehouse did not move");
+  });
+
+  await t.test("PER-LINE: the shop's decisions survive an edit of the recipient", async () => {
+    await cleanUp(); stockUp(1);
+    const made = body<ManualBody>(await asAdmin("POST", "/api/orders/thu-cong", {
+      customerName: "A", phone: "0911111111", items: [{ productCode: "DV1234", size: "42", qty: 1, price: 2890000 }]
+    }));
+    const maDong = (await readAsAdmin(made.orderId)).items[0]?.maDong ?? "";
+    await asAdmin("PATCH", `/api/orders/${made.orderId}/dong/${encodeURIComponent(maDong)}`, {
+      maDoiTac: "partner_wh_yen", maKho: "wh_yen", tenKho: "Yên", loaiSanPham: "shoe"
+    });
+
+    // Re-sending the same lines rewrites every row — the assignment must not be lost with them,
+    // or a partner already out buying would quietly stop being responsible for the pair.
+    await asAdmin("PUT", `/api/orders/${made.orderId}`, {
+      customerName: "Tên mới", items: [{ productCode: "DV1234", size: "42", qty: 1, price: 2890000 }]
+    });
+    const line = (await readAsAdmin(made.orderId)).items[0];
+    assert.equal(line?.maDong, maDong, "and it is still the same line");
+    assert.equal(line?.partnerId, "partner_wh_yen");
+    assert.equal(line?.productKind, "shoe");
+  });
+
+  await t.test("PER-LINE: house and external warehouses need nobody to buy them", async () => {
+    await cleanUp(); stockUp(1);
+    const made = body<ManualBody>(await asAdmin("POST", "/api/orders/thu-cong", {
+      customerName: "A", phone: "0911111111", items: [{ productCode: "NGOAI", size: "44", qty: 1, price: 900000 }]
+    }));
+    const maDong = (await readAsAdmin(made.orderId)).items[0]?.maDong ?? "";
+    const r = await asAdmin("PATCH", `/api/orders/${made.orderId}/dong/${encodeURIComponent(maDong)}`, { maKho: "wh_external", tenKho: "Kho ngoài" });
+    assert.equal(r.status, 200, JSON.stringify(r.body));
+    const line = body<{ order: Order }>(r).order.items[0] as unknown as { procurementStatus: string; daMuaDu: boolean };
+    assert.equal(line.procurementStatus, "purchase_complete", "a pair bought outside the system is already here");
+  });
+
+  await t.test("PER-LINE: an unknown product kind is refused, and an unknown line is a 404", async () => {
+    await cleanUp(); stockUp(1);
+    const placed = body<PlacedBody>(await place(SAMPLE_ORDER));
+    const maDong = (await readAsAdmin(placed.id)).items[0]?.maDong ?? "";
+    const bad = await asAdmin("PATCH", `/api/orders/${placed.id}/dong/${encodeURIComponent(maDong)}`, { loaiSanPham: "tau-vu-tru" });
+    assert.equal(bad.status, 422);
+    assert.equal(body<{ error: string }>(bad).error, "loai_san_pham_la");
+    assert.equal((await asAdmin("PATCH", `/api/orders/${placed.id}/dong/khong-co-dong-nay`, { loaiSanPham: "shoe" })).status, 404);
+  });
+
+  await t.test("QUICK ACTION: 'Sẵn sàng giao' is a GATE — refused while a line is unbought, and it says which", async () => {
+    await cleanUp(); stockUp(1);
+    const placed = body<PlacedBody>(await place(SAMPLE_ORDER));
+    const maDong = (await readAsAdmin(placed.id)).items[0]?.maDong ?? "";
+    await asAdmin("PATCH", `/api/orders/${placed.id}/dong/${encodeURIComponent(maDong)}`, { maDoiTac: "partner_wh_yen", maKho: "wh_yen", tenKho: "Yên" });
+
+    const shut = await asAdmin("POST", `/api/orders/${placed.id}/viec`, { viec: "san-sang-giao" });
+    assert.equal(shut.status, 409, JSON.stringify(shut.body));
+    assert.equal(body<{ error: string }>(shut).error, "chua_mua_du");
+    assert.match(body<{ message: string }>(shut).message, /DV1234/, "nói rõ dòng nào, không chỉ 'chưa đủ'");
+    assert.match(body<{ message: string }>(shut).message, /Chờ ship bắt buộc/, "chỉ luôn đường thoát");
+
+    // Bought: the gate opens.
+    kernel.bus.emit(EVENTS.purchaseReported, { maDon: placed.id, maDong, maMon: "DV1234", soLuong: 1, boi: "partner_wh_yen" });
+    for (let i = 0; i < 40 && (await readAsAdmin(placed.id)).items[0]?.purchaseLockedAt === ""; i += 1) {
+      await new Promise((done) => setTimeout(done, 25));
+    }
+    const open = await asAdmin("POST", `/api/orders/${placed.id}/viec`, { viec: "san-sang-giao" });
+    assert.equal(open.status, 200, JSON.stringify(open.body));
+    assert.equal((await readAsAdmin(placed.id)).status, "ready_to_ship");
+  });
+
+  await t.test("QUICK ACTION: 'Chờ ship bắt buộc' is the way THROUGH the gate, and is remembered as forced", async () => {
+    await cleanUp(); stockUp(1);
+    const placed = body<PlacedBody>(await place(SAMPLE_ORDER));
+    const maDong = (await readAsAdmin(placed.id)).items[0]?.maDong ?? "";
+    await asAdmin("PATCH", `/api/orders/${placed.id}/dong/${encodeURIComponent(maDong)}`, { maDoiTac: "partner_wh_yen", maKho: "wh_yen", tenKho: "Yên" });
+
+    const forced = await asAdmin("POST", `/api/orders/${placed.id}/viec`, { viec: "cho-ship-bat-buoc" });
+    assert.equal(forced.status, 200, JSON.stringify(forced.body));
+    const after = await readAsAdmin(placed.id);
+    assert.equal(after.status, "ready_to_ship");
+    assert.equal(after.epChoShip, true, "đơn nhớ là mình đi qua bằng đường thoát");
+    assert.ok(after.statusLogs.some((l) => /chưa mua đủ/.test(String(l.note ?? ""))), "nhật ký nói vì sao phải ép");
+  });
+
+  await t.test("QUICK ACTION: undo goes back EXACTLY one step, then there is nothing left to undo", async () => {
+    await cleanUp(); stockUp(1);
+    const placed = body<PlacedBody>(await place(SAMPLE_ORDER));
+    assert.equal((await readAsAdmin(placed.id)).status, "pending");
+    assert.ok(!body<{ viecLamDuoc: string[] }>(await kernel.handle({ method: "GET", path: `/api/orders/${placed.id}`, headers: admin }))
+      .viecLamDuoc.includes("hoan-tac"), "chưa đổi gì thì chưa có gì để hoàn tác");
+
+    await asAdmin("POST", `/api/orders/${placed.id}/viec`, { viec: "xac-nhan" });
+    assert.equal((await readAsAdmin(placed.id)).status, "confirmed_by_customer");
+
+    const undone = await asAdmin("POST", `/api/orders/${placed.id}/viec`, { viec: "hoan-tac" });
+    assert.equal(undone.status, 200, JSON.stringify(undone.body));
+    assert.equal((await readAsAdmin(placed.id)).status, "pending", "về đúng chỗ cũ");
+
+    // Một bậc, không phải một chồng: hoàn tác xong thì hết chỗ để lùi.
+    const again = await asAdmin("POST", `/api/orders/${placed.id}/viec`, { viec: "hoan-tac" });
+    assert.equal(again.status, 409, JSON.stringify(again.body));
+  });
+
+  await t.test("QUICK ACTION: 'Hoàn tất' closes every line and warns when money is short", async () => {
+    await cleanUp(); stockUp(1);
+    const placed = body<PlacedBody>(await place(SAMPLE_ORDER));   // chưa trả đồng nào
+    const done = await asAdmin("POST", `/api/orders/${placed.id}/viec`, { viec: "hoan-tat" });
+    assert.equal(done.status, 200, JSON.stringify(done.body));
+    const after = await readAsAdmin(placed.id);
+    assert.equal(after.status, "completed");
+    assert.equal(after.items[0]?.procurementStatus, "purchase_complete", "đơn xong thì không còn ai phải mua gì cho nó");
+    assert.ok(after.statusLogs.some((l) => /CÒN THIẾU/.test(String(l.note ?? ""))), "nhật ký ghi rõ còn thiếu tiền");
+
+    // Đơn đã xong thì không nhận việc nhanh nào nữa.
+    assert.equal((await asAdmin("POST", `/api/orders/${placed.id}/viec`, { viec: "xac-nhan" })).status, 409);
+  });
+
+  await t.test("QUICK ACTION: an unknown job is refused, and an order in the bin takes none", async () => {
+    await cleanUp(); stockUp(1);
+    const placed = body<PlacedBody>(await place(SAMPLE_ORDER));
+    assert.equal((await asAdmin("POST", `/api/orders/${placed.id}/viec`, { viec: "bay-len-troi" })).status, 422);
+    await asAdmin("DELETE", `/api/orders/${placed.id}`);
+    const inBin = await asAdmin("POST", `/api/orders/${placed.id}/viec`, { viec: "xac-nhan" });
+    assert.equal(inBin.status, 409);
+    assert.equal(body<{ error: string }>(inBin).error, "don_o_thung_rac");
+  });
+
+  await t.test("KẾT THÚC: 'Hủy' trả hàng về kho ĐÚNG MỘT LẦN, kể cả bấm hai lần", async () => {
+    await cleanUp(); stockUp(1);
+    const placed = body<PlacedBody>(await place(SAMPLE_ORDER));
+    assert.equal(stock.get("DV1234|42")?.qty, 0);
+
+    const off = await asAdmin("POST", `/api/orders/${placed.id}/ket-thuc`, { cach: "huy", lyDo: "Khách đổi ý" });
+    assert.equal(off.status, 200, JSON.stringify(off.body));
+    assert.equal(body<{ trangThai: string }>(off).trangThai, "cancelled");
+    assert.equal(body<{ daTraTon: number }>(off).daTraTon, 1);
+    assert.equal(stock.get("DV1234|42")?.qty, 1, "hàng về kho");
+
+    const again = await asAdmin("POST", `/api/orders/${placed.id}/ket-thuc`, { cach: "huy", lyDo: "bấm nhầm lần nữa" });
+    assert.equal(again.status, 409, "đơn đã kết thúc thì không kết thúc lại");
+    assert.equal(stock.get("DV1234|42")?.qty, 1, "LỖI NÀY LÀ THỨ BÀI GIỮ: không bao giờ được cộng tồn hai lần");
+  });
+
+  await t.test("KẾT THÚC: 'Hàng hoàn' bắt buộc có lý do, và ghi RÕ vào nhật ký là hàng hoàn", async () => {
+    await cleanUp(); stockUp(1);
+    const placed = body<PlacedBody>(await place(SAMPLE_ORDER));
+
+    const noReason = await asAdmin("POST", `/api/orders/${placed.id}/ket-thuc`, { cach: "hang-hoan" });
+    assert.equal(noReason.status, 422, "ba tháng sau không ai phân biệt được hàng hoàn với một cú bấm nhầm");
+    assert.equal(body<{ error: string }>(noReason).error, "thieu_ly_do");
+
+    const back = await asAdmin("POST", `/api/orders/${placed.id}/ket-thuc`, { cach: "hang-hoan", lyDo: "Khách chê chật" });
+    assert.equal(back.status, 200, JSON.stringify(back.body));
+    const after = await readAsAdmin(placed.id);
+    assert.equal(after.status, "returned_to_stock", "KHÁC 'cancelled': lượt bán đã xảy ra thật");
+    assert.ok(after.statusLogs.some((l) => /Hàng hoàn/.test(String(l.note ?? "")) && /Khách chê chật/.test(String(l.note ?? ""))),
+      "nhật ký nói đây là hàng hoàn và vì sao — sáu tháng sau chỉ còn dòng này");
+  });
+
+  await t.test("KẾT THÚC: việc của NGƯỜI được nói ra, không giả vờ đã làm hộ", async () => {
+    await cleanUp(); stockUp(1);
+    const placed = body<PlacedBody>(await place(SAMPLE_ORDER));
+    // Đơn đã có vận đơn và khách đã trả tiền: hai thứ OMI KHÔNG tự xử lý được.
+    // `paymentStatus` phải đi kèm — kit tiền chỉ tính "đã trả" dưới đúng những trạng thái của nó.
+    await asAdmin("PUT", `/api/orders/${placed.id}`, { trackingCode: "SPXVN123", carrier: "spx", paidAmount: 500000, paymentStatus: "partially_paid" });
+    assert.equal((await readAsAdmin(placed.id)).paidAmount, 500000, "đơn thật sự đang giữ tiền của khách");
+
+    const off = await asAdmin("POST", `/api/orders/${placed.id}/ket-thuc`, { cach: "huy", lyDo: "Khách huỷ" });
+    assert.equal(off.status, 200, JSON.stringify(off.body));
+    const todo = body<{ canNguoiLam: string[] }>(off).canNguoiLam;
+    assert.ok(todo.some((x) => /SPXVN123/.test(x) && /bằng tay/.test(x)), "vận đơn: nói rõ phải gọi hãng, không giả vờ đã huỷ");
+    assert.ok(todo.some((x) => /500000|Hoàn tiền/.test(x)), "tiền khách đã trả: nhắc người quyết định");
+  });
+
+  await t.test("KẾT THÚC: cách lạ bị từ chối; đơn trong thùng rác không kết thúc được", async () => {
+    await cleanUp(); stockUp(1);
+    const placed = body<PlacedBody>(await place(SAMPLE_ORDER));
+    assert.equal((await asAdmin("POST", `/api/orders/${placed.id}/ket-thuc`, { cach: "vut-di" })).status, 422);
+    await asAdmin("DELETE", `/api/orders/${placed.id}`);
+    const inBin = await asAdmin("POST", `/api/orders/${placed.id}/ket-thuc`, { cach: "huy" });
+    assert.equal(inBin.status, 409);
+    assert.equal(body<{ error: string }>(inBin).error, "don_o_thung_rac");
+  });
+
+  await t.test("ĐỔI MẪU: tồn đi theo món — đôi cũ VỀ kho, đôi mới RỜI kho, trong cùng một lượt", async () => {
+    // Đây đúng chỗ Desk bỏ dở: nó ghi dòng mới mà không đụng giữ chỗ tồn, nên đôi cũ vẫn bị đơn
+    // giữ (không ai bán được) còn đôi mới thì không ai giữ (người khác mua mất).
+    await cleanUp(); stockUp(1);
+    stock.set("DV9999|43", { qty: 2, price: 3500000, variantId: "DV9999-43", warehouseId: "wh_yen" });
+    const placed = body<PlacedBody>(await place(SAMPLE_ORDER));
+    assert.equal(stock.get("DV1234|42")?.qty, 0, "đôi cũ đang bị đơn giữ");
+    const maDong = (await readAsAdmin(placed.id)).items[0]?.maDong ?? "";
+
+    const r = await asAdmin("POST", `/api/orders/${placed.id}/dong/${encodeURIComponent(maDong)}/doi-mau`,
+      { ma: "DV9999", size: "43", lyDo: "Đối tác báo hết" });
+    assert.equal(r.status, 200, JSON.stringify(r.body));
+
+    assert.equal(stock.get("DV1234|42")?.qty, 1, "ĐÔI CŨ VỀ KHO — bán lại được ngay");
+    assert.equal(stock.get("DV9999|43")?.qty, 1, "ĐÔI MỚI RỜI KHO — người khác không mua mất");
+
+    const after = await readAsAdmin(placed.id);
+    assert.equal(after.items[0]?.productCode, "DV9999");
+    assert.equal(after.items[0]?.size, "43");
+    assert.equal(after.items[0]?.maDong, maDong, "MÃ DÒNG GIỮ NGUYÊN — phiếu mua khoá theo nó");
+    assert.equal(after.items[0]?.price, 3500000, "giá là giá MỚI của kho, không giữ giá cũ");
+    // TÊN HÀNG phải đi cùng: người bán đọc bảng đơn bằng tên, không bằng mã. Chạy thật 16/09 mới
+    // lộ ra chỗ này — hai dòng khác nhau trông y hệt nhau, và người đóng gói lấy nhầm đôi.
+    assert.notEqual(after.items[0]?.productName, "", "dòng sau khi đổi phải có TÊN, không chỉ có mã");
+    assert.equal(after.total, 3500000, "tổng đơn đi theo dòng, nếu không COD sai ngay lần giao tới");
+    assert.ok(after.statusLogs.some((l) => /Đổi mẫu/.test(String(l.note ?? "")) && /Đối tác báo hết/.test(String(l.note ?? ""))));
+  });
+
+  await t.test("ĐỔI MẪU: nói ra phần chênh để người bán báo khách", async () => {
+    await cleanUp(); stockUp(1);
+    stock.set("RE9999|43", { qty: 1, price: 1000000, variantId: "RE9999-43", warehouseId: "wh_yen" });
+    const placed = body<PlacedBody>(await place(SAMPLE_ORDER));   // đôi cũ 2.890.000
+    const maDong = (await readAsAdmin(placed.id)).items[0]?.maDong ?? "";
+    const r = await asAdmin("POST", `/api/orders/${placed.id}/dong/${encodeURIComponent(maDong)}/doi-mau`, { ma: "RE9999", size: "43" });
+    assert.equal(r.status, 200, JSON.stringify(r.body));
+    const out = body<{ chenh: number; loiNhan: string }>(r);
+    assert.equal(out.chenh, -1890000, "mẫu mới rẻ hơn");
+    assert.match(out.loiNhan, /trả lại khách/, "người bán đang cầm điện thoại — nói cho họ câu để nói");
+  });
+
+  await t.test("ĐỔI MẪU: dòng ĐÃ MUA thì không đổi, và mẫu mới hết hàng cũng không đổi", async () => {
+    await cleanUp(); stockUp(1);
+    const placed = body<PlacedBody>(await place(SAMPLE_ORDER));
+    const maDong = (await readAsAdmin(placed.id)).items[0]?.maDong ?? "";
+    const door = `/api/orders/${placed.id}/dong/${encodeURIComponent(maDong)}/doi-mau`;
+
+    // Mẫu mới không có trong kho: từ chối, và KHÔNG được đụng gì tới đôi cũ.
+    const noStock = await asAdmin("POST", door, { ma: "KHONG-CO", size: "43" });
+    assert.equal(noStock.status, 409);
+    assert.equal(body<{ error: string }>(noStock).error, "het_hang_mau_moi");
+    assert.equal(stock.get("DV1234|42")?.qty, 0, "đôi cũ vẫn đang được giữ cho đơn");
+    assert.equal((await readAsAdmin(placed.id)).items[0]?.productCode, "DV1234", "dòng không đổi");
+
+    // Đối tác đã mua rồi: đổi mẫu lúc này là bỏ rơi một món hàng đã trả tiền.
+    stock.set("DV9999|43", { qty: 1, price: 3500000, variantId: "DV9999-43", warehouseId: "wh_yen" });
+    kernel.bus.emit(EVENTS.purchaseReported, { maDon: placed.id, maDong, maMon: "DV1234", soLuong: 1, boi: "partner_wh_yen" });
+    // Bus là fire-and-forget: phiếu mua là thứ chặn, và nó đến từ `purchasedByLine` — ở bài này
+    // không có module mua hộ, nên chặn bằng đường khác: đơn đã có vận đơn.
+    await asAdmin("PUT", `/api/orders/${placed.id}`, { trackingCode: "SPXVN777" });
+    const shipped = await asAdmin("POST", door, { ma: "DV9999", size: "43" });
+    assert.equal(shipped.status, 409);
+    assert.equal(body<{ error: string }>(shipped).error, "don_da_co_van_don", "hàng đang trên đường thì đổi mẫu là quá muộn");
+  });
+
+  await t.test("GIÁ VỐN: người làm sổ gõ tay, và dòng chưa có giá thì hiện ở danh sách còn thiếu", async () => {
+    await cleanUp(); stockUp(1);
+    const placed = body<PlacedBody>(await place(SAMPLE_ORDER));
+    const maDong = (await readAsAdmin(placed.id)).items[0]?.maDong ?? "";
+
+    const before = body<{ dong: { maDon: string; maDong: string; goiY: number }[] }>(
+      await kernel.handle({ method: "GET", path: "/api/tien/gia-von/thieu", headers: admin }));
+    assert.ok(before.dong.some((d) => d.maDong === maDong), "dòng chưa có giá vốn là việc còn phải làm");
+
+    const wrote = await asAdmin("POST", "/api/tien/gia-von", { dong: [{ maDon: placed.id, maDong, giaVon: 2000000 }] });
+    assert.equal(wrote.status, 200, JSON.stringify(wrote.body));
+    assert.deepEqual(body<{ daGhi: string[] }>(wrote).daGhi, [maDong]);
+    assert.equal((await readAsAdmin(placed.id)).items[0]?.costPrice, 2000000);
+
+    const after = body<{ dong: { maDong: string }[] }>(
+      await kernel.handle({ method: "GET", path: "/api/tien/gia-von/thieu", headers: admin }));
+    assert.ok(!after.dong.some((d) => d.maDong === maDong), "ghi xong thì hết là việc phải làm");
+  });
+
+  await t.test("GIÁ VỐN: bù tự động KHÔNG BAO GIỜ đè lên số người làm sổ đã gõ", async () => {
+    // Người gõ một con số nghĩa là họ biết gì đó máy không biết. Một vòng đồng bộ chạy lại mà xoá
+    // nó đi là mất thông tin không lấy lại được — và không ai biết là đã mất.
+    await cleanUp(); stockUp(1);
+    const placed = body<PlacedBody>(await place(SAMPLE_ORDER));
+    const maDong = (await readAsAdmin(placed.id)).items[0]?.maDong ?? "";
+    await asAdmin("POST", "/api/tien/gia-von", { dong: [{ maDon: placed.id, maDong, giaVon: 1234000 }] });
+
+    // Bài này không cắm module mua hộ, nên không có phiếu nào để bù — cửa vẫn phải trả lời tử tế.
+    const filled = await asAdmin("POST", "/api/tien/gia-von/bu-tu-phieu", {});
+    assert.equal(filled.status, 200, JSON.stringify(filled.body));
+    assert.equal((await readAsAdmin(placed.id)).items[0]?.costPrice, 1234000, "số gõ tay còn nguyên");
+  });
+
+  await t.test("GIÁ VỐN: gửi rỗng thì từ chối, gửi quá nhiều dòng cũng từ chối", async () => {
+    await cleanUp(); stockUp(1);
+    assert.equal((await asAdmin("POST", "/api/tien/gia-von", { dong: [] })).status, 422);
+    const qua = Array.from({ length: 201 }, (_, i) => ({ maDon: "X", maDong: `X#${i}`, giaVon: 1 }));
+    assert.equal((await asAdmin("POST", "/api/tien/gia-von", { dong: qua })).status, 413);
   });
 
   await t.test("SALES DESK: POST /api/admin/manual-orders/sync creates a MAN- order the first time and updates it after, with the running site's reply", async () => {

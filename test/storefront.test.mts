@@ -284,3 +284,13 @@ test("the route table keeps the exact public paths of the old site", () => {
   // /ctv-login and /ctv-account: the old site mapped them too, and the collaborator pages navigate there.
   assert.deepEqual(paths, ["GET /", "GET /*", "GET /ctv-account", "GET /ctv-login", "GET /l/:token", "GET /mobile", "GET /product.html", "GET /product/:khoa"]);
 });
+
+test("an OLD partner link /partner-<code> still arrives: 301 to /partner/<code>, and nothing else is caught", async () => {
+  const { kernel } = buildKernel();
+  const r = await kernel.handle(get("/partner-link-rieng-cua-doi-tac"));
+  assert.equal(r.status, 301);
+  assert.equal(r.redirect, "/partner/link-rieng-cua-doi-tac");
+  // A short name or a file is not a partner link.
+  assert.equal((await kernel.handle(get("/partner-abc"))).status, 404);
+  assert.equal((await kernel.handle(get("/partner-portal.css"))).status, 404);
+});

@@ -16,3 +16,4 @@ export * from "./ports/rate-limiter";
 export * from "./ports/trial-mode";
 export * from "./ports/static-files";
 export * from "./ports/mailer";
+export * from "./ports/uploads";
