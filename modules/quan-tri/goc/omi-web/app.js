@@ -3615,7 +3615,7 @@
       "Nếu vẫn không thấy: mở web shop, đặt thử một đơn nhỏ rồi Tải lại; không thấy nữa thì báo nơi cấp key kèm nhật ký (nút Chép nhật ký)."
     ] },
     { question: "Tồn kho trên web sai so với kho thật?", answer: [
-      "Màn Kho hàng sẵn: dùng ±SL kèm lý do, hoặc phiếu nhập kho.",
+      "Màn Hàng hóa & Kho: tạo kho Hàng sẵn/Order, cấu hình partner và giá web; dùng ±SL kèm lý do hoặc phiếu nhập kho.",
       "Mọi thay đổi ghi vào Sổ cái — xem dòng gần nhất để biết ai đã sửa gì.",
       "Hủy đơn / xoá đơn tự trả tồn đúng một lần; khôi phục đơn thì lấy lại tồn."
     ] },
@@ -19377,8 +19377,8 @@ Quy tắc điền:
   };
   var ReadyStockView = class extends View {
     id = "hang-co-san";
-    label = "Kho hàng sẵn";
-    title = "Kho hàng sẵn";
+    label = "Hàng hóa & Kho";
+    title = "Hàng hóa & Kho";
     workspace = "landing";
     glyph = "KS";
     warehouses = [];
@@ -19411,7 +19411,7 @@ Quy tắc điền:
             h(
               "div",
               null,
-              h("h3", null, "Kho hàng"),
+              h("h3", null, "Quản lý hàng hóa & kho"),
               h("p", { id: "rs-tom-tat" }, "Một module kho; mỗi kho là Hàng sẵn hoặc Order. Đang tải…")
             ),
             h(
@@ -23702,6 +23702,7 @@ Quy tắc điền:
       if (Array.isArray(entry)) shell.alias(entry[0], "landing", entry[1], entry[2]);
       else shell.register(entry);
     }
+    shell.alias("hang-co-san", "common", "Hàng hóa & Kho", "HK");
     shell.boot();
   })();
 })();
