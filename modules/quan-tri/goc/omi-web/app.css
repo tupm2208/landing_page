@@ -594,3 +594,57 @@ td.num, th.num { text-align: right; }
 .omi-reassign input[type="number"] { width: 70px; min-width: 0; }
 .omi-fee-input { width: 130px; min-width: 0; }
 .finance-panel .field-inline { flex-wrap: wrap; }
+
+/* ===== Đ6 (17/09/2026): Fanpage + Zalo đủ việc ===== */
+/* Desk vẽ lại cả khung mỗi lần; OMI giữ DOM và bật tắt bằng thuộc tính hidden — lớp Desk nào đặt display thì hidden phải thắng. */
+[hidden] { display: none !important; }
+.omi-stack { display: grid; gap: 12px; align-content: start; }
+.omi-ck-row { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
+.omi-ck-percent { width: 86px; min-width: 0; }
+.omi-ck-custom { width: 140px; min-width: 0; }
+.omi-ck-amount { color: #b91c1c; font-weight: 600; }
+.omi-ck-qr { width: 170px; border: 1px solid #e5e7eb; border-radius: 10px; background: #fff; }
+.omi-tight { margin: 6px 0; }
+.facebook-customer-order-row .facebook-thread-item { border: 0; padding: 0; background: transparent; }
+.facebook-attachment.image img { max-width: 180px; max-height: 180px; border-radius: 8px; display: block; }
+.facebook-thread-item .facebook-conversation-meta { display: flex; flex-wrap: wrap; gap: 4px; }
+.facebook-thread-item .chat-product-actions { display: flex; gap: 6px; margin-top: 4px; }
+.omi-zalo-shot { max-width: 100%; border: 1px solid var(--line); border-radius: 10px; margin-top: 6px; }
+.omi-zalo-image { max-width: 180px; max-height: 180px; border-radius: 8px; display: block; margin: 4px 0; }
+.omi-spacer { flex: 1; }
+
+/* ----- Đ7 (17/09/2026): AI ở Xeon — thay style viết thẳng trong template Desk ----- */
+.omi-stale-note { margin: 8px 12px; padding: 8px 12px; border-radius: 8px; background: #fef3cd; color: #8a6d1a; font-size: 12px; }
+.training-progress i.omi-w-0 { width: 0; } .training-progress i.omi-w-10 { width: 10%; } .training-progress i.omi-w-20 { width: 20%; }
+.training-progress i.omi-w-30 { width: 30%; } .training-progress i.omi-w-40 { width: 40%; } .training-progress i.omi-w-50 { width: 50%; }
+.training-progress i.omi-w-60 { width: 60%; } .training-progress i.omi-w-70 { width: 70%; } .training-progress i.omi-w-80 { width: 80%; }
+.training-progress i.omi-w-90 { width: 90%; } .training-progress i.omi-w-100 { width: 100%; }
+.tokenai-dot-svg, .tokenai-legend svg.tokenai-dot-svg { display: inline-block; width: 10px !important; height: 10px !important; flex: none; margin-right: 6px; vertical-align: middle; }
+.tokenai-sharebar-svg { display: block; width: 100%; height: 12px; border-radius: 6px; overflow: hidden; background: var(--surface-soft); margin: 4px 0 10px; }
+#tokenai-bieu-do { width: 100%; height: auto; }
+#tokenai-bieu-do text { font-size: 10px; fill: #6b7280; }
+.demo-next-step { display: grid; gap: 6px; align-content: start; }
+#fp-ai-dieu-khien:has(#fp-ai-nut:empty) { display: none; }
+
+/* ----- Đ8 Content: thay style nội tuyến của Desk (CSP style-src 'self') ----- */
+.omi-push-right { margin-left: auto; }
+.omi-wrap { flex-wrap: wrap; gap: 6px; }
+.omi-sale { color: #E8590C; }
+.omi-source { color: #1971C2; }
+.omi-inline-check { display: inline-flex; gap: 4px; margin-right: 12px; align-items: center; }
+.omi-row-gap { display: flex; gap: 8px; }
+.omi-span-2 { grid-column: span 2; }
+.omi-span-3 { grid-column: span 3; }
+/* Desk FACEBOOK_TEXT_BACKGROUND_PRESETS swatches, in the order the landing lists them. */
+.omi-preset-1 { background: linear-gradient(135deg, #F9D423, #F83600, #E91E8C); }
+.omi-preset-2 { background: linear-gradient(135deg, #F953C6, #F9D423); }
+.omi-preset-3 { background: linear-gradient(135deg, #7B2FF7, #F107A3); }
+.omi-preset-4 { background: linear-gradient(135deg, #FF8008, #E52D27); }
+.omi-preset-5 { background: linear-gradient(135deg, #ED213A, #93291E); }
+.omi-preset-6 { background: linear-gradient(135deg, #E53935, #1E88E5); }
+.omi-preset-7 { background: linear-gradient(135deg, #11998E, #38EF7D); }
+.omi-preset-8 { background: #7B4397; }
+.omi-preset-9 { background: #D81B60; }
+.omi-preset-10 { background: #D32F2F; }
+.omi-preset-11 { background: #1565C0; }
+.omi-preset-12 { background: #111111; }

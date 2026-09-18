@@ -124,7 +124,7 @@ export function itemToRows(item: NormalisedItem, source: Source, at: string): { 
     seo_mo_ta: (item.seoDescription || "").slice(0, 500),
     seo_tu_khoa: (item.seoKeywords || "").slice(0, 500),
     chinh_sach: item.policy || "",
-    gia_nguon: item.price || 0
+    gia_nguon: item.preMarkupSalePrice || item.price || 0
   };
 
   const variantRows: VariantRow[] = item.sizes
@@ -145,7 +145,7 @@ export function itemToRows(item: NormalisedItem, source: Source, at: string): { 
         sua_luc: at,
         ma_sku: String(line.sku || line.variantSku || "").trim().slice(0, 128),
         gia_von: firstPositive(line.costPrice, line.cost),
-        gia_nguon: price
+        gia_nguon: firstPositive(line.saleFilePrice, line.sourcePrice, line.baseSalePrice, line.rawSalePrice, price)
       };
     })
     .filter((row) => row.size !== "");

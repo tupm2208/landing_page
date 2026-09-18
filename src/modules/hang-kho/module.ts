@@ -26,6 +26,7 @@
 
 import { ACCESS, ERROR_CODES, EVENTS, defineModule, reply, type KernelRequest, type ModuleContext, type ReplyDraft } from "../../contract";
 import { bytesFromDataUrl } from "../../shared/data-url";
+import { callXeon, relayXeon } from "../../shared/xeon-call";
 import {
   CatalogRepository, SOURCE, mysqlTime, type StoredItem, type CommitOutcome, type DeleteResult, type QuickEditPatch, type ReserveFailure, type RestockOutcome,
   type Source, type StockLine, type SyncResult, type WriteOneResult
@@ -36,6 +37,7 @@ import { SIZE_SYSTEMS, SheetInputError, googleSheetCsvUrl, itemsFromRows, looksL
 import { asRecord, publicView, type PublicItem } from "./normalise";
 import { MOVEMENT_KINDS, StockLedger, type AdjustOutcome } from "./stock-ledger";
 import { SCHEMA, TABLES } from "./schema";
+import { priceImportedItems, type WarehousePricingRule } from "./warehouse-pricing";
 
 const RESERVATION_TTL_MS = 30 * 60 * 1000;   // hold 30 minutes, then give back if the order was not placed
 const TEN_MINUTES_MS = 10 * 60 * 1000;
@@ -51,13 +53,15 @@ const WAREHOUSE_POLICY_DOCUMENT = "hang-kho-chinh-sach-theo-kho-v2";
 const WAREHOUSE_MIGRATION_DOCUMENT = "hang-kho-migration-nguon-v2";
 const STOCK_IMPORT_SESSION_DOCUMENT = "hang-kho-phien-nhap-file-v2";
 
-interface WarehouseRecord { id: string; name: string; type: "ready" | "order"; status: "active" | "inactive"; priority: number; description: string; updatedAt: string }
+interface WarehousePartnerLink { partnerId: string; role: "supplier" | "buyer"; priority: number; isDefault: boolean; enabled: boolean; purchasingPolicy: string }
+interface WarehouseRecord { id: string; name: string; type: "ready" | "order"; status: "active" | "inactive"; priority: number; description: string; pricing: WarehousePricingRule; partners: WarehousePartnerLink[]; updatedAt: string }
 interface WarehouseBook { version: 2; warehouses: WarehouseRecord[]; legacyMap: Record<string, string>; updatedAt: string }
 interface WarehousePolicy { warehouseId: string; version: number; effectiveAt: string; summary: string; enabled: boolean; cod: boolean; depositPercent: number; leadTimeDays: number; orderLimit: number; surcharge: number; returns: string; channels: string }
 interface WarehousePolicyBook { version: 2; policies: WarehousePolicy[]; updatedAt: string }
 
 const emptyWarehouseBook = (): WarehouseBook => ({ version: 2, warehouses: [], legacyMap: {}, updatedAt: "" });
 const emptyPolicyBook = (): WarehousePolicyBook => ({ version: 2, policies: [], updatedAt: "" });
+const defaultPricing = (): WarehousePricingRule => ({ mode: "image_tool", upliftPercent: 0, fixedMarkup: 0, rounding: 10000 });
 
 /** The import book: newest first, at most `IMPORT_LOG_CAP` entries. Field names are wire (OMI reads them). */
 interface ImportLog {
@@ -545,9 +549,25 @@ export const manifest = defineModule<Config>({
       return repository(ctx).setVariantPrice({ code: String(input.code), size: String(input.size), warehouseId: String(input.warehouseId), source: sourceOf(input.source) ?? SOURCE.ready, price }, ctx.ports.clock.now());
     }
   },
-  requiresOptional: ["khung-nen-tang.settings"],
+  requiresOptional: ["khung-nen-tang.settings", "khung-nen-tang.xeon"],
 
   routes: [
+    {
+      method: "POST", path: "/api/hang-kho/thu-vien/tra-ma", access: ACCESS.admin,
+      rateLimit: { calls: 240, windowMs: TEN_MINUTES_MS },
+      handle: async (ctx, request) => {
+        const body = asRecord(await request.json());
+        return relayXeon(await callXeon(ctx, "POST", "/thu-vien-san-pham/tra-ma", { ma: String(body["ma"] ?? "").trim() }, { timeoutMs: 15_000, unregistered: "Landing chưa đăng ký Xeon; vẫn có thể nhập sản phẩm thủ công." }));
+      }
+    },
+    {
+      method: "POST", path: "/api/hang-kho/thu-vien/tra-nhieu", access: ACCESS.admin,
+      rateLimit: { calls: 60, windowMs: TEN_MINUTES_MS }, bodyLimit: 256 * 1024,
+      handle: async (ctx, request) => {
+        const body = asRecord(await request.json()); const codes = (Array.isArray(body["ma"]) ? body["ma"] : []).map((x) => String(x).trim()).filter(Boolean).slice(0, 1000);
+        return relayXeon(await callXeon(ctx, "POST", "/thu-vien-san-pham/tra-nhieu", { ma: codes }, { timeoutMs: 30_000, unregistered: "Landing chưa đăng ký Xeon; file vẫn có thể nhập nhưng chưa tự bổ sung thông tin chuẩn." }));
+      }
+    },
     {
       method: "GET", path: "/api/products", access: ACCESS.public,
       whyPublic: "Danh mục để web bán hàng hiển thị. Bản trả ra đã bỏ giá vốn và tồn thật.",
@@ -694,12 +714,24 @@ export const manifest = defineModule<Config>({
       rateLimit: { calls: 60, windowMs: TEN_MINUTES_MS }, bodyLimit: 16 * 1024 * 1024,
       handle: async (ctx, request) => {
         const body = asRecord(await request.json()); const warehouseId = String(body["maKho"] ?? "").trim();
-        const mode = body["cheDo"] === "replace" ? "replace" : "merge"; const items = Array.isArray(body["mon"]) ? body["mon"] as Record<string, unknown>[] : [];
-        if (!warehouseId || items.length === 0 || items.length > IMPORT_CAP) return reply.json({ ok: false, error: "phien_nhap_sai", message: "Cần chọn kho và file có từ 1 đến 20.000 sản phẩm." }, 400);
+        const mode = body["cheDo"] === "replace" ? "replace" : "merge"; const rawItems = Array.isArray(body["mon"]) ? body["mon"] as Record<string, unknown>[] : [];
+        if (!warehouseId || rawItems.length === 0 || rawItems.length > IMPORT_CAP) return reply.json({ ok: false, error: "phien_nhap_sai", message: "Cần chọn kho và file có từ 1 đến 20.000 sản phẩm." }, 400);
         const warehouseBook = (await ctx.ports.store.document<WarehouseBook>(WAREHOUSE_BOOK_DOCUMENT).read(null)) ?? emptyWarehouseBook();
         const warehouse = warehouseBook.warehouses.find((w) => w.id === warehouseId); if (!warehouse) return reply.json({ ok: false, error: "khong_thay_kho", message: "Kho chưa được khai báo trong module Kho hàng." }, 404);
         const source = warehouse.type === "order" ? SOURCE.campaign : SOURCE.own;
-        const current = await ctx.ports.store.rows(`SELECT ma_bien_the, ma_mon, size, ton, sua_luc FROM ${TABLES.variants} WHERE nguon = ? AND ma_kho = ? ORDER BY ma_mon, size`, [source, warehouseId]);
+        // Library enrichment is best-effort: an unavailable Xeon must never block warehouse work.
+        let enrichedItems = rawItems;
+        const library = await callXeon(ctx, "POST", "/thu-vien-san-pham/tra-nhieu", { ma: rawItems.map((item) => String(item["code"] ?? "")) }, { timeoutMs: 30_000 }).catch(() => null);
+        if (library?.ok) {
+          const found = new Map((Array.isArray(library.body["ketQua"]) ? library.body["ketQua"] as Record<string, unknown>[] : []).map((entry) => [String(entry["code"] ?? ""), asRecord(entry["product"])]));
+          enrichedItems = rawItems.map((item) => {
+            const standard = found.get(String(item["code"] ?? "").trim().toUpperCase()); if (!standard || Object.keys(standard).length === 0) return item;
+            const seo = asRecord(standard["seo"]); const media = Array.isArray(standard["media"]) ? standard["media"] as Record<string, unknown>[] : [];
+            return { ...item, name: item["name"] || standard["name"], brand: item["brand"] || standard["brand"], category: item["category"] || standard["category"], gender: item["gender"] || standard["gender"], color: item["color"] || standard["color"], description: item["description"] || standard["description"], seoTitle: item["seoTitle"] || seo["title"], seoDescription: item["seoDescription"] || seo["description"], images: Array.isArray(item["images"]) && item["images"].length ? item["images"] : media.map((m) => String(m["storageUrl"] ?? "")).filter(Boolean), libraryStatus: standard["status"] };
+          });
+        }
+        const items = priceImportedItems(enrichedItems, warehouse.pricing ?? defaultPricing());
+        const current = await ctx.ports.store.rows(`SELECT * FROM ${TABLES.variants} WHERE nguon = ? AND ma_kho = ? ORDER BY ma_mon, size`, [source, warehouseId]);
         const incoming = new Map<string, number>();
         for (const item of items) for (const size of (Array.isArray(item["sizes"]) ? item["sizes"] as Record<string, unknown>[] : [])) incoming.set(`${String(item["code"])}\u0000${String(size["size"])}`, Number(size["qty"] ?? 0));
         const existing = new Map(current.map((r) => [`${String(r["ma_mon"])}\u0000${String(r["size"])}`, Number(r["ton"] ?? 0)]));
@@ -710,8 +742,9 @@ export const manifest = defineModule<Config>({
         const dangGiuCho = current.filter((r) => missingKeys.has(`${String(r["ma_mon"])}\u0000${String(r["size"])}`) && reservedIds.has(String(r["ma_bien_the"]))).length;
         const fingerprint = `${current.length}:${current.reduce((n, r) => n + Number(r["ton"] ?? 0), 0)}:${current.map((r) => String(r["sua_luc"] ?? "")).sort().at(-1) ?? ""}`;
         const id = `imp_${ctx.ports.clock.now().getTime()}`; const expiresAt = new Date(ctx.ports.clock.now().getTime() + 2 * 60 * 60 * 1000).toISOString();
-        await ctx.ports.store.document<Record<string, unknown>>(STOCK_IMPORT_SESSION_DOCUMENT).write({ id, warehouseId, warehouseType: warehouse.type, source, mode, items, fingerprint, expiresAt, dangGiuCho, actor: actorOf(request) });
-        return reply.json({ ok: true, phien: { id, maKho: warehouseId, loaiKho: warehouse.type, cheDo: mode, hetHanLuc: expiresAt, them, thayDoi, giuNguyen, vangFile, seNgungBan: mode === "replace" ? vangFile : 0, dangGiuCho } }, 200, { "Cache-Control": "no-store" });
+        await ctx.ports.store.document<Record<string, unknown>>(STOCK_IMPORT_SESSION_DOCUMENT).write({ id, warehouseId, warehouseType: warehouse.type, source, mode, items, beforeRows: current, fingerprint, expiresAt, dangGiuCho, actor: actorOf(request) });
+        const mauGia = items.slice(0, 5).flatMap((i) => (Array.isArray(i["sizes"]) ? i["sizes"] as Record<string, unknown>[] : []).slice(0, 2).map((s) => ({ ma: String(i["code"] ?? ""), size: String(s["size"] ?? ""), giaFile: Number(s["saleFilePrice"] ?? 0), giaWeb: Number(s["suggestedPrice"] ?? 0) })));
+        return reply.json({ ok: true, phien: { id, maKho: warehouseId, loaiKho: warehouse.type, cheDo: mode, congThucGia: warehouse.pricing ?? defaultPricing(), mauGia, hetHanLuc: expiresAt, them, thayDoi, giuNguyen, vangFile, seNgungBan: mode === "replace" ? vangFile : 0, dangGiuCho } }, 200, { "Cache-Control": "no-store" });
       }
     },
     {
@@ -727,11 +760,32 @@ export const manifest = defineModule<Config>({
         if (fingerprint !== session["fingerprint"]) return reply.json({ ok: false, error: "kho_da_thay_doi", message: "Kho đã thay đổi sau lúc xem trước; không ghi đè. Hãy xem trước lại." }, 409);
         const items = session["items"] as Record<string, unknown>[]; const codes = items.map((i) => String(i["code"] ?? "")).filter(Boolean);
         if (session["mode"] === "replace") { const old = await ctx.ports.store.rows(`SELECT DISTINCT ma_mon FROM ${TABLES.variants} WHERE nguon = ? AND ma_kho = ?`, [source, warehouseId]); for (const r of old) codes.push(String(r["ma_mon"])); }
-        await history(ctx).capture(`Trước phiên nhập file ${String(session["id"])}`, codes, actorOf(request));
+        const historyGroup = await history(ctx).capture(`Trước phiên nhập file ${String(session["id"])}`, codes, actorOf(request));
         const result = await writeWarehouse(ctx, { source, warehouseId, items }, session["mode"] === "replace");
         await noteImport(ctx, { nguon: source, viec: session["mode"] === "replace" ? `thay mới kho ${warehouseId}` : `bổ sung kho ${warehouseId}`, ...syncWire(result) });
-        await ctx.ports.store.document<Record<string, unknown>>(STOCK_IMPORT_SESSION_DOCUMENT).write({ ...session, appliedAt: ctx.ports.clock.now().toISOString(), result });
-        return reply.json({ ok: true, maPhien: session["id"], ...syncWire(result) }, 200, { "Cache-Control": "no-store" });
+        const after = await ctx.ports.store.rows(`SELECT ton, sua_luc FROM ${TABLES.variants} WHERE nguon = ? AND ma_kho = ? ORDER BY ma_mon, size`, [source, warehouseId]);
+        const fingerprintAfter = `${after.length}:${after.reduce((n, r) => n + Number(r["ton"] ?? 0), 0)}:${after.map((r) => String(r["sua_luc"] ?? "")).sort().at(-1) ?? ""}`;
+        await ctx.ports.store.document<Record<string, unknown>>(STOCK_IMPORT_SESSION_DOCUMENT).write({ ...session, appliedAt: ctx.ports.clock.now().toISOString(), fingerprintAfter, historyGroup, result });
+        return reply.json({ ok: true, maPhien: session["id"], ...syncWire(result), coTheHoanTac: historyGroup !== "" }, 200, { "Cache-Control": "no-store" });
+      }
+    },
+    {
+      method: "POST", path: "/api/hang-kho/phien-nhap-file/hoan-tac", access: ACCESS.admin,
+      rateLimit: { calls: 20, windowMs: TEN_MINUTES_MS },
+      handle: async (ctx, request) => {
+        const body = asRecord(await request.json()); const session = await ctx.ports.store.document<Record<string, unknown>>(STOCK_IMPORT_SESSION_DOCUMENT).read(null);
+        if (!session || session["id"] !== body["maPhien"] || !session["appliedAt"] || session["undoneAt"]) return reply.json({ ok: false, error: "phien_khong_hoan_tac", message: "Phiên này chưa áp dụng, đã hoàn tác hoặc không còn là phiên gần nhất." }, 409);
+        const warehouseId = String(session["warehouseId"]); const source = sourceOf(session["source"]); if (!source) return reply.json({ ok: false, error: "nguon_sai" }, 409);
+        const current = await ctx.ports.store.rows(`SELECT ton, sua_luc FROM ${TABLES.variants} WHERE nguon = ? AND ma_kho = ? ORDER BY ma_mon, size`, [source, warehouseId]);
+        const fingerprint = `${current.length}:${current.reduce((n, r) => n + Number(r["ton"] ?? 0), 0)}:${current.map((r) => String(r["sua_luc"] ?? "")).sort().at(-1) ?? ""}`;
+        if (fingerprint !== session["fingerprintAfter"]) return reply.json({ ok: false, error: "kho_da_thay_doi", message: "Kho đã phát sinh thay đổi sau phiên nhập; không thể hoàn tác tự động." }, 409);
+        const head = await history(ctx).head(); if (!head || head.lan !== session["historyGroup"]) return reply.json({ ok: false, error: "lich_su_da_doi", message: "Đã có thao tác hàng hóa mới hơn; không thể hoàn tác phiên này." }, 409);
+        await history(ctx).undoLatest();
+        const beforeRows = Array.isArray(session["beforeRows"]) ? session["beforeRows"] as Record<string, unknown>[] : [];
+        await ctx.ports.store.transaction(async (tx) => { await tx.table(TABLES.variants).delete({ nguon: source, ma_kho: warehouseId }); if (beforeRows.length) await tx.table(TABLES.variants).insertMany(beforeRows); });
+        const undoneAt = ctx.ports.clock.now().toISOString(); await ctx.ports.store.document<Record<string, unknown>>(STOCK_IMPORT_SESSION_DOCUMENT).write({ ...session, undoneAt });
+        const soMon = new Set(beforeRows.map((row) => String(row["ma_mon"] ?? "")).filter(Boolean)).size;
+        return reply.json({ ok: true, maPhien: session["id"], daHoanTac: true, soMon, soBienThe: beforeRows.length }, 200, { "Cache-Control": "no-store" });
       }
     },
     {
@@ -1065,8 +1119,8 @@ export const manifest = defineModule<Config>({
         const discovered = await ledger(ctx).warehouses();
         const book = (await ctx.ports.store.document<WarehouseBook>(WAREHOUSE_BOOK_DOCUMENT).read(null)) ?? emptyWarehouseBook();
         const configured = new Map(book.warehouses.map((w) => [w.id, w]));
-        const kho = discovered.map((w) => ({ ...w, name: configured.get(w.id)?.name ?? w.id, type: configured.get(w.id)?.type ?? (w.sources.includes(SOURCE.campaign) ? "order" : "ready"), status: configured.get(w.id)?.status ?? "active", priority: configured.get(w.id)?.priority ?? 0, description: configured.get(w.id)?.description ?? "" }));
-        for (const w of book.warehouses) if (!kho.some((x) => x.id === w.id)) kho.push({ id: w.id, pairs: 0, sizes: 0, sources: [], name: w.name, type: w.type, status: w.status, priority: w.priority, description: w.description });
+        const kho = discovered.map((w) => ({ ...w, name: configured.get(w.id)?.name ?? w.id, type: configured.get(w.id)?.type ?? (w.sources.includes(SOURCE.campaign) ? "order" : "ready"), status: configured.get(w.id)?.status ?? "active", priority: configured.get(w.id)?.priority ?? 0, description: configured.get(w.id)?.description ?? "", pricing: configured.get(w.id)?.pricing ?? defaultPricing(), partners: configured.get(w.id)?.partners ?? [] }));
+        for (const w of book.warehouses) if (!kho.some((x) => x.id === w.id)) kho.push({ id: w.id, pairs: 0, sizes: 0, sources: [], name: w.name, type: w.type, status: w.status, priority: w.priority, description: w.description, pricing: w.pricing ?? defaultPricing(), partners: w.partners ?? [] });
         return reply.json({ ok: true, kho, legacyMap: book.legacyMap }, 200, { "Cache-Control": "no-store" });
       }
     },
@@ -1078,10 +1132,25 @@ export const manifest = defineModule<Config>({
         const name = String(body["ten"] ?? "").trim();
         const type = String(body["loai"] ?? ""); const status = String(body["trangThai"] ?? "active");
         if (!id || !name || !["ready", "order"].includes(type) || !["active", "inactive"].includes(status)) return reply.json({ ok: false, error: "kho_khong_hop_le", message: "Kho cần mã, tên, loại ready/order và trạng thái hợp lệ." }, 400);
+        if (body["doiTac"] !== undefined) {
+          if (!Array.isArray(body["doiTac"]) || body["doiTac"].length > 50) return reply.json({ ok: false, error: "lien_ket_doi_tac_khong_hop_le", message: "Danh sách partner của kho không hợp lệ." }, 400);
+          const rawLinks = body["doiTac"].map((row) => asRecord(row)); const ids = rawLinks.map((row) => String(row["maDoiTac"] ?? "").trim()).filter(Boolean);
+          if (ids.length !== rawLinks.length || new Set(ids).size !== ids.length || rawLinks.filter((row) => row["macDinh"] === true).length > 1 || rawLinks.some((row) => row["macDinh"] === true && row["dangDung"] === false)) return reply.json({ ok: false, error: "lien_ket_doi_tac_khong_hop_le", message: "Partner không được trùng; kho chỉ có một partner mặc định và partner đó phải đang dùng." }, 400);
+        }
         const now = ctx.ports.clock.now().toISOString(); let saved!: WarehouseRecord;
         await ctx.ports.store.document<WarehouseBook>(WAREHOUSE_BOOK_DOCUMENT).update((current) => {
           const book = current ?? emptyWarehouseBook();
-          saved = { id, name: name.slice(0, 190), type: type as WarehouseRecord["type"], status: status as WarehouseRecord["status"], priority: Math.max(0, Math.round(Number(body["uuTien"] ?? 0))), description: String(body["moTa"] ?? "").slice(0, 2000), updatedAt: now };
+          const old = book.warehouses.find((w) => w.id === id); const pricingRaw = asRecord(body["congThucGia"]);
+          const mode = ["image_tool", "percent", "fixed", "file"].includes(String(pricingRaw["cheDo"])) ? String(pricingRaw["cheDo"]) as WarehousePricingRule["mode"] : old?.pricing?.mode ?? "image_tool";
+          const roundingRaw = Number(pricingRaw["lamTron"] ?? old?.pricing?.rounding ?? 10000); const rounding = ([10000, 50000, 100000].includes(roundingRaw) ? roundingRaw : 10000) as WarehousePricingRule["rounding"];
+          const oldGroups = old?.pricing?.groups ?? {}; const groupsRaw = asRecord(pricingRaw["nhom"]);
+          const groupRule = (key: "shoe" | "apparel" | "accessory") => { const raw = asRecord(groupsRaw[key]); return { upliftPercent: Math.min(100, Math.max(0, Number(raw["phanTramTang"] ?? oldGroups[key]?.upliftPercent ?? 0))), fixedMarkup: Math.max(0, Number(raw["congThem"] ?? oldGroups[key]?.fixedMarkup ?? 0)) }; };
+          const partnerRows = Array.isArray(body["doiTac"]) ? body["doiTac"] as unknown[] : old?.partners ?? [];
+          const partners = partnerRows.slice(0, 50).map((row) => {
+            const raw = asRecord(row); const role = String(raw["vaiTro"] ?? "supplier");
+            return { partnerId: String(raw["maDoiTac"] ?? "").trim().slice(0, 64), role: (role === "buyer" ? "buyer" : "supplier") as WarehousePartnerLink["role"], priority: Math.max(0, Math.round(Number(raw["uuTien"] ?? 0))), isDefault: raw["macDinh"] === true, enabled: raw["dangDung"] !== false, purchasingPolicy: String(raw["chinhSachMua"] ?? "").slice(0, 2000) };
+          }).filter((link) => link.partnerId !== "");
+          saved = { id, name: name.slice(0, 190), type: type as WarehouseRecord["type"], status: status as WarehouseRecord["status"], priority: Math.max(0, Math.round(Number(body["uuTien"] ?? 0))), description: String(body["moTa"] ?? "").slice(0, 2000), pricing: { mode, upliftPercent: Math.min(100, Math.max(0, Number(pricingRaw["phanTramTang"] ?? old?.pricing?.upliftPercent ?? 0))), fixedMarkup: Math.max(0, Number(pricingRaw["congThem"] ?? old?.pricing?.fixedMarkup ?? 0)), rounding, groups: { shoe: groupRule("shoe"), apparel: groupRule("apparel"), accessory: groupRule("accessory") } }, partners, updatedAt: now };
           return { ...book, version: 2, warehouses: [...book.warehouses.filter((w) => w.id !== id), saved], updatedAt: now };
         }, emptyWarehouseBook());
         return reply.json({ ok: true, kho: saved }, 200, { "Cache-Control": "no-store" });
@@ -1123,7 +1192,7 @@ export const manifest = defineModule<Config>({
         const now = ctx.ports.clock.now().toISOString();
         await ctx.ports.store.transaction(async (tx) => { for (const m of mapping) await tx.table(TABLES.variants).update({ nguon: String(m["nguonCu"] ?? "") }, { ma_kho: String(m["maKho"] ?? ""), sua_luc: mysqlTime(ctx.ports.clock.now()) }); });
         await ctx.ports.store.document<WarehouseBook>(WAREHOUSE_BOOK_DOCUMENT).update((current) => {
-          const migrated = mapping.map((m) => ({ id: String(m["maKho"]), name: String(m["tenKho"]), type: String(m["loai"]) as WarehouseRecord["type"], status: "active" as const, priority: Number(m["uuTien"] ?? 0), description: "Được tạo từ migration nguồn cũ", updatedAt: now }));
+          const migrated = mapping.map((m) => ({ id: String(m["maKho"]), name: String(m["tenKho"]), type: String(m["loai"]) as WarehouseRecord["type"], status: "active" as const, priority: Number(m["uuTien"] ?? 0), description: "Được tạo từ migration nguồn cũ", pricing: defaultPricing(), partners: [], updatedAt: now }));
           const ids = new Set(migrated.map((w) => w.id));
           return { version: 2, warehouses: [...(current?.warehouses ?? []).filter((w) => !ids.has(w.id)), ...migrated], legacyMap: { ...(current?.legacyMap ?? {}), ...Object.fromEntries(mapping.map((m) => [String(m["nguonCu"]), String(m["maKho"])])) }, updatedAt: now };
         }, emptyWarehouseBook());

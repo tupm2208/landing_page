@@ -3,7 +3,8 @@
 (() => {
   // ../omi/packages/omi/src/landing/cong-landing.ts
   var HAN_MAC_DINH = 15e3;
-  function cauLoiTheoMa(ma, than) {
+  var HAN_AI = 17e4;
+  function cauLoiTheoMa(ma, than, duong = "") {
     const chu2 = than ?? {};
     const cuaServer = typeof chu2.message === "string" && chu2.message.trim() !== "" ? chu2.message.trim() : "";
     if (ma === 401) return `Máy chủ không nhận vé của máy này (vé hết hạn, hoặc landing chưa đăng ký với Xeon). Bấm Kiểm lại license.${cuaServer ? ` (${cuaServer})` : ""}`;
@@ -11,7 +12,13 @@
       if (chu2.error === "chua_mua_manh") return `Shop chưa mua mảnh "${String(chu2.manh ?? "?")}". Liên hệ nơi cấp key để mở thêm.`;
       return cuaServer || "Máy chủ từ chối việc này.";
     }
-    if (ma === 404) return cuaServer || "Không tìm thấy thứ cần tìm trên máy chủ.";
+    if (ma === 404) {
+      if (cuaServer) return cuaServer;
+      if (chu2.error === "khong_thay" && Object.keys(chu2).every((k) => k === "ok" || k === "error")) {
+        return `Landing chưa có chức năng này${duong ? ` (${duong.split("?")[0]})` : ""} — landing đang chạy bản cũ hơn OMI. Cập nhật mã landing, build lại và bật lại landing.`;
+      }
+      return "Không tìm thấy thứ cần tìm trên máy chủ.";
+    }
     if (ma === 409) return cuaServer || "Việc này không làm được ở trạng thái hiện tại.";
     if (ma === 413) return "Gửi lên quá lớn — máy chủ từ chối nhận.";
     if (ma === 429) return "Máy chủ đang nhận quá nhiều yêu cầu. Chờ ít phút rồi thử lại.";
@@ -22,12 +29,13 @@
     const hanMs = Number(t.hanMs ?? HAN_MAC_DINH);
     const goi = t.goi ?? ((url, tuyChon) => fetch(url, tuyChon));
     const goc = () => String(t.duong() ?? "").trim().replace(/\/+$/, "");
-    async function di(cach, duong, than) {
+    async function di(cach, duong, than, hanRieng) {
+      const han = hanRieng ?? hanMs;
       const g = goc();
       if (g === "") return { ok: false, ma: 0, than: null, viSao: "Chưa biết địa chỉ landing của shop — bấm Kiểm lại license." };
       const ma = t.ma();
       const dung = new AbortController();
-      const hen = setTimeout(() => dung.abort(), hanMs);
+      const hen = setTimeout(() => dung.abort(), han);
       try {
         const tl = await goi(`${g}${duong}`, {
           method: cach,
@@ -46,19 +54,19 @@
         } catch {
           doc = null;
         }
-        if (!tl.ok) return { ok: false, ma: tl.status, than: null, viSao: cauLoiTheoMa(tl.status, doc) };
+        if (!tl.ok) return { ok: false, ma: tl.status, than: null, viSao: cauLoiTheoMa(tl.status, doc, `${cach} ${duong}`) };
         return { ok: true, ma: tl.status, than: doc, viSao: "" };
       } catch (e) {
         const loi = e;
         if (loi?.name === "AbortError") {
-          return { ok: false, ma: 0, than: null, viSao: `Máy chủ không trả lời trong ${Math.round(hanMs / 1e3)} giây.` };
+          return { ok: false, ma: 0, than: null, viSao: `Máy chủ không trả lời trong ${Math.round(han / 1e3)} giây.` };
         }
         return { ok: false, ma: 0, than: null, viSao: `Không nối được tới máy chủ ${g}: ${String(loi?.message ?? e)}` };
       } finally {
         clearTimeout(hen);
       }
     }
-    const q = (o) => {
+    const q2 = (o) => {
       const p = new URLSearchParams();
       for (const [k, v] of Object.entries(o)) {
         if (v === void 0 || v === null || v === "") continue;
@@ -72,22 +80,23 @@
       duong: goc,
       phienBan: () => di("GET", "/api/runtime-version"),
       xeon: () => di("GET", "/api/admin/xeon"),
-      danhSachDon: (tham = {}) => di("GET", `/api/orders${q({
+      danhSachDon: (tham = {}) => di("GET", `/api/orders${q2({
         status: tham.trangThai,
         phone: tham.dienThoai,
         since: tham.tuNgay,
         limit: tham.gioiHan,
         daXoa: tham.daXoa,
         nhom: tham.nhom,
-        q: tham.tuKhoa
+        q: tham.tuKhoa,
+        site: tham.site
       })}`),
-      demDonTheoNhom: () => di("GET", "/api/admin/orders/dem-quy-trinh"),
+      demDonTheoNhom: (site = "") => di("GET", `/api/admin/orders/dem-quy-trinh${q2({ site })}`),
       moDon: (maDon) => di("GET", `/api/orders/${maAnToan(maDon)}`),
       doiTrangThaiDon: (maDon, trangThai, ghiChu = "") => di("PATCH", `/api/orders/${maAnToan(maDon)}`, { status: trangThai, note: ghiChu }),
       ghiNhanDaTra: (maDon, soTien, ghiChu = "") => di("POST", "/api/tien/da-tra", { maDon, soTien, ghiChu, boi: "omi" }),
       tienCuaDon: (maDon) => di("GET", `/api/tien/don/${maAnToan(maDon)}`),
       hoanTien: (than) => di("POST", "/api/tien/hoan", { ...than, boi: "omi" }),
-      giaVonConThieu: (gioiHan) => di("GET", `/api/tien/gia-von/thieu${q({ gioiHan })}`),
+      giaVonConThieu: (gioiHan) => di("GET", `/api/tien/gia-von/thieu${q2({ gioiHan })}`),
       ghiGiaVon: (dong) => di("POST", "/api/tien/gia-von", { dong }),
       buGiaVonTuPhieu: (maDon) => di("POST", "/api/tien/gia-von/bu-tu-phieu", maDon === "" ? {} : { maDon }),
       taoDonThuCong: (than) => di("POST", "/api/orders/thu-cong", than),
@@ -100,8 +109,8 @@
       ketThucDon: (maDon, cach, lyDo, giuCoc = "") => di("POST", `/api/orders/${maAnToan(maDon)}/ket-thuc`, { cach, lyDo, ...giuCoc === "" ? {} : { giuCoc } }),
       goiYKho: (maDon) => di("GET", `/api/orders/${maAnToan(maDon)}/goi-y-kho`),
       xoaHanDon: (maDon) => di("DELETE", `/api/orders/${maAnToan(maDon)}/vinh-vien`),
-      danhSachKhach: (tuKhoa = "", gioiHan = 200) => di("GET", `/api/admin/khach${q({ q: tuKhoa, limit: gioiHan })}`),
-      timHang: (tuKhoa = "", gioiHan = 30, loc = {}) => di("GET", `/api/admin/products${q({ q: tuKhoa, limit: gioiHan, size: loc.size ?? "", nguon: loc.nguon ?? "" })}`),
+      danhSachKhach: (tuKhoa = "", gioiHan = 200) => di("GET", `/api/admin/khach${q2({ q: tuKhoa, limit: gioiHan })}`),
+      timHang: (tuKhoa = "", gioiHan = 30, loc = {}) => di("GET", `/api/admin/products${q2({ q: tuKhoa, limit: gioiHan, size: loc.size ?? "", nguon: loc.nguon ?? "" })}`),
       boGiaTay: (ma) => di("POST", `/api/hang-kho/mon/${maAnToan(ma)}/bo-gia-tay`, {}),
       ghiNoiDungWeb: (ma, than) => di("PUT", `/api/hang-kho/mon/${maAnToan(ma)}/noi-dung-web`, than),
       xemHoanTacHang: () => di("GET", "/api/hang-kho/hoan-tac"),
@@ -112,16 +121,17 @@
       doiGiaBienThe: (than) => di("POST", "/api/hang-kho/doi-gia", than),
       chinhSachHangSan: () => di("GET", "/api/hang-kho/chinh-sach-hang-san"),
       ghiChinhSachHangSan: (than) => di("POST", "/api/hang-kho/chinh-sach-hang-san", than),
-      tonCuaMa: (ma, size2 = "") => di("GET", `/api/hang-kho/ton/${maAnToan(ma)}${q({ size: size2 })}`),
+      tonCuaMa: (ma, size2 = "") => di("GET", `/api/hang-kho/ton/${maAnToan(ma)}${q2({ size: size2 })}`),
+      traThuVienSanPham: (ma) => di("POST", "/api/hang-kho/thu-vien/tra-ma", { ma }),
       ghiHang: (ma, mon) => di("PUT", `/api/hang-kho/mon/${maAnToan(ma)}`, mon),
       xoaHang: (ma) => di("DELETE", `/api/hang-kho/mon/${maAnToan(ma)}`),
       napThemHang: (mon) => di("POST", "/api/hang-kho/nap-them", mon),
       suaNhanhHang: (mon) => di("POST", "/api/hang-kho/sua-nhanh", { mon }),
-      hangTheoNguon: (nguon, gioiHan) => di("GET", `/api/hang-kho/theo-nguon/${maAnToan(nguon)}${q({ limit: gioiHan })}`),
+      hangTheoNguon: (nguon, gioiHan) => di("GET", `/api/hang-kho/theo-nguon/${maAnToan(nguon)}${q2({ limit: gioiHan })}`),
       lichSuNapHang: () => di("GET", "/api/hang-kho/lich-su-nap"),
       danhSachDoiTac: () => di("GET", "/api/admin/partners"),
       ghiDoiTac: (doiTac) => di("POST", "/api/admin/partners", doiTac),
-      muaHo: (doiTac, gioiHan) => di("GET", `/api/admin/mua-ho${q({ doiTac, limit: gioiHan })}`),
+      muaHo: (doiTac, gioiHan) => di("GET", `/api/admin/mua-ho${q2({ doiTac, limit: gioiHan })}`),
       docCauHinhShop: () => di("GET", "/api/admin/cau-hinh"),
       ghiCauHinhShop: (giaTri) => di("POST", "/api/admin/cau-hinh", { giaTri }),
       khuonNoiDung: () => di("GET", "/api/noi-dung/khuon"),
@@ -132,15 +142,15 @@
       chamLo: (ma) => di("POST", `/api/noi-dung/lo/${maAnToan(ma)}/cham`, {}),
       doiBuocLo: (ma, huong) => di("POST", `/api/noi-dung/lo/${maAnToan(ma)}/buoc`, { huong }),
       lenLichLo: (ma) => di("POST", `/api/noi-dung/lo/${maAnToan(ma)}/len-lich`, {}),
-      xinBoNaoViet: (ma, bai) => di("POST", `/api/noi-dung/lo/${maAnToan(ma)}/bai/${maAnToan(bai)}/viet`, {}),
+      xinBoNaoViet: (ma, bai) => di("POST", `/api/noi-dung/lo/${maAnToan(ma)}/bai/${maAnToan(bai)}/viet`, {}, HAN_AI),
       docNoiDung: () => di("GET", "/api/content"),
       ghiNoiDung: (doi) => di("POST", "/api/content", doi),
-      timDiaChi: (tham) => di("GET", `/api/dia-chi/tim${q({ he: tham.he, cap: tham.cap, q: tham.q, tinh: tham.tinh, huyen: tham.huyen })}`),
-      doiDiaChiHaiCap: (tham) => di("GET", `/api/dia-chi/doi-hai-cap${q({ tinh: tham.tinh, huyen: tham.huyen, xa: tham.xa })}`),
+      timDiaChi: (tham) => di("GET", `/api/dia-chi/tim${q2({ he: tham.he, cap: tham.cap, q: tham.q, tinh: tham.tinh, huyen: tham.huyen })}`),
+      doiDiaChiHaiCap: (tham) => di("GET", `/api/dia-chi/doi-hai-cap${q2({ tinh: tham.tinh, huyen: tham.huyen, xa: tham.xa })}`),
       traVanDon: (maPhieu) => di("GET", `/api/van-chuyen/tra-cuu/${maAnToan(maPhieu)}`),
       taoVanDonTuDon: (than) => di("POST", "/api/van-chuyen/tao-tu-don", than),
-      hopThu: (tuyChon = {}) => di("GET", `/api/facebook/webhook-inbox${q({ since: tuyChon.tu, limit: tuyChon.gioiHan })}`),
-      danhSachHoiThoai: (tuyChon) => di("GET", `/api/hop-thu/hoi-thoai${q({ kenh: tuyChon.kenh, loc: tuyChon.loc, q: tuyChon.q, trang: tuyChon.trang, limit: tuyChon.gioiHan })}`),
+      hopThu: (tuyChon = {}) => di("GET", `/api/facebook/webhook-inbox${q2({ since: tuyChon.tu, limit: tuyChon.gioiHan })}`),
+      danhSachHoiThoai: (tuyChon) => di("GET", `/api/hop-thu/hoi-thoai${q2({ kenh: tuyChon.kenh, loc: tuyChon.loc, q: tuyChon.q, trang: tuyChon.trang, limit: tuyChon.gioiHan, truoc: tuyChon.truoc })}`),
       moHoiThoai: (ma) => di("GET", `/api/hop-thu/hoi-thoai/${maAnToan(ma)}`),
       danhDauDaDoc: (ma) => di("POST", `/api/hop-thu/hoi-thoai/${maAnToan(ma)}/da-doc`, {}),
       guiTin: (than) => di("POST", "/api/hop-thu/gui", than),
@@ -152,29 +162,36 @@
       canNguoiXong: (maHoiThoai) => di("POST", "/api/hop-thu/can-nguoi/xong", { maHoiThoai }),
       cauHinhHopThu: () => di("GET", "/api/hop-thu/cau-hinh"),
       ghiCauHinhHopThu: (than) => di("POST", "/api/hop-thu/cau-hinh", than),
-      baoCao: (soNgay = 14) => di("GET", `/api/bao-cao/tong-quan${q({ ngay: soNgay })}`),
+      baoCao: (soNgay = 14) => di("GET", `/api/bao-cao/tong-quan${q2({ ngay: soNgay })}`),
       danhSachCtv: () => di("GET", "/api/admin/ctv"),
       ghiCtv: (than) => di("POST", "/api/admin/ctv", than),
       thietBiCtv: (than) => di("POST", "/api/admin/ctv/thiet-bi", than),
-      nhatKyCtv: (maCtv = "") => di("GET", `/api/admin/ctv/nhat-ky${q({ ctv: maCtv, limit: 200 })}`),
+      nhatKyCtv: (maCtv = "") => di("GET", `/api/admin/ctv/nhat-ky${q2({ ctv: maCtv, limit: 200 })}`),
       khoHang: () => di("GET", "/api/hang-kho/kho"),
+      ghiKho: (maKho2, than) => di("PUT", `/api/hang-kho/kho/${maAnToan(maKho2)}`, than),
+      chinhSachKho: (maKho2) => di("GET", `/api/hang-kho/kho/${maAnToan(maKho2)}/chinh-sach`),
+      ghiChinhSachKho: (maKho2, than) => di("POST", `/api/hang-kho/kho/${maAnToan(maKho2)}/chinh-sach`, than),
+      migrationNguonKho: (than) => di("POST", "/api/hang-kho/migration-nguon", than),
+      xemTruocNhapFile: (than) => di("POST", "/api/hang-kho/phien-nhap-file/xem-truoc", than),
+      apDungNhapFile: (than) => di("POST", "/api/hang-kho/phien-nhap-file/ap-dung", than),
+      hoanTacNhapFile: (than) => di("POST", "/api/hang-kho/phien-nhap-file/hoan-tac", than),
       phieuNhap: (than) => di("POST", "/api/hang-kho/phieu-nhap", than),
-      danhSachPhieuNhap: (gioiHan) => di("GET", `/api/hang-kho/phieu-nhap${q({ limit: gioiHan })}`),
+      danhSachPhieuNhap: (gioiHan) => di("GET", `/api/hang-kho/phieu-nhap${q2({ limit: gioiHan })}`),
       dieuChinhTon: (dong) => di("POST", "/api/hang-kho/dieu-chinh-ton", { dong }),
       chuyenKho: (than) => di("POST", "/api/hang-kho/chuyen-kho", than),
-      bienDongKho: (ma, gioiHan) => di("GET", `/api/hang-kho/bien-dong${q({ ma, limit: gioiHan })}`),
-      congDoiTac: (maDoiTac) => di("GET", `/api/admin/mua-ho/portal${q({ doiTac: maDoiTac })}`),
+      bienDongKho: (ma, gioiHan) => di("GET", `/api/hang-kho/bien-dong${q2({ ma, limit: gioiHan })}`),
+      congDoiTac: (maDoiTac) => di("GET", `/api/admin/mua-ho/portal${q2({ doiTac: maDoiTac })}`),
       ghiTienDoiTac: (than) => di("POST", "/api/admin/mua-ho/tien", than),
       hoaHongCtv: () => di("GET", "/api/admin/ctv/hoa-hong"),
       thanhToanCtv: (than) => di("POST", "/api/admin/ctv/thanh-toan", than),
       xoaCtv: (ma) => di("POST", "/api/admin/ctv/xoa", { ma }),
-      thongKeWeb: (tham) => di("GET", `/api/admin/analytics${q({ days: tham.soNgay, productFrom: tham.tuNgay, productTo: tham.denNgay })}`),
+      thongKeWeb: (tham) => di("GET", `/api/admin/analytics${q2({ days: tham.soNgay, productFrom: tham.tuNgay, productTo: tham.denNgay })}`),
       trangFanpage: () => di("GET", "/api/hop-thu/trang"),
       lienHeHoiThoai: (ma, than) => di("POST", `/api/hop-thu/hoi-thoai/${maAnToan(ma)}/lien-he`, than),
       taiAnhGuiKhach: (duLieuAnh) => di("POST", "/api/admin/fanpage/media", { imageData: duLieuAnh }),
-      danhSachHoSoKhach: (tuKhoa, gioiHan) => di("GET", `/api/admin/ho-so-khach${q({ q: tuKhoa, limit: gioiHan })}`),
+      danhSachHoSoKhach: (tuKhoa, gioiHan) => di("GET", `/api/admin/ho-so-khach${q2({ q: tuKhoa, limit: gioiHan })}`),
       hoSoKhach: (ma) => di("GET", `/api/admin/ho-so-khach/${maAnToan(ma)}`),
-      hoSoKhachTheoSo: (dienThoai) => di("GET", `/api/admin/ho-so-khach-theo-so${q({ dienThoai })}`),
+      hoSoKhachTheoSo: (dienThoai) => di("GET", `/api/admin/ho-so-khach-theo-so${q2({ dienThoai })}`),
       ghiHoSoKhach: (than) => di("POST", "/api/admin/ho-so-khach", than),
       ghiDiaChiKhach: (maKhach, than) => di("POST", `/api/admin/ho-so-khach/${maAnToan(maKhach)}/dia-chi`, than),
       xoaDiaChiKhach: (maKhach, maDiaChi) => di("DELETE", `/api/admin/ho-so-khach/${maAnToan(maKhach)}/dia-chi/${maAnToan(maDiaChi)}`),
@@ -183,21 +200,21 @@
       taoVanDonHangLoat: (than) => di("POST", "/api/van-chuyen/tao-hang-loat", than),
       huyVanDon: (maPhieu) => di("POST", "/api/van-chuyen/huy", { maPhieu }),
       nhanVanDon: (maPhieu) => di("GET", `/api/van-chuyen/nhan/${maAnToan(maPhieu)}`),
-      thuKetNoiHang: (hang) => di("POST", "/api/van-chuyen/thu-ket-noi", { hang }),
+      thuKetNoiHang: (hang, site = "") => di("POST", "/api/van-chuyen/thu-ket-noi", site ? { hang, site } : { hang }),
       dongBoHanhTrinh: (maPhieu) => di("POST", "/api/van-chuyen/dong-bo", maPhieu.length ? { maPhieu } : {}),
       baoCaoVanChuyen: () => di("GET", "/api/van-chuyen/bao-cao"),
       thuTelegram: () => di("POST", "/api/tien/thu-telegram", {}),
       thuFacebook: () => di("POST", "/api/hop-thu/thu-facebook", {}),
-      taiChinh: (tham) => di("GET", `/api/tien/tai-chinh${q({ tuNgay: tham.tuNgay, denNgay: tham.denNgay })}`),
+      taiChinh: (tham) => di("GET", `/api/tien/tai-chinh${q2({ tuNgay: tham.tuNgay, denNgay: tham.denNgay })}`),
       ghiThuChi: (than) => di("POST", "/api/tien/thu-chi", than),
       huyThuChi: (than) => di("POST", "/api/tien/thu-chi/huy", than),
       traTienHangDoiTac: (than) => di("POST", "/api/tien/tra-doi-tac", than),
-      soCongNoDoiTac: (tham) => di("GET", `/api/admin/mua-ho/so-cong-no${q({ doiTac: tham.doiTac, tuNgay: tham.tuNgay, denNgay: tham.denNgay })}`),
+      soCongNoDoiTac: (tham) => di("GET", `/api/admin/mua-ho/so-cong-no${q2({ doiTac: tham.doiTac, tuNgay: tham.tuNgay, denNgay: tham.denNgay })}`),
       suaTienDoiTac: (than) => di("POST", "/api/admin/mua-ho/tien/sua", than),
       huyTienDoiTac: (than) => di("POST", "/api/admin/mua-ho/tien/huy", than),
       muaThayDoiTac: (than) => di("POST", "/api/admin/mua-ho/mua-thay", than),
       bamThayDoiTac: (than) => di("POST", "/api/admin/mua-ho/thay-doi-tac", than),
-      nguonChuyenHang: (maDon, maDong) => di("GET", `/api/admin/mua-ho/nguon-chuyen${q({ maDon, maDong })}`),
+      nguonChuyenHang: (maDon, maDong) => di("GET", `/api/admin/mua-ho/nguon-chuyen${q2({ maDon, maDong })}`),
       chuyenPhieuMua: (than) => di("POST", "/api/admin/mua-ho/chuyen-phieu", than),
       guiDoiTac: (maDon) => di("POST", "/api/admin/mua-ho/gui-doi-tac", { maDon }),
       chinhSachDoiTac: () => di("GET", "/api/admin/mua-ho/chinh-sach"),
@@ -207,7 +224,122 @@
       cauHinhCtv: () => di("GET", "/api/admin/ctv/cau-hinh"),
       ghiCauHinhCtv: (than) => di("POST", "/api/admin/ctv/cau-hinh", than),
       themChienDichCtv: (than) => di("POST", "/api/admin/ctv/chien-dich", than),
-      themQuyTacCtv: (than) => di("POST", "/api/admin/ctv/quy-tac", than)
+      themQuyTacCtv: (than) => di("POST", "/api/admin/ctv/quy-tac", than),
+      thongTinHoiThoai: (ma, than) => di("POST", `/api/hop-thu/hoi-thoai/${maAnToan(ma)}/thong-tin`, than),
+      traLoiRieng: (than) => di("POST", "/api/hop-thu/tra-loi-rieng", than),
+      baiViet: (tham) => di("GET", `/api/hop-thu/bai-viet${q2({ maHoiThoai: tham.maHoiThoai, baiViet: tham.baiViet })}`),
+      mauTraLoi: () => di("GET", "/api/hop-thu/mau-tra-loi"),
+      ghiMauTraLoi: (than) => di("POST", "/api/hop-thu/mau-tra-loi", than),
+      xoaMauTraLoi: (ma) => di("POST", "/api/hop-thu/mau-tra-loi/xoa", { ma }),
+      nhatKyWebhook: (gioiHan) => di("GET", `/api/hop-thu/nhat-ky-webhook${q2({ limit: gioiHan })}`),
+      ketNoiFacebook: () => di("POST", "/api/hop-thu/ket-noi-facebook", {}),
+      ketNoiFacebookXong: (maPhien) => di("POST", "/api/hop-thu/ket-noi-facebook/xong", { maPhien }),
+      themTrangThuCong: (than) => di("POST", "/api/admin/fanpage/credentials", { pages: [{ pageId: than.ma, name: than.ten, accessToken: than.token }] }),
+      dangKyTrang: (ma) => di("POST", "/api/hop-thu/trang/dang-ky", { ma }),
+      ngatTrang: (ma) => di("POST", "/api/hop-thu/trang/ngat", { ma }),
+      luuTru: () => di("GET", "/api/hop-thu/luu-tru"),
+      batDauLuuTru: (than) => di("POST", "/api/hop-thu/luu-tru/bat-dau", than),
+      dungLuuTru: () => di("POST", "/api/hop-thu/luu-tru/dung", {}),
+      tinLuuTru: (tham) => di("GET", `/api/hop-thu/luu-tru/tin${q2({ maHoiThoai: tham.maHoiThoai, truoc: tham.truoc, limit: tham.gioiHan })}`),
+      quetQuaHan: () => di("POST", "/api/hop-thu/can-nguoi/quet-qua-han", {}),
+      datWebhookTelegram: () => di("POST", "/api/hop-thu/telegram/dat-webhook", {}),
+      aiVanHanh: () => di("GET", "/api/ai/van-hanh"),
+      aiGhiVanHanh: (than) => di("POST", "/api/ai/van-hanh", than),
+      aiGoiY: (maHoiThoai) => di("POST", "/api/ai/goi-y", { maHoiThoai }, HAN_AI),
+      aiXemGoiY: (maHoiThoai) => di("GET", `/api/ai/goi-y${q2({ maHoiThoai })}`),
+      aiPhanHoiGoiY: (than) => di("POST", "/api/ai/phan-hoi-goi-y", than),
+      aiHopCat: (than) => di("POST", "/api/ai/hop-cat", than, HAN_AI),
+      aiCauMau: () => di("GET", "/api/ai/cau-mau"),
+      aiGhiCauMau: (than) => di("POST", "/api/ai/cau-mau", than),
+      aiHuanLuyen: (gioiHan) => di("GET", `/api/ai/huan-luyen${q2({ gioiHan })}`),
+      aiThemHoiDap: (than) => di("POST", "/api/ai/hoi-dap", than),
+      aiTrangThaiHoiDap: (ma, trangThai) => di("POST", `/api/ai/hoi-dap/${maAnToan(ma)}/trang-thai`, { trangThai }),
+      aiDuyet: (ma) => di("POST", `/api/ai/hang-duyet/${maAnToan(ma)}/duyet`, {}),
+      aiChan: (ma) => di("POST", `/api/ai/hang-duyet/${maAnToan(ma)}/chan`, {}),
+      aiThemHoSoMau: (than) => di("POST", "/api/ai/ho-so-mau", than),
+      aiThemKienThuc: (than) => di("POST", "/api/ai/kien-thuc", than),
+      aiDeXuatThuVien: (chuDe) => di("POST", "/api/ai/thu-vien/de-xuat", { chuDe }, HAN_AI),
+      aiNoiDungThuVien: (than) => di("POST", "/api/ai/thu-vien/noi-dung", than),
+      aiTaoThuVien: (than) => di("POST", "/api/ai/thu-vien", than),
+      aiPhanTich: () => di("GET", "/api/ai/phan-tich"),
+      aiBatDauPhanTich: (lamLai) => di("POST", "/api/ai/phan-tich/bat-dau", { lamLai }),
+      aiBuocPhanTich: () => di("POST", "/api/ai/phan-tich/buoc", {}, HAN_AI),
+      aiDungPhanTich: () => di("POST", "/api/ai/phan-tich/dung", {}),
+      aiNhapPhanTich: () => di("POST", "/api/ai/phan-tich/dua-vao-hang-duyet", {}),
+      aiDocAnh: (than) => di("POST", "/api/ai/doc-anh", than, HAN_AI),
+      aiNhoAnh: (than) => di("POST", "/api/ai/anh-nho", than),
+      aiQuenAnh: (bam) => di("POST", "/api/ai/anh-nho/quen", { bam }),
+      aiSpNgoai: (maHoiThoai) => di("GET", `/api/ai/sp-ngoai${q2({ maHoiThoai })}`),
+      aiChotSpNgoai: (than) => di("POST", "/api/ai/sp-ngoai", than, HAN_AI),
+      aiGuiLaiSpNgoai: (ma) => di("POST", `/api/ai/sp-ngoai/${maAnToan(ma)}/gui-lai`, {}, HAN_AI),
+      aiTrangThaiSpNgoai: (ma, than) => di("POST", `/api/ai/sp-ngoai/${maAnToan(ma)}/trang-thai`, than),
+      aiGoiYSpNgoai: (than) => di("POST", "/api/ai/sp-ngoai/goi-y", than, HAN_AI),
+      aiToken: (than) => di("POST", "/api/ai/token", than, HAN_AI),
+      aiBangGia: () => di("GET", "/api/ai/bang-gia"),
+      aiGhiBangGia: (than) => di("POST", "/api/ai/bang-gia", than),
+      aiTinHieuSize: (maHoiThoai) => di("GET", `/api/ai/tin-hieu-size${q2({ maHoiThoai })}`),
+      aiBoTinHieuSize: (than) => di("POST", "/api/ai/tin-hieu-size/bo", than),
+      // Dot D8: Content dang that (xuong-noi-dung + dang-bai).
+      ndChayLo: (ma, than) => di("POST", `/api/noi-dung/lo/${maAnToan(ma)}/chay`, than, HAN_AI),
+      ndLenLichChon: (ma, chon) => di("POST", `/api/noi-dung/lo/${maAnToan(ma)}/len-lich`, chon === null ? {} : { chon }, HAN_AI),
+      ndChon: (ma, chon) => di("POST", `/api/noi-dung/lo/${maAnToan(ma)}/chon`, { chon }),
+      ndBoBai: (ma, bai) => di("POST", `/api/noi-dung/lo/${maAnToan(ma)}/bai/${maAnToan(bai)}/bo`, {}),
+      ndHoanTac: (ma) => di("POST", `/api/noi-dung/lo/${maAnToan(ma)}/hoan-tac`, {}),
+      ndDungLai: (ma) => di("POST", `/api/noi-dung/lo/${maAnToan(ma)}/dung-lai`, {}),
+      ndGoiYMa: (ma, bai) => di("POST", `/api/noi-dung/lo/${maAnToan(ma)}/bai/${maAnToan(bai)}/goi-y-ma`, {}),
+      ndPhanBienBai: (ma, bai) => di("POST", `/api/noi-dung/lo/${maAnToan(ma)}/bai/${maAnToan(bai)}/phan-bien`, {}, HAN_AI),
+      ndVaoKho: (ma, bai) => di("POST", `/api/noi-dung/lo/${maAnToan(ma)}/bai/${maAnToan(bai)}/vao-kho`, {}),
+      ndChuDe: () => di("GET", "/api/noi-dung/chu-de"),
+      ndThemChuDe: (than) => di("POST", "/api/noi-dung/chu-de", than),
+      ndTrangThaiChuDe: (id, status2) => di("POST", `/api/noi-dung/chu-de/${maAnToan(id)}/trang-thai`, { status: status2 }),
+      ndKhoMa: (tham) => di("GET", `/api/noi-dung/kho-ma${q2(tham)}`),
+      ndXuHuong: () => di("GET", "/api/noi-dung/xu-huong"),
+      ndChayXuHuong: () => di("POST", "/api/noi-dung/xu-huong/chay", {}, HAN_AI),
+      ndNhip: () => di("POST", "/api/noi-dung/nhip", {}, HAN_AI),
+      ndPhongCach: () => di("GET", "/api/noi-dung/phong-cach"),
+      ndGhiPhongCach: (than) => di("POST", "/api/noi-dung/phong-cach", than),
+      ndKhoBai: (tham) => di("GET", `/api/noi-dung/kho-bai${q2(tham)}`),
+      ndGhiKhoBai: (than) => di("POST", "/api/noi-dung/kho-bai", than),
+      ndXoaKhoBai: (id) => di("POST", `/api/noi-dung/kho-bai/${maAnToan(id)}/xoa`, {}),
+      dbBai: (tham) => di("GET", `/api/dang-bai/bai${q2(tham)}`),
+      dbTaoBai: (than) => di("POST", "/api/dang-bai/bai", than, HAN_AI),
+      dbSuaBai: (ma, than) => di("PUT", `/api/dang-bai/bai/${maAnToan(ma)}`, than, HAN_AI),
+      dbHuyBai: (ma) => di("POST", `/api/dang-bai/bai/${maAnToan(ma)}/huy`, {}),
+      dbDangNgay: (ma) => di("POST", `/api/dang-bai/bai/${maAnToan(ma)}/dang-ngay`, {}),
+      dbXoaBai: (ma) => di("POST", `/api/dang-bai/bai/${maAnToan(ma)}/xoa`, {}),
+      dbDongBo: (ma) => di("POST", "/api/dang-bai/dong-bo", ma === "" ? {} : { ma }, HAN_AI),
+      dbBinhLuanLai: (ma) => di("POST", `/api/dang-bai/bai/${maAnToan(ma)}/binh-luan-lai`, {}),
+      dbGhiMau: (than) => di("POST", "/api/dang-bai/mau-binh-luan", than),
+      dbXoaMau: (id) => di("POST", "/api/dang-bai/mau-binh-luan/xoa", { id }),
+      dbPhuLink: () => di("GET", "/api/dang-bai/phu-link"),
+      dbGhiPhuLink: (than) => di("POST", "/api/dang-bai/phu-link/cau-hinh", than),
+      dbQuetPhuLink: () => di("POST", "/api/dang-bai/phu-link/quet", {}, HAN_AI),
+      dbThuLaiPhuLink: (postId) => di("POST", "/api/dang-bai/phu-link/thu-lai", { postId }),
+      dbTimTheSp: (tham) => di("GET", `/api/dang-bai/the-sp/tim${q2(tham)}`),
+      dbTaoTheSp: (than) => di("POST", "/api/dang-bai/the-sp", than, HAN_AI),
+      dbAnhBia: (than) => di("POST", "/api/dang-bai/anh-bia", than, HAN_AI),
+      dbTaiAnh: (anh2) => di("POST", "/api/dang-bai/anh", { anh: anh2 }, HAN_AI),
+      dbThuongHieu: () => di("GET", "/api/dang-bai/thuong-hieu"),
+      dbGhiThuongHieu: (than) => di("POST", "/api/dang-bai/thuong-hieu", than),
+      dbNhip: () => di("POST", "/api/dang-bai/nhip", {}, HAN_AI),
+      // Dot D9: kien thuc nganh (tu-van-size + relay Xeon), Website Channels, SMTP thu, ve Video Studio.
+      tvsCauHinh: () => di("GET", "/api/tu-van-size/cau-hinh"),
+      tvsGhiCauHinh: (than) => di("POST", "/api/tu-van-size/cau-hinh", than),
+      tvsTinh: (than) => di("POST", "/api/tu-van-size/tinh", than),
+      tvsBangSize: (hang) => di("GET", `/api/tu-van-size/bang-size${q2({ hang })}`),
+      tvsGoiYDong: (than) => di("POST", "/api/tu-van-size/goi-y-dong", than, HAN_AI),
+      tvsTimDong: (chu2) => di("POST", "/api/tu-van-size/tim-dong", { chu: chu2 }),
+      tvsDong: (ma) => di("GET", `/api/tu-van-size/dong${q2({ ma })}`),
+      tvsDongTuSanPham: (than) => di("POST", "/api/tu-van-size/dong/tu-san-pham", than),
+      kienThuc: (duong, than) => di("POST", `/api/kien-thuc/${duong}`, than, HAN_AI),
+      kenhWeb: () => di("GET", "/api/kenh-web"),
+      ghiKenhWeb: (than) => di("POST", "/api/kenh-web", than),
+      thuEmail: (den) => di("POST", "/api/admin/cau-hinh/thu-email", { den }, 6e4),
+      veVideoStudio: () => di("POST", "/api/admin/video-studio/ve", {}),
+      // Dot D10: tinh nang theo cau hinh shop (doc anh tren Xeon qua landing -> han AI).
+      tinhNangShop: (cach, duong, than) => di(cach, `/api/tinh-nang-shop/${duong}`, cach === "GET" ? void 0 : than ?? {}, HAN_AI),
+      taiKhoanSite: () => di("GET", "/api/van-chuyen/tai-khoan-site"),
+      ghiTaiKhoanSite: (than) => di("POST", "/api/van-chuyen/tai-khoan-site", than)
     };
   }
 
@@ -292,9 +424,9 @@
       },
       // Anh gui khach (hoa don, QR, anh san pham): chi nhan ANH, dang data URL — may chu tu dat ten tep.
       "hop-thu.anh.tai-len": async (t) => {
-        const anh = chu(t, "anh", { batBuoc: true, tran: TRAN_ANH_DATA_URL });
-        if (!/^data:image\/(png|jpe?g|webp|gif);base64,/i.test(anh)) throw new Error("Chỉ gửi được ảnh (png, jpg, webp, gif).");
-        return lay(await cong2.taiAnhGuiKhach(anh));
+        const anh2 = chu(t, "anh", { batBuoc: true, tran: TRAN_ANH_DATA_URL });
+        if (!/^data:image\/(png|jpe?g|webp|gif);base64,/i.test(anh2)) throw new Error("Chỉ gửi được ảnh (png, jpg, webp, gif).");
+        return lay(await cong2.taiAnhGuiKhach(anh2));
       }
     };
   }
@@ -380,6 +512,7 @@
   }
   function viecHangHoa(cong2) {
     return {
+      "hang.thu-vien.tra-ma": async (t) => lay(await cong2.traThuVienSanPham(chu(t, "ma", MA_HANG))),
       // "Dung lai gia nguon" (Desk reset-landing-manual-price).
       "hang.ve-gia-nguon": async (t) => lay(await cong2.boGiaTay(chu(t, "ma", MA_HANG))),
       // "Luu noi dung web" (Desk save-product-web-fields): SEO + noi dung trang san pham. Khong gia, khong ton.
@@ -420,9 +553,9 @@
       // Anh tu may shop: data URL anh (png/jpeg/webp/gif). Landing tu dat ten, tu kiem la anh that.
       "hang.tai-anh": async (t) => {
         const ma = chu(t, "ma", MA_HANG);
-        const anh = chu(t, "anh", { batBuoc: true, tran: TRAN_ANH_BASE64 });
-        if (!/^data:image\/(png|jpe?g|webp|gif);base64,/i.test(anh)) throw new Error("Ảnh phải là tệp .jpg, .png, .webp hoặc .gif.");
-        return lay(await cong2.taiAnhHang(ma, { anh, chinh: t.chinh === true }));
+        const anh2 = chu(t, "anh", { batBuoc: true, tran: TRAN_ANH_BASE64 });
+        if (!/^data:image\/(png|jpe?g|webp|gif);base64,/i.test(anh2)) throw new Error("Ảnh phải là tệp .jpg, .png, .webp hoặc .gif.");
+        return lay(await cong2.taiAnhHang(ma, { anh: anh2, chinh: t.chinh === true }));
       },
       // "Tai gallery anh" (Desk cache-product-images): mot mon, hoac ca danh muc (landing gioi han moi lan).
       "hang.tai-anh-ve": async (t) => {
@@ -484,12 +617,82 @@
 
   // ../omi/packages/omi/src/landing/viec/kho.ts
   var NGUON_TON = ["own", "ready", "campaign"];
+  var LOAI_KHO = ["ready", "order"];
+  var TRANG_THAI_KHO = ["active", "inactive"];
   var maHang = (o) => chu(o, "ma", { batBuoc: true, tran: 128 });
   var size = (o) => chu(o, "size", { batBuoc: true, tran: 32 });
   var maKho = (o, ten = "maKho") => chu(o, ten, { batBuoc: true, tran: 128 });
   function viecKho(cong2) {
     return {
       "hang.kho": async () => lay(await cong2.khoHang()),
+      "hang.kho.ghi": async (t) => {
+        const id = maKho(t, "id");
+        const loai = mot(t, "loai", LOAI_KHO);
+        const gia = t.congThucGia ?? {};
+        const nhom = gia.nhom ?? {};
+        const giaNhom = (ten) => {
+          const g = nhom[ten] ?? {};
+          return { phanTramTang: so(g, "phanTramTang", { tran: 100 }), congThem: so(g, "congThem", { tran: TRAN_TIEN }) };
+        };
+        const doiTac = t.doiTac === void 0 ? [] : danhSach(t, "doiTac", { tran: 50 }).map((d) => ({
+          maDoiTac: chu(d, "maDoiTac", { batBuoc: true, tran: 64 }),
+          vaiTro: mot(d, "vaiTro", ["supplier", "buyer"], "supplier"),
+          uuTien: so(d, "uuTien", { tran: 1e5 }),
+          macDinh: d.macDinh === true,
+          dangDung: d.dangDung !== false,
+          chinhSachMua: chu(d, "chinhSachMua", { tran: 2e3 })
+        }));
+        if (new Set(doiTac.map((d) => d.maDoiTac)).size !== doiTac.length || doiTac.filter((d) => d.macDinh).length > 1 || doiTac.some((d) => d.macDinh && !d.dangDung)) throw new Error("Liên kết partner của kho không hợp lệ.");
+        return lay(await cong2.ghiKho(id, {
+          ten: chu(t, "ten", { batBuoc: true, tran: 190 }),
+          loai,
+          trangThai: mot(t, "trangThai", TRANG_THAI_KHO, "active"),
+          uuTien: so(t, "uuTien", { tran: 1e5 }),
+          moTa: chu(t, "moTa", { tran: 2e3 }),
+          congThucGia: { cheDo: mot(gia, "cheDo", ["image_tool", "percent", "fixed", "file"], "image_tool"), phanTramTang: so(gia, "phanTramTang", { tran: 100 }), congThem: so(gia, "congThem", { tran: TRAN_TIEN }), lamTron: Number(gia["lamTron"] ?? 1e4), nhom: { shoe: giaNhom("shoe"), apparel: giaNhom("apparel"), accessory: giaNhom("accessory") } },
+          doiTac
+        }));
+      },
+      "hang.kho.chinh-sach": async (t) => lay(await cong2.chinhSachKho(maKho(t, "maKho"))),
+      "hang.kho.chinh-sach.ghi": async (t) => {
+        const ma = maKho(t, "maKho");
+        const phanTramCoc = so(t, "phanTramCoc", { tran: 100 });
+        const soNgayHangVe = so(t, "soNgayHangVe", { tran: 3650 });
+        const hanMucDat = so(t, "hanMucDat", { tran: 1e6 });
+        return lay(await cong2.ghiChinhSachKho(ma, {
+          tomTat: chu(t, "tomTat", { tran: 2e3 }),
+          choPhepBan: t.choPhepBan !== false,
+          choCod: t.choCod !== false,
+          phanTramCoc,
+          soNgayHangVe,
+          hanMucDat,
+          phiPhuThu: so(t, "phiPhuThu", { tran: TRAN_TIEN }),
+          doiTra: chu(t, "doiTra", { tran: 2e3 }),
+          kenh: chu(t, "kenh", { tran: 1e3 })
+        }));
+      },
+      // Chuyen own/ready/campaign thanh cac kho trong cung module. Xem truoc la mac dinh;
+      // chi ghi khi man hinh gui apDung=true sau khi nguoi dung da doc doi chieu.
+      "hang.kho.migration-nguon": async (t) => {
+        const anhXa = danhSach(t, "anhXa", { tran: 100, cauThieu: "Cần ít nhất một ánh xạ nguồn cũ sang kho." }).map((o) => ({
+          nguonCu: mot(o, "nguonCu", NGUON_TON),
+          maKho: maKho(o),
+          loai: mot(o, "loai", LOAI_KHO),
+          tenKho: chu(o, "tenKho", { batBuoc: true, tran: 190 }),
+          uuTien: so(o, "uuTien", { tran: 1e5 })
+        }));
+        const trungNguon = anhXa.find((x, i) => anhXa.findIndex((y) => y.nguonCu === x.nguonCu) !== i);
+        if (trungNguon) throw new Error(`Nguồn cũ "${trungNguon.nguonCu}" bị ánh xạ hai lần.`);
+        const trungKho = anhXa.find((x, i) => anhXa.findIndex((y) => y.maKho === x.maKho) !== i);
+        if (trungKho) throw new Error(`Kho "${trungKho.maKho}" nhận hai nguồn cũ; cần tách kho để giữ dấu vết migration.`);
+        return lay(await cong2.migrationNguonKho({ anhXa, apDung: t.apDung === true, maBanXemTruoc: chu(t, "maBanXemTruoc", { tran: 190 }) }));
+      },
+      "hang.kho.nhap-file.xem-truoc": async (t) => {
+        const mon = danhSach(t, "mon", { tran: 2e4, cauThieu: "File chưa có sản phẩm hợp lệ." });
+        return lay(await cong2.xemTruocNhapFile({ maKho: maKho(t), cheDo: mot(t, "cheDo", ["merge", "replace"], "merge"), mon }));
+      },
+      "hang.kho.nhap-file.ap-dung": async (t) => lay(await cong2.apDungNhapFile({ maPhien: chu(t, "maPhien", { batBuoc: true, tran: 190 }) })),
+      "hang.kho.nhap-file.hoan-tac": async (t) => lay(await cong2.hoanTacNhapFile({ maPhien: chu(t, "maPhien", { batBuoc: true, tran: 190 }) })),
       // PHIEU NHAP: nhieu dong, moi dong mot ma + size + kho + so doi + gia von. May chu cong ton va
       // ghi so trong MOT luot — phieu hong mot dong la hong ca phieu.
       "hang.phieu-nhap": async (t) => {
@@ -548,6 +751,11 @@
   // ../omi/packages/omi/src/landing/viec/van-don.ts
   var HANG = ["spx", "vtp"];
   var MA_PHIEU = { batBuoc: true, tran: 80 };
+  function siteSlug(t, ten) {
+    const g = chu(t, ten, { tran: 40 }).toLowerCase();
+    if (g !== "" && !/^[a-z][a-z0-9]{1,19}$/.test(g)) throw new Error(`"${ten}" chỉ gồm chữ thường + số, 2-20 ký tự, bắt đầu bằng chữ cái.`);
+    return g;
+  }
   function viecVanDon(cong2) {
     return {
       // Hang loat: toi da 50 phieu, moi phieu la mot DON hoac mot KIEN cua don.
@@ -561,7 +769,7 @@
       },
       "van-don.huy": async (t) => lay(await cong2.huyVanDon(chu(t, "maPhieu", MA_PHIEU))),
       "van-don.nhan": async (t) => lay(await cong2.nhanVanDon(chu(t, "maPhieu", MA_PHIEU))),
-      "van-don.thu-ket-noi": async (t) => lay(await cong2.thuKetNoiHang(mot(t, "hang", HANG, "spx"))),
+      "van-don.thu-ket-noi": async (t) => lay(await cong2.thuKetNoiHang(mot(t, "hang", HANG, "spx"), siteSlug(t, "site"))),
       "van-don.dong-bo": async (t) => {
         const list = Array.isArray(t.maPhieu) ? t.maPhieu.map((x) => String(x ?? "").trim()).filter(Boolean) : [];
         if (list.length > 200) throw new Error("Tối đa 200 vận đơn một lần đồng bộ.");
@@ -570,6 +778,107 @@
       "van-don.bao-cao": async () => lay(await cong2.baoCaoVanChuyen()),
       "tien.thu-telegram": async () => lay(await cong2.thuTelegram()),
       "hop-thu.thu-facebook": async () => lay(await cong2.thuFacebook())
+    };
+  }
+
+  // ../omi/packages/omi/src/landing/viec/fanpage-zalo.ts
+  var CHE_DO_BOT = ["auto", "suggest", "off"];
+  var MA_HOI_THOAI = { batBuoc: true, tran: 200 };
+  var NGAY_ISO = /^\d{4}-\d{2}-\d{2}(T[\d:.]+Z)?$/;
+  function anh(t, ten) {
+    const g = chu(t, ten, { tran: 2e3 });
+    if (g !== "" && !/^(https?:\/\/|\/api\/fanpage-media\/)/i.test(g)) throw new Error(`"${ten}" phải là ảnh https hoặc ảnh đã tải lên landing.`);
+    return g;
+  }
+  function viecFanpageZalo(cong2) {
+    return {
+      // Chi truong CO MAT moi gui: gan don khong xoa ghi chu go luc nay.
+      "hop-thu.thong-tin": async (t) => {
+        const ma = chu(t, "ma", MA_HOI_THOAI);
+        const than = {};
+        for (const [k, tran] of [["maKhach", 64], ["ghiChu", 1e3], ["ganDon", 64], ["boGanDon", 64], ["boGoiYDon", 64], ["tenKhach", 190], ["maDon", 64]]) {
+          if (t[k] !== void 0) than[k] = chu(t, k, { tran });
+        }
+        if (t.bot !== void 0) than.bot = mot(t, "bot", CHE_DO_BOT);
+        if (t.daXacNhan !== void 0) than.daXacNhan = t.daXacNhan === true;
+        if (t.noiBo !== void 0) than.noiBo = t.noiBo === true;
+        if (t.theDatHang === null) than.theDatHang = null;
+        else if (t.theDatHang !== void 0) {
+          if (typeof t.theDatHang !== "object" || Array.isArray(t.theDatHang)) throw new Error('"theDatHang" phải là một thẻ.');
+          const d = t.theDatHang;
+          const soLuong = so(d, "soLuong", { macDinh: 1, tran: 50 });
+          if (soLuong < 1) throw new Error("Số lượng phải từ 1.");
+          than.theDatHang = {
+            ma: chu(d, "ma", { batBuoc: true, tran: 64 }),
+            ten: chu(d, "ten", { tran: 255 }),
+            size: chu(d, "size", { tran: 32 }),
+            soLuong,
+            gia: so(d, "gia", { tran: 5e9 }),
+            anh: anh(d, "anh"),
+            tenNguoiNhan: chu(d, "tenNguoiNhan", { tran: 190 }),
+            dienThoai: chu(d, "dienThoai", { tran: 32 }),
+            diaChi: chu(d, "diaChi", { tran: 500 }),
+            ghiChu: chu(d, "ghiChu", { tran: 1e3 }),
+            maDon: chu(d, "maDon", { tran: 64 })
+          };
+        }
+        if (Object.keys(than).length === 0) throw new Error("Không có gì để lưu.");
+        return lay(await cong2.thongTinHoiThoai(ma, than));
+      },
+      // Nhan rieng tu binh luan (Meta cho MOT tin moi binh luan, trong 7 ngay); co the kem tra loi cong khai.
+      "hop-thu.tra-loi-rieng": async (t) => {
+        const traLoiCongKhai = chu(t, "traLoiCongKhai", { tran: 2e3 });
+        const maBinhLuan = chu(t, "maBinhLuan", { tran: 160 });
+        return lay(await cong2.traLoiRieng({
+          maHoiThoai: chu(t, "maHoiThoai", MA_HOI_THOAI),
+          chu: chu(t, "chu", { batBuoc: true, tran: 2e3 }),
+          ...maBinhLuan === "" ? {} : { maBinhLuan },
+          ...traLoiCongKhai === "" ? {} : { traLoiCongKhai }
+        }));
+      },
+      "hop-thu.bai-viet": async (t) => {
+        const baiViet = chu(t, "baiViet", { tran: 120 });
+        return lay(await cong2.baiViet({ maHoiThoai: chu(t, "maHoiThoai", MA_HOI_THOAI), ...baiViet === "" ? {} : { baiViet } }));
+      },
+      "hop-thu.mau.danh-sach": async () => lay(await cong2.mauTraLoi()),
+      "hop-thu.mau.ghi": async (t) => {
+        const ma = chu(t, "ma", { tran: 64 });
+        const noiDung = chu(t, "chu", { tran: 2e3 });
+        const anhUrl = anh(t, "anhUrl");
+        if (noiDung === "" && anhUrl === "") throw new Error("Mẫu cần nội dung hoặc ảnh.");
+        return lay(await cong2.ghiMauTraLoi({ ...ma === "" ? {} : { ma }, tat: chu(t, "tat", { batBuoc: true, tran: 40 }), chu: noiDung, anhUrl }));
+      },
+      "hop-thu.mau.xoa": async (t) => lay(await cong2.xoaMauTraLoi(chu(t, "ma", { batBuoc: true, tran: 64 }))),
+      "hop-thu.nhat-ky-webhook": async (t) => lay(await cong2.nhatKyWebhook(so(t, "gioiHan", { macDinh: 20, tran: 100 }) || 20)),
+      // Trang di qua app Meta TRUNG TAM tren Xeon (quyet dinh 15/09/2026) — shop khong tu tao app.
+      "hop-thu.ket-noi-facebook": async () => lay(await cong2.ketNoiFacebook()),
+      "hop-thu.ket-noi-facebook.xong": async (t) => lay(await cong2.ketNoiFacebookXong(chu(t, "maPhien", { batBuoc: true, tran: 128 }))),
+      "hop-thu.trang.them": async (t) => {
+        const ma = chu(t, "ma", { batBuoc: true, tran: 64 });
+        if (!/^\d{5,30}$/.test(ma)) throw new Error("Page ID là một dãy số.");
+        return lay(await cong2.themTrangThuCong({ ma, ten: chu(t, "ten", { tran: 190 }), token: chu(t, "token", { batBuoc: true, tran: 1e3 }) }));
+      },
+      "hop-thu.trang.dang-ky": async (t) => lay(await cong2.dangKyTrang(chu(t, "ma", { batBuoc: true, tran: 64 }))),
+      "hop-thu.trang.ngat": async (t) => {
+        const ds = Array.isArray(t.ma) ? t.ma.map((x) => String(x ?? "").trim()).filter(Boolean) : [chu(t, "ma", { tran: 64 })].filter(Boolean);
+        if (ds.length === 0) throw new Error("Chọn trang cần ngắt.");
+        if (ds.length > 50 || ds.some((x) => x.length > 64)) throw new Error("Danh sách trang không hợp lệ.");
+        return lay(await cong2.ngatTrang(ds));
+      },
+      // Luu tru tin dai han: keo lich su bang Graph API, co diem dung de chay tiep.
+      "hop-thu.luu-tru": async () => lay(await cong2.luuTru()),
+      "hop-thu.luu-tru.bat-dau": async (t) => {
+        const tu = chu(t, "tu", { tran: 30 });
+        if (tu !== "" && !NGAY_ISO.test(tu)) throw new Error('"tu" phải dạng 2023-01-01.');
+        return lay(await cong2.batDauLuuTru({ lamLai: t.lamLai === true, ...tu === "" ? {} : { tu } }));
+      },
+      "hop-thu.luu-tru.dung": async () => lay(await cong2.dungLuuTru()),
+      "hop-thu.luu-tru.tin": async (t) => {
+        const truoc = chu(t, "truoc", { tran: 40 });
+        return lay(await cong2.tinLuuTru({ maHoiThoai: chu(t, "maHoiThoai", MA_HOI_THOAI), ...truoc === "" ? {} : { truoc }, gioiHan: so(t, "gioiHan", { macDinh: 50, tran: 200 }) || 50 }));
+      },
+      "hop-thu.can-nguoi.quet-qua-han": async () => lay(await cong2.quetQuaHan()),
+      "hop-thu.telegram.dat-webhook": async () => lay(await cong2.datWebhookTelegram())
     };
   }
 
@@ -673,7 +982,713 @@
     };
   }
 
+  // ../omi/packages/omi/src/landing/viec/tro-ly-ai.ts
+  var MA_HOI_THOAI2 = { batBuoc: true, tran: 200 };
+  var MA2 = { batBuoc: true, tran: 80 };
+  var CHE_DO = ["auto", "suggest", "off"];
+  var LY_DO_SUA = ["correct", "wrong_product", "wrong_context", "wrong_stock", "missing_question", "handoff"];
+  function anhHttps(t, ten, tran = 4) {
+    const g = t[ten];
+    const ds = (Array.isArray(g) ? g : g === void 0 || g === "" ? [] : [g]).map((x) => String(x ?? "").trim()).filter(Boolean);
+    if (ds.length > tran) throw new Error(`Tối đa ${tran} ảnh.`);
+    for (const u of ds) if (!/^https:\/\//i.test(u) || u.length > 2e3) throw new Error(`"${ten}" phải là đường dẫn ảnh https.`);
+    return ds;
+  }
+  function coBool(t, ten, than) {
+    if (t[ten] === void 0) return;
+    if (typeof t[ten] !== "boolean") throw new Error(`"${ten}" phải là true/false.`);
+    than[ten] = t[ten];
+  }
+  function nguCanh(t) {
+    const g = t.nguCanh;
+    if (g === void 0) return [];
+    if (!Array.isArray(g) || g.length > 30) throw new Error('"nguCanh" tối đa 30 dòng.');
+    return g.map((x) => {
+      const o = x !== null && typeof x === "object" ? x : {};
+      return { vai: o.vai === "khach" ? "khach" : "shop", chu: chu(o, "chu", { tran: 1e3 }) };
+    }).filter((x) => x.chu !== "");
+  }
+  function bangChu(t, ten) {
+    const g = t[ten];
+    if (g === void 0 || g === null) return {};
+    if (typeof g !== "object" || Array.isArray(g)) throw new Error(`"${ten}" phải là một bảng.`);
+    const out = {};
+    for (const [k, v] of Object.entries(g).slice(0, 20)) {
+      const s = String(v ?? "").trim().slice(0, 200);
+      if (s) out[k.slice(0, 40)] = s;
+    }
+    return out;
+  }
+  function viecTroLyAi(cong2) {
+    return {
+      // ----- van hanh (Cau hinh, Fanpage: nguoi truc / tat bot trang) -----
+      "ai.van-hanh": async () => lay(await cong2.aiVanHanh()),
+      "ai.van-hanh.ghi": async (t) => {
+        const than = {};
+        const cheDo = mot(t, "cheDoTraLoi", CHE_DO);
+        if (cheDo !== "") than.cheDoTraLoi = cheDo;
+        for (const k of ["nguoiTruc", "tuPhanTich", "epNguoi", "tatHangDoiTac", "trangTatBot"]) coBool(t, k, than);
+        if (t.nguongTinCay !== void 0) {
+          const n = so(t, "nguongTinCay", { tran: 100 });
+          if (n < 50) throw new Error("Ngưỡng tự trả lời từ 50 đến 100%.");
+          than.nguongTinCay = n;
+        }
+        if (than.trangTatBot !== void 0) than.trang = chu(t, "trang", { batBuoc: true, tran: 64 });
+        if (Object.keys(than).length === 0) throw new Error("Không có gì để lưu.");
+        return lay(await cong2.aiGhiVanHanh(than));
+      },
+      // ----- nhap tra loi -----
+      "ai.goi-y": async (t) => lay(await cong2.aiGoiY(chu(t, "maHoiThoai", MA_HOI_THOAI2))),
+      "ai.goi-y.xem": async (t) => lay(await cong2.aiXemGoiY(chu(t, "maHoiThoai", MA_HOI_THOAI2))),
+      "ai.goi-y.phan-hoi": async (t) => {
+        const lyDoSua = mot(t, "lyDoSua", LY_DO_SUA, "correct");
+        return lay(await cong2.aiPhanHoiGoiY({
+          maHoiThoai: chu(t, "maHoiThoai", MA_HOI_THOAI2),
+          traLoiSua: chu(t, "traLoiSua", { batBuoc: true, tran: 3e3 }),
+          traLoiAiGoc: chu(t, "traLoiAiGoc", { tran: 3e3 }),
+          cauKhach: chu(t, "cauKhach", { tran: 1e3 }),
+          intent: chu(t, "intent", { tran: 80 }),
+          lyDoSua,
+          duKienAi: bangChu(t, "duKienAi"),
+          duKienSua: bangChu(t, "duKienSua")
+        }));
+      },
+      // ----- Demo AI -----
+      "ai.hop-cat": async (t) => {
+        const lichSu = Array.isArray(t.lichSu) ? t.lichSu : [];
+        if (lichSu.length > 60) throw new Error("Hội thoại mô phỏng quá dài — bấm Làm mới.");
+        return lay(await cong2.aiHopCat({
+          chu: chu(t, "chu", { batBuoc: true, tran: 2e3 }),
+          lichSu: lichSu.slice(-30).map((x) => {
+            const o = x !== null && typeof x === "object" ? x : {};
+            return { ai: o.ai === "khach" ? "khach" : "shop", chu: chu(o, "chu", { tran: 2e3 }) };
+          }).filter((x) => x.chu !== "")
+        }));
+      },
+      "ai.cau-mau": async () => lay(await cong2.aiCauMau()),
+      "ai.cau-mau.ghi": async (t) => {
+        const ma = chu(t, "ma", { tran: 64 });
+        return lay(await cong2.aiGhiCauMau({
+          ...ma === "" ? {} : { ma },
+          cauKhach: chu(t, "cauKhach", { batBuoc: true, tran: 1e3 }),
+          traLoiDuyet: chu(t, "traLoiDuyet", { batBuoc: true, tran: 3e3 }),
+          traLoiAi: chu(t, "traLoiAi", { tran: 3e3 }),
+          lyDo: chu(t, "lyDo", { tran: 1e3 }),
+          tinhHuong: chu(t, "tinhHuong", { tran: 500 }),
+          nguCanh: nguCanh(t)
+        }));
+      },
+      // ----- Training -----
+      "ai.huan-luyen": async (t) => lay(await cong2.aiHuanLuyen(so(t, "gioiHan", { macDinh: 30, tran: 2e3 }) || 30)),
+      "ai.hoi-dap.them": async (t) => lay(await cong2.aiThemHoiDap({
+        intent: chu(t, "intent", { batBuoc: true, tran: 80 }),
+        cauHoi: chu(t, "cauHoi", { batBuoc: true, tran: 1e3 }),
+        traLoi: chu(t, "traLoi", { batBuoc: true, tran: 3e3 })
+      })),
+      "ai.hoi-dap.trang-thai": async (t) => lay(await cong2.aiTrangThaiHoiDap(chu(t, "ma", MA2), mot(t, "trangThai", ["approved", "retired"], "approved"))),
+      "ai.hang-duyet.duyet": async (t) => lay(await cong2.aiDuyet(chu(t, "ma", MA2))),
+      "ai.hang-duyet.chan": async (t) => lay(await cong2.aiChan(chu(t, "ma", MA2))),
+      "ai.ho-so-mau.them": async (t) => lay(await cong2.aiThemHoSoMau({
+        ten: chu(t, "ten", { batBuoc: true, tran: 120 }),
+        sizeQuen: chu(t, "sizeQuen", { tran: 40 }),
+        formChan: chu(t, "formChan", { tran: 120 }),
+        monChoi: chu(t, "monChoi", { tran: 120 }),
+        brandThich: chu(t, "brandThich", { tran: 400 }),
+        daMua: chu(t, "daMua", { tran: 1e3 }),
+        tomTat: chu(t, "tomTat", { tran: 1e3 })
+      })),
+      "ai.kien-thuc.them": async (t) => lay(await cong2.aiThemKienThuc({
+        maSp: chu(t, "maSp", { batBuoc: true, tran: 64 }),
+        tenSp: chu(t, "tenSp", { batBuoc: true, tran: 200 }),
+        form: chu(t, "form", { tran: 200 }),
+        phuHop: chu(t, "phuHop", { tran: 200 }),
+        tuVanSize: chu(t, "tuVanSize", { tran: 200 }),
+        bangChung: chu(t, "bangChung", { tran: 2e3 })
+      })),
+      "ai.thu-vien.de-xuat": async (t) => lay(await cong2.aiDeXuatThuVien(chu(t, "chuDe", { batBuoc: true, tran: 1e3 }))),
+      "ai.thu-vien.noi-dung": async (t) => lay(await cong2.aiNoiDungThuVien({ ten: chu(t, "ten", { tran: 160 }), moTa: chu(t, "moTa", { tran: 1e3 }), dungKhi: chu(t, "dungKhi", { tran: 600 }) })),
+      "ai.thu-vien.tao": async (t) => lay(await cong2.aiTaoThuVien({
+        id: chu(t, "id", { batBuoc: true, tran: 80 }),
+        ten: chu(t, "ten", { batBuoc: true, tran: 160 }),
+        duongDan: chu(t, "duongDan", { batBuoc: true, tran: 200 }),
+        uuTien: so(t, "uuTien", { macDinh: 80, tran: 100 }),
+        dungKhi: chu(t, "dungKhi", { tran: 600 }),
+        moTa: chu(t, "moTa", { tran: 1e3 }),
+        noiDung: chu(t, "noiDung", { batBuoc: true, tran: 2e4 })
+      })),
+      "ai.phan-tich": async () => lay(await cong2.aiPhanTich()),
+      "ai.phan-tich.bat-dau": async (t) => lay(await cong2.aiBatDauPhanTich(t.lamLai === true)),
+      "ai.phan-tich.buoc": async () => lay(await cong2.aiBuocPhanTich()),
+      "ai.phan-tich.dung": async () => lay(await cong2.aiDungPhanTich()),
+      "ai.phan-tich.nhap": async () => lay(await cong2.aiNhapPhanTich()),
+      // ----- anh khach gui, SP ngoai -----
+      "ai.doc-anh": async (t) => {
+        const anh2 = anhHttps(t, "anh");
+        if (anh2.length === 0) throw new Error("Chưa có ảnh https để đọc.");
+        return lay(await cong2.aiDocAnh({ anh: anh2, maHoiThoai: chu(t, "maHoiThoai", { tran: 200 }), goiY: chu(t, "goiY", { tran: 300 }) }));
+      },
+      "ai.anh-nho.ghi": async (t) => {
+        const bam = chu(t, "bam", { batBuoc: true, tran: 64 });
+        if (!/^[a-f0-9]{8,64}$/.test(bam)) throw new Error('"bam" không đúng dấu vân tay ảnh.');
+        return lay(await cong2.aiNhoAnh({ bam, ma: chu(t, "ma", { batBuoc: true, tran: 64 }).toUpperCase(), ten: chu(t, "ten", { tran: 200 }) }));
+      },
+      "ai.anh-nho.quen": async (t) => lay(await cong2.aiQuenAnh(chu(t, "bam", { batBuoc: true, tran: 64 }))),
+      "ai.sp-ngoai": async (t) => lay(await cong2.aiSpNgoai(chu(t, "maHoiThoai", MA_HOI_THOAI2))),
+      "ai.sp-ngoai.chot": async (t) => {
+        const anh2 = chu(t, "anh", { tran: 2e3 });
+        if (anh2 !== "" && !/^(https:\/\/|\/api\/fanpage-media\/)/i.test(anh2)) throw new Error('"anh" phải là ảnh https hoặc ảnh đã tải lên landing.');
+        const gia = so(t, "gia", { tran: 5e9 });
+        if (gia <= 0) throw new Error("Nhập giá bán.");
+        return lay(await cong2.aiChotSpNgoai({
+          maHoiThoai: chu(t, "maHoiThoai", MA_HOI_THOAI2),
+          ten: chu(t, "ten", { batBuoc: true, tran: 200 }),
+          ma: chu(t, "ma", { tran: 32 }),
+          size: chu(t, "size", { tran: 32 }),
+          gia,
+          giaNhap: so(t, "giaNhap", { tran: 5e9 }),
+          anh: anh2,
+          loiNhan: chu(t, "loiNhan", { tran: 2e3 }),
+          gui: t.gui === true
+        }));
+      },
+      "ai.sp-ngoai.gui-lai": async (t) => lay(await cong2.aiGuiLaiSpNgoai(chu(t, "ma", MA2))),
+      "ai.sp-ngoai.trang-thai": async (t) => lay(await cong2.aiTrangThaiSpNgoai(chu(t, "ma", MA2), { trangThai: mot(t, "trangThai", ["bo", "da_dat"], "bo"), maDon: chu(t, "maDon", { tran: 64 }) })),
+      "ai.sp-ngoai.goi-y": async (t) => lay(await cong2.aiGoiYSpNgoai({ anh: anhHttps(t, "anh", 1), goiY: chu(t, "goiY", { tran: 300 }), maHoiThoai: chu(t, "maHoiThoai", { tran: 200 }) })),
+      // ----- Token AI -----
+      "ai.token": async (t) => {
+        const soNgay = so(t, "soNgay", { macDinh: 7, tran: 90 }) || 7;
+        return lay(await cong2.aiToken({ soNgay, kenh: chu(t, "kenh", { tran: 20 }), model: chu(t, "model", { tran: 120 }) }));
+      },
+      "ai.bang-gia": async () => lay(await cong2.aiBangGia()),
+      "ai.bang-gia.ghi": async (t) => {
+        const models = Array.isArray(t.models) ? t.models : null;
+        if (models === null || models.length > 200) throw new Error("Bảng giá tối đa 200 dòng.");
+        return lay(await cong2.aiGhiBangGia({
+          rateVndPerUsd: so(t, "rateVndPerUsd", { tran: 1e6 }),
+          models: models.map((x) => {
+            const o = x !== null && typeof x === "object" ? x : {};
+            return { key: chu(o, "key", { tran: 80 }), input: chu(o, "input", { tran: 20 }), output: chu(o, "output", { tran: 20 }), cacheRead: chu(o, "cacheRead", { tran: 20 }), from: chu(o, "from", { tran: 10 }), until: chu(o, "until", { tran: 10 }) };
+          })
+        }));
+      },
+      // ----- tin hieu size -----
+      "ai.tin-hieu-size": async (t) => lay(await cong2.aiTinHieuSize(chu(t, "maHoiThoai", MA_HOI_THOAI2))),
+      "ai.tin-hieu-size.bo": async (t) => lay(await cong2.aiBoTinHieuSize({ maHoiThoai: chu(t, "maHoiThoai", MA_HOI_THOAI2), khoa: chu(t, "khoa", { batBuoc: true, tran: 200 }) }))
+    };
+  }
+
+  // ../omi/packages/omi/src/landing/viec/noi-dung-dang-bai.ts
+  var MA3 = { batBuoc: true, tran: 120 };
+  var VIEC_LO = ["viet", "viet-loi", "phan-bien", "toi-uu", "chu-trinh"];
+  var CHE_DO_DANG = ["draft", "now", "schedule"];
+  var CHE_DO_BINH_LUAN = ["none", "template", "custom"];
+  var TRAN_ANH_DATA_URL2 = 12 * 1024 * 1024;
+  function danhSachChu(t, ten, { tran = 50, dai = 120, batBuoc = false } = {}) {
+    const g = t[ten];
+    if (g === void 0 || g === null) {
+      if (batBuoc) throw new Error(`Thiếu "${ten}".`);
+      return [];
+    }
+    if (!Array.isArray(g)) throw new Error(`"${ten}" phải là một danh sách.`);
+    if (g.length > tran) throw new Error(`"${ten}" tối đa ${tran} mục.`);
+    return g.map((x) => {
+      const s = String(x ?? "").trim();
+      if (s.length > dai) throw new Error(`Một mục của "${ten}" quá dài.`);
+      return s;
+    }).filter(Boolean);
+  }
+  function anhBai(t) {
+    const ds = danhSachChu(t, "anh", { tran: 10, dai: 2e3 });
+    for (const u of ds) if (!/^https?:\/\//i.test(u) && !u.startsWith("/api/")) throw new Error("Ảnh bài đăng phải là đường dẫn https hoặc ảnh đã tải lên landing.");
+    return ds;
+  }
+  function thamLoc(t, ten) {
+    const out = {};
+    for (const k of ten) {
+      const v = chu(t, k, { tran: 120 });
+      if (v !== "") out[k] = v;
+    }
+    return out;
+  }
+  function thanBaiDang(t) {
+    const lichDang = chu(t, "lichDang", { tran: 40 });
+    if (lichDang !== "" && !Number.isFinite(Date.parse(lichDang))) throw new Error('"lichDang" không phải ngày giờ.');
+    const lienKet = chu(t, "lienKet", { tran: 2e3 });
+    if (lienKet !== "" && !/^https?:\/\//i.test(lienKet)) throw new Error('"lienKet" phải bắt đầu bằng http(s)://');
+    const bl = t.binhLuan !== null && typeof t.binhLuan === "object" ? t.binhLuan : {};
+    return {
+      trang: chu(t, "trang", { tran: 64 }),
+      noiDung: chu(t, "noiDung", { tran: 63e3 }),
+      lienKet,
+      anh: anhBai(t),
+      lichDang,
+      anhBinhLuan: danhSachChu(t, "anhBinhLuan", { tran: 30, dai: 2e3 }).map((u) => {
+        if (!/^https?:\/\//i.test(u) && !u.startsWith("/api/")) throw new Error("Ảnh comment phải là đường dẫn https hoặc ảnh đã tải lên landing.");
+        return u;
+      }),
+      nenChu: (() => {
+        const n = chu(t, "nenChu", { tran: 20 });
+        if (n !== "" && !/^\d{6,20}$/.test(n)) throw new Error('"nenChu" không hợp lệ.');
+        return n;
+      })(),
+      binhLuan: { cheDo: mot(bl, "cheDo", CHE_DO_BINH_LUAN, "none"), mauId: chu(bl, "mauId", { tran: 80 }), chu: chu(bl, "chu", { tran: 8e3 }) },
+      nguon: t.nguon !== null && typeof t.nguon === "object" ? { maSP: danhSachChu(t.nguon, "maSP", { tran: 20, dai: 80 }), maKhoBai: chu(t.nguon, "maKhoBai", { tran: 120 }) } : {}
+    };
+  }
+  function viecNoiDungDangBai(cong2) {
+    return {
+      // ----- xuong-noi-dung: sua bai (them goc mua, dong nho tren anh bia) -----
+      "noi-dung.lo.sua-bai": async (t) => {
+        const doi = {};
+        if (t.caption !== void 0) doi.caption = chu(t, "caption", { tran: 8e3 });
+        if (t.chuAnh !== void 0) doi.chuAnh = chu(t, "chuAnh", { tran: 300 });
+        if (t.dongNho !== void 0) doi.dongNho = chu(t, "dongNho", { tran: 120 });
+        if (t.comment !== void 0) doi.comment = chu(t, "comment", { tran: 2e3 });
+        if (t.chuDe !== void 0) doi.chuDe = chu(t, "chuDe", { tran: 500 });
+        if (t.goc !== void 0) doi.goc = chu(t, "goc", { tran: 40 });
+        if (t.gio !== void 0) doi.gio = chu(t, "gio", { tran: 5 });
+        if (t.dangBai !== void 0) doi.dangBai = chu(t, "dangBai", { tran: 32 });
+        if (t.boQua !== void 0) doi.boQua = chu(t, "boQua", { tran: 300 });
+        if (Array.isArray(t.ma)) doi.ma = danhSachChu(t, "ma", { tran: 20, dai: 80 });
+        if (Object.keys(doi).length === 0) throw new Error("Không có gì để sửa.");
+        return lay(await cong2.suaBaiLo(chu(t, "maLo", MA3), chu(t, "maBai", MA3), doi));
+      },
+      "noi-dung.lo.chay": async (t) => {
+        const viec = mot(t, "viec", VIEC_LO);
+        if (viec === "") throw new Error('Thiếu "viec".');
+        return lay(await cong2.ndChayLo(chu(t, "ma", MA3), { viec, ...t.doiXong === true ? { doiXong: true } : {} }));
+      },
+      "noi-dung.lo.len-lich": async (t) => lay(await cong2.ndLenLichChon(chu(t, "ma", MA3), t.chon === void 0 ? null : danhSachChu(t, "chon", { tran: 60 }))),
+      "noi-dung.lo.chon": async (t) => lay(await cong2.ndChon(chu(t, "ma", MA3), danhSachChu(t, "chon", { tran: 60 }))),
+      "noi-dung.lo.bo-bai": async (t) => lay(await cong2.ndBoBai(chu(t, "maLo", MA3), chu(t, "maBai", MA3))),
+      "noi-dung.lo.hoan-tac": async (t) => lay(await cong2.ndHoanTac(chu(t, "ma", MA3))),
+      "noi-dung.lo.dung-lai": async (t) => lay(await cong2.ndDungLai(chu(t, "ma", MA3))),
+      "noi-dung.lo.goi-y-ma": async (t) => lay(await cong2.ndGoiYMa(chu(t, "maLo", MA3), chu(t, "maBai", MA3))),
+      "noi-dung.lo.phan-bien-bai": async (t) => lay(await cong2.ndPhanBienBai(chu(t, "maLo", MA3), chu(t, "maBai", MA3))),
+      "noi-dung.lo.vao-kho": async (t) => lay(await cong2.ndVaoKho(chu(t, "maLo", MA3), chu(t, "maBai", MA3))),
+      "noi-dung.chu-de": async () => lay(await cong2.ndChuDe()),
+      "noi-dung.chu-de.them": async (t) => {
+        const text2 = chu(t, "text", { batBuoc: true, tran: 300 });
+        return lay(await cong2.ndThemChuDe({ text: text2, page: chu(t, "page", { tran: 64 }), priority: mot(t, "priority", ["today", "queue"], "queue") }));
+      },
+      "noi-dung.chu-de.trang-thai": async (t) => {
+        const status2 = mot(t, "status", ["waiting", "used", "skipped"]);
+        if (status2 === "") throw new Error('Thiếu "status".');
+        return lay(await cong2.ndTrangThaiChuDe(chu(t, "id", MA3), status2));
+      },
+      "noi-dung.kho-ma": async (t) => {
+        const loc = thamLoc(t, ["q", "hang", "nhom"]);
+        if (t.gocChup === true) loc.gocChup = "1";
+        if (t.moi === true) loc.moi = "1";
+        return lay(await cong2.ndKhoMa(loc));
+      },
+      "noi-dung.xu-huong": async () => lay(await cong2.ndXuHuong()),
+      "noi-dung.xu-huong.chay": async () => lay(await cong2.ndChayXuHuong()),
+      "noi-dung.nhip": async () => {
+        const [a, b] = [await cong2.ndNhip(), await cong2.dbNhip()];
+        return { ok: a.ok && b.ok, than: { noiDung: a.than, dangBai: b.than }, viSao: a.viSao || b.viSao };
+      },
+      "noi-dung.phong-cach": async () => lay(await cong2.ndPhongCach()),
+      "noi-dung.phong-cach.ghi": async (t) => {
+        if (t.chon !== void 0 && t.id === void 0) return lay(await cong2.ndGhiPhongCach({ chon: chu(t, "chon", { batBuoc: true, tran: 60 }) }));
+        const id = chu(t, "id", { batBuoc: true, tran: 60 });
+        if (!/^[a-zA-Z0-9_-]+$/.test(id)) throw new Error("ID style chỉ gồm chữ không dấu, số, _ và -.");
+        return lay(await cong2.ndGhiPhongCach({ id, ten: chu(t, "ten", { tran: 120 }), moTa: chu(t, "moTa", { tran: 600 }), luatViet: chu(t, "luatViet", { tran: 3e3 }), cauTruc: chu(t, "cauTruc", { tran: 2e3 }), baiMau: chu(t, "baiMau", { tran: 4e3 }) }));
+      },
+      "noi-dung.kho-bai": async (t) => lay(await cong2.ndKhoBai(thamLoc(t, ["q", "kenh"]))),
+      "noi-dung.kho-bai.ghi": async (t) => {
+        const than = {
+          id: chu(t, "id", { tran: 80 }),
+          tieuDe: chu(t, "tieuDe", { tran: 180 }),
+          kenh: mot(t, "kenh", ["facebook", "seo", "review"], "facebook"),
+          trangThai: mot(t, "trangThai", ["draft", "ready", "published"], "draft"),
+          dongSanPham: chu(t, "dongSanPham", { tran: 160 }),
+          maSanPham: String(t.maSanPham ?? "").split(",").map((x) => x.trim()).filter(Boolean).slice(0, 30),
+          quote: chu(t, "quote", { tran: 400 }),
+          noiDung: chu(t, "noiDung", { tran: 3e4 }),
+          tag: String(t.tag ?? "").split(",").map((x) => x.trim()).filter(Boolean).slice(0, 12),
+          ghiChu: chu(t, "ghiChu", { tran: 500 })
+        };
+        if (than.tieuDe === "" && than.noiDung === "") throw new Error("Cần tiêu đề hoặc nội dung bài.");
+        return lay(await cong2.ndGhiKhoBai(than));
+      },
+      "noi-dung.kho-bai.xoa": async (t) => lay(await cong2.ndXoaKhoBai(chu(t, "id", MA3))),
+      // ----- dang-bai: Bai da dang -----
+      "dang-bai.bai": async (t) => {
+        const loc = thamLoc(t, ["trang", "q"]);
+        const tt = mot(t, "trangThai", ["all", "scheduled", "published", "draft", "failed", "cancelled"]);
+        if (tt !== "" && tt !== "all") loc.trangThai = tt;
+        return lay(await cong2.dbBai(loc));
+      },
+      "dang-bai.tao": async (t) => {
+        const mode = mot(t, "mode", CHE_DO_DANG, "draft");
+        const than = thanBaiDang(t);
+        if (mode !== "draft" && than.trang === "") throw new Error("Chọn Fanpage trước khi đăng.");
+        if (mode === "schedule" && than.lichDang === "") throw new Error("Chọn ngày giờ đăng để lên lịch.");
+        return lay(await cong2.dbTaoBai({ mode, ...than }));
+      },
+      "dang-bai.sua": async (t) => {
+        const mode = mot(t, "mode", ["", "draft", "now", "schedule", "update"], "");
+        return lay(await cong2.dbSuaBai(chu(t, "ma", MA3), { ...mode === "" || mode === "update" ? {} : { mode }, ...thanBaiDang(t) }));
+      },
+      "dang-bai.huy": async (t) => lay(await cong2.dbHuyBai(chu(t, "ma", MA3))),
+      "dang-bai.dang-ngay": async (t) => lay(await cong2.dbDangNgay(chu(t, "ma", MA3))),
+      "dang-bai.xoa": async (t) => lay(await cong2.dbXoaBai(chu(t, "ma", MA3))),
+      "dang-bai.dong-bo": async (t) => lay(await cong2.dbDongBo(chu(t, "ma", { tran: 120 }))),
+      "dang-bai.binh-luan-lai": async (t) => lay(await cong2.dbBinhLuanLai(chu(t, "ma", MA3))),
+      "dang-bai.mau.ghi": async (t) => {
+        const ten = chu(t, "ten", { batBuoc: true, tran: 120 });
+        const noiDung = chu(t, "noiDung", { batBuoc: true, tran: 4e3 });
+        return lay(await cong2.dbGhiMau({ id: chu(t, "id", { tran: 80 }), ten, noiDung, nhom: mot(t, "nhom", ["shop_link", "product_link", "upsell", "size_advice", "promotion", "inbox"], "shop_link") }));
+      },
+      "dang-bai.mau.xoa": async (t) => lay(await cong2.dbXoaMau(chu(t, "id", MA3))),
+      "dang-bai.phu-link": async () => lay(await cong2.dbPhuLink()),
+      "dang-bai.phu-link.ghi": async (t) => {
+        const than = {};
+        if (typeof t.enabled === "boolean") than.enabled = t.enabled;
+        if (t.resume === true) than.resume = true;
+        if (t.pageIds !== void 0) than.pageIds = danhSachChu(t, "pageIds", { tran: 50, dai: 64 });
+        if (t.maxPerDay !== void 0) than.maxPerDay = so(t, "maxPerDay", { tran: 200 });
+        if (t.delayMinMinutes !== void 0) than.delayMinMinutes = so(t, "delayMinMinutes", { tran: 60 });
+        if (t.delayMaxMinutes !== void 0) than.delayMaxMinutes = so(t, "delayMaxMinutes", { tran: 120 });
+        if (t.topics !== void 0) {
+          if (!Array.isArray(t.topics) || t.topics.length > 60) throw new Error('"topics" tối đa 60 chủ đề.');
+          than.topics = t.topics.map((x) => {
+            const o = x !== null && typeof x === "object" ? x : {};
+            return { id: chu(o, "id", { tran: 40 }), label: chu(o, "label", { tran: 120 }), keywords: chu(o, "keywords", { tran: 600 }), link: chu(o, "link", { tran: 1e3 }) };
+          });
+        }
+        if (t.variants !== void 0) than.variants = chu(t, "variants", { tran: 2e4 });
+        if (Object.keys(than).length === 0) throw new Error("Không có gì để lưu.");
+        return lay(await cong2.dbGhiPhuLink(than));
+      },
+      "dang-bai.phu-link.quet": async () => lay(await cong2.dbQuetPhuLink()),
+      "dang-bai.phu-link.thu-lai": async (t) => lay(await cong2.dbThuLaiPhuLink(chu(t, "postId", MA3))),
+      "dang-bai.the-sp.tim": async (t) => lay(await cong2.dbTimTheSp(thamLoc(t, ["q", "brand", "type", "sport", "source", "sort"]))),
+      "dang-bai.the-sp.tao": async (t) => {
+        const anh2 = chu(t, "anh", { tran: 2e3 });
+        if (anh2 !== "" && !/^https?:\/\//i.test(anh2) && !anh2.startsWith("/api/")) throw new Error('"anh" phải là đường dẫn ảnh.');
+        return lay(await cong2.dbTaoTheSp({ ma: chu(t, "ma", MA3), anh: anh2 }));
+      },
+      "dang-bai.anh-bia": async (t) => lay(await cong2.dbAnhBia({ main: chu(t, "main", { batBuoc: true, tran: 200 }), sub: chu(t, "sub", { tran: 120 }), key: chu(t, "key", { tran: 60 }) })),
+      "dang-bai.tai-anh": async (t) => {
+        const anh2 = chu(t, "anh", { batBuoc: true, tran: TRAN_ANH_DATA_URL2 });
+        if (!/^data:image\/(png|jpe?g|webp|gif);base64,/i.test(anh2)) throw new Error("Chỉ tải lên được ảnh (png, jpg, webp, gif).");
+        return lay(await cong2.dbTaiAnh(anh2));
+      },
+      "dang-bai.thuong-hieu": async () => lay(await cong2.dbThuongHieu()),
+      "dang-bai.thuong-hieu.ghi": async (t) => {
+        const mauNhan = chu(t, "mauNhan", { tran: 7 });
+        if (mauNhan !== "" && !/^#[0-9a-fA-F]{6}$/.test(mauNhan)) throw new Error('"mauNhan" phải dạng #RRGGBB.');
+        return lay(await cong2.dbGhiThuongHieu({ tenHienThi: chu(t, "tenHienThi", { tran: 40 }), tenMien: chu(t, "tenMien", { tran: 80 }), mauNhan, huyHieu: chu(t, "huyHieu", { tran: 30 }), ...Array.isArray(t.mauNen) ? { mauNen: danhSachChu(t, "mauNen", { tran: 10, dai: 20 }) } : {} }));
+      }
+    };
+  }
+
+  // ../omi/packages/omi/src/landing/viec/kien-thuc-kenh.ts
+  var MA_MAU = { batBuoc: true, tran: 120 };
+  var TRAN_HO_SO_KY_TU = 400 * 1024;
+  var DO_DAY = ["all", "missing", "empty", "pending_review", "complete"];
+  var LOAI_GIAY = ["running", "lifestyle", "court"];
+  var TRANG_THAI_FF = ["foundation", "pilot", "live"];
+  function danhSachMa(t, ten, { tran = 200, it = 1, cau = "" } = {}) {
+    const g = t[ten];
+    if (!Array.isArray(g)) throw new Error(cau || `"${ten}" phải là một danh sách.`);
+    const ds = [...new Set(g.map((x) => String(x ?? "").trim()).filter(Boolean))];
+    if (ds.length < it) throw new Error(cau || `"${ten}" cần ít nhất ${it} mục.`);
+    if (ds.length > tran) throw new Error(`"${ten}" tối đa ${tran} mục.`);
+    for (const m of ds) if (m.length > 120) throw new Error(`Một mã trong "${ten}" quá dài.`);
+    return ds;
+  }
+  function dongChu(t, ten, tran = 60) {
+    const g = t[ten];
+    if (g === void 0 || g === null) return "";
+    const s = Array.isArray(g) ? g.map((x) => String(x ?? "")).join("\n") : String(g);
+    const dong = s.split(/\r?\n/).map((x) => x.trim()).filter(Boolean);
+    if (dong.length > tran) throw new Error(`"${ten}" tối đa ${tran} dòng.`);
+    return dong.join("\n").slice(0, 2e4);
+  }
+  function soCo(t, ten, tran) {
+    const g = t[ten];
+    if (g === void 0 || g === null || g === "") return void 0;
+    const n = Number(String(g).replace(",", "."));
+    if (!Number.isFinite(n) || n <= 0 || n > tran) throw new Error(`"${ten}" phải là số dương nhỏ hơn ${tran}.`);
+    return n;
+  }
+  var doiTuong = (v) => v !== null && typeof v === "object" && !Array.isArray(v) ? v : {};
+  function viecKienThucKenh(cong2) {
+    return {
+      // ----- Fit Finder (landing tu-van-size) -----
+      "tu-van-size.cau-hinh": async () => lay(await cong2.tvsCauHinh()),
+      "tu-van-size.cau-hinh.ghi": async (t) => {
+        const w = doiTuong(t.trongSo);
+        const trongSo = {};
+        for (const k of ["mucDich", "banChan", "tocDoCuLy", "ruiRo", "banDuoc"]) trongSo[k] = so(w, k, { tran: 100 });
+        return lay(await cong2.tvsGhiCauHinh({
+          maModule: chu(t, "maModule", { tran: 60 }),
+          tenNoiBo: chu(t, "tenNoiBo", { tran: 120 }),
+          tenCongKhai: chu(t, "tenCongKhai", { tran: 120 }),
+          moTa: chu(t, "moTa", { tran: 2e3 }),
+          trangThai: mot(t, "trangThai", TRANG_THAI_FF, "foundation"),
+          trongSo,
+          bienKhach: dongChu(t, "bienKhach"),
+          truongDong: dongChu(t, "truongDong")
+        }));
+      },
+      "tu-van-size.tinh": async (t) => {
+        const than = { hang: chu(t, "hang", { tran: 40 }) };
+        const tem = chu(t, "tem", { tran: 10 });
+        if (tem !== "") return lay(await cong2.tvsTinh({ ...than, tem }));
+        const tat = chu(t, "tat", { tran: 10 });
+        if (tat !== "") return lay(await cong2.tvsTinh({ tat }));
+        const size2 = chu(t, "size", { tran: 12 });
+        if (size2 !== "") return lay(await cong2.tvsTinh({ ...than, size: size2, sangHang: chu(t, "sangHang", { batBuoc: true, tran: 40 }) }));
+        const dai = soCo(t, "dai", 40);
+        if (dai === void 0) throw new Error("Nhập chiều dài chân (cm), số trên tem, hoặc size cần đổi hãng.");
+        const rong = soCo(t, "rong", 20);
+        const chuVi = soCo(t, "chuVi", 400);
+        return lay(await cong2.tvsTinh({ ...than, dai, ...rong === void 0 ? {} : { rong }, ...chuVi === void 0 ? {} : { chuVi }, loaiGiay: mot(t, "loaiGiay", LOAI_GIAY, "running"), chayDai: t.chayDai === true }));
+      },
+      "tu-van-size.bang-size": async (t) => lay(await cong2.tvsBangSize(chu(t, "hang", { tran: 40 }))),
+      "tu-van-size.goi-y-dong": async (t) => {
+        const pace = chu(t, "pace", { tran: 200 });
+        const cuLy = chu(t, "cuLy", { tran: 200 });
+        if (pace === "" && cuLy === "") throw new Error("Nhập pace hoặc cự ly khách chạy.");
+        return lay(await cong2.tvsGoiYDong({ pace, cuLy, trinhDo: mot(t, "trinhDo", ["", "new", "regular"], ""), tamGia: so(t, "tamGia", { tran: 9 }), soDong: so(t, "soDong", { macDinh: 3, tran: 5 }) }));
+      },
+      "tu-van-size.tim-dong": async (t) => lay(await cong2.tvsTimDong(chu(t, "chu", { batBuoc: true, tran: 500 }))),
+      "tu-van-size.dong": async (t) => lay(await cong2.tvsDong(chu(t, "ma", { tran: 80 }))),
+      // "Dung san pham nay lam mau cho ca dong" (con tu D5).
+      "tu-van-size.dong.tu-san-pham": async (t) => lay(await cong2.tvsDongTuSanPham({
+        ma: chu(t, "ma", { batBuoc: true, tran: 80 }),
+        tenDong: chu(t, "tenDong", { batBuoc: true, tran: 200 }),
+        hang: chu(t, "hang", { tran: 80 }),
+        tuKhoa: dongChu(t, "tuKhoa", 30),
+        gioiThieu: chu(t, "gioiThieu", { tran: 4e3 }),
+        baiViet: chu(t, "baiViet", { tran: 12e3 }),
+        tinhNang: dongChu(t, "tinhNang"),
+        congNghe: dongChu(t, "congNghe"),
+        phuHop: dongChu(t, "phuHop"),
+        khongHop: dongChu(t, "khongHop"),
+        huongDanFit: chu(t, "huongDanFit", { tran: 2e3 }),
+        ghiChuSize: chu(t, "ghiChuSize", { tran: 2e3 })
+      })),
+      // ----- San pham mau + nghien cuu (landing chuyen len Xeon) -----
+      "kien-thuc.mau": async (t) => lay(await cong2.kienThuc("mau", { q: chu(t, "q", { tran: 120 }), doDay: mot(t, "doDay", DO_DAY, "all") })),
+      "kien-thuc.mau.doc": async (t) => lay(await cong2.kienThuc("mau/doc", { id: chu(t, "id", MA_MAU) })),
+      "kien-thuc.mau.ghi": async (t) => {
+        const mau = doiTuong(t.mau);
+        const id = chu(mau, "id", MA_MAU);
+        if (!/^[a-z0-9][a-z0-9_-]*$/i.test(id)) throw new Error("ID mẫu chỉ gồm chữ không dấu, số, _ và -.");
+        chu(mau, "name", { batBuoc: true, tran: 200 });
+        if (JSON.stringify(mau).length > TRAN_HO_SO_KY_TU) throw new Error("Hồ sơ mẫu quá lớn.");
+        return lay(await cong2.kienThuc("mau/ghi", { mau }));
+      },
+      "kien-thuc.mau.xoa": async (t) => lay(await cong2.kienThuc("mau/xoa", { ids: danhSachMa(t, "ids", { tran: 2e3, cau: "Chưa chọn sản phẩm mẫu để xóa." }) })),
+      "kien-thuc.mau.gop": async (t) => {
+        const ids = danhSachMa(t, "ids", { it: 2, cau: "Chọn ít nhất hai sản phẩm mẫu để gộp." });
+        const giu = chu(t, "giu", MA_MAU);
+        if (!ids.includes(giu)) throw new Error("Mở mẫu muốn giữ lại trước, rồi chọn các mẫu cần gộp cùng.");
+        return lay(await cong2.kienThuc("mau/gop", { ids, giu }));
+      },
+      "kien-thuc.mau.gop-trung": async () => lay(await cong2.kienThuc("mau/gop-trung", {})),
+      "kien-thuc.mau.gop-kho": async () => lay(await cong2.kienThuc("mau/gop-kho", {})),
+      "kien-thuc.mau.mac-dinh": async () => lay(await cong2.kienThuc("mau/mac-dinh", {})),
+      "kien-thuc.mau.xuat-ban": async () => lay(await cong2.kienThuc("mau/xuat-ban", {})),
+      "kien-thuc.mau.phan-tich": async (t) => {
+        const mau = doiTuong(t.mau);
+        if (JSON.stringify(mau).length > TRAN_HO_SO_KY_TU) throw new Error("Hồ sơ mẫu quá lớn.");
+        return lay(await cong2.kienThuc("mau/phan-tich", { id: chu(t, "id", MA_MAU), noiDung: chu(t, "noiDung", { batBuoc: true, tran: 2e5 }), mau }));
+      },
+      "kien-thuc.nghien-cuu.tao": async (t) => lay(await cong2.kienThuc("nghien-cuu/tao", { ids: danhSachMa(t, "ids", { cau: "Chọn ít nhất một sản phẩm mẫu để tạo job nghiên cứu." }), prompt: chu(t, "prompt", { tran: 2e4 }) })),
+      "kien-thuc.nghien-cuu.chay": async (t) => lay(await cong2.kienThuc("nghien-cuu/chay", { toiDa: so(t, "toiDa", { macDinh: 3, tran: 10 }) })),
+      "kien-thuc.cham-dong": async (t) => lay(await cong2.kienThuc("cham-dong", { nguon: mot(t, "nguon", ["", "own", "partner"], "") })),
+      // ----- Website Channels -----
+      "kenh-web": async () => lay(await cong2.kenhWeb()),
+      "kenh-web.ghi": async (t) => {
+        const ga4 = chu(t, "ga4", { tran: 40 });
+        if (ga4 !== "" && !/^G-[A-Z0-9]{4,20}$/i.test(ga4)) throw new Error("GA4 Measurement ID có dạng G-XXXXXXX.");
+        const metaPixel = chu(t, "metaPixel", { tran: 40 });
+        if (metaPixel !== "" && !/^\d{8,20}$/.test(metaPixel)) throw new Error("Meta Pixel ID chỉ gồm 8–20 chữ số.");
+        const tiktokPixel = chu(t, "tiktokPixel", { tran: 40 });
+        if (tiktokPixel !== "" && !/^[A-Z0-9]{10,30}$/i.test(tiktokPixel)) throw new Error("TikTok Pixel ID gồm 10–30 chữ và số.");
+        return lay(await cong2.ghiKenhWeb({
+          sua: chu(t, "sua", { tran: 60 }),
+          ten: chu(t, "ten", { batBuoc: true, tran: 120 }),
+          ma: chu(t, "ma", { tran: 60 }),
+          diaChi: chu(t, "diaChi", { tran: 300 }),
+          nganh: chu(t, "nganh", { tran: 600 }),
+          trangThai: mot(t, "trangThai", ["active", "planned"], "active"),
+          ga4,
+          metaPixel,
+          tiktokPixel
+        }));
+      },
+      // ----- SMTP theo shop: luu qua "cau-hinh.ghi", nut gui thu o day -----
+      "email.thu": async (t) => {
+        const den = chu(t, "den", { batBuoc: true, tran: 254 });
+        if (!/^[^\s@]+@[^\s@]+\.[a-z]{2,}$/i.test(den)) throw new Error("Nhập một địa chỉ email nhận thư thử.");
+        return lay(await cong2.thuEmail(den));
+      },
+      // ----- Video Studio: ve ngan han do Xeon ky; vo mo cua so rieng -----
+      "video.ve": async () => lay(await cong2.veVideoStudio())
+    };
+  }
+
+  // ../omi/packages/omi/src/landing/viec/tinh-nang-shop.ts
+  var NEN_TANG = ["woocommerce", "haravan"];
+  var CHE_DO2 = ["web", "thu-cong"];
+  var LY_DO_SAO_LUU = ["manual", "daily", "before-update", "before-import", "after-import"];
+  var TRAN_ANH = 11 * 1024 * 1024;
+  var maNguon = (t, ten = "nguon", batBuoc = true) => {
+    const g = chu(t, ten, { batBuoc, tran: 40 }).toLowerCase();
+    if (g !== "" && !/^[a-z][a-z0-9-]{1,29}$/.test(g)) throw new Error(`"${ten}" không phải mã nguồn hợp lệ.`);
+    return g;
+  };
+  var maHang2 = (t) => chu(t, "ma", { batBuoc: true, tran: 80 });
+  var sizeBatBuoc = (t) => chu(t, "size", { batBuoc: true, tran: 20 });
+  function anhDataUrl(t, ten, batBuoc) {
+    const g = t[ten];
+    if (g === void 0 || g === null || g === "") {
+      if (batBuoc) throw new Error("Chưa có ảnh.");
+      return "";
+    }
+    if (typeof g !== "string" || !/^data:image\/(jpeg|jpg|png|webp);base64,/.test(g)) throw new Error(`"${ten}" phải là ảnh jpeg/png/webp.`);
+    if (g.length > TRAN_ANH * 4 / 3) throw new Error("Ảnh vượt 8 MB.");
+    return g;
+  }
+  function diaChiWeb(t, ten) {
+    const g = chu(t, ten, { batBuoc: true, tran: 300 });
+    let u;
+    try {
+      u = new URL(g);
+    } catch {
+      throw new Error(`"${ten}" phải là địa chỉ https://…`);
+    }
+    if (u.protocol !== "https:" && u.protocol !== "http:" || u.username || u.password) throw new Error(`"${ten}" phải là địa chỉ https://…`);
+    return `${u.protocol}//${u.host}`;
+  }
+  var q = (o) => {
+    const p = new URLSearchParams();
+    for (const [k, v] of Object.entries(o)) if (v !== "") p.set(k, v);
+    const s = p.toString();
+    return s ? `?${s}` : "";
+  };
+  function viecTinhNangShop(cong2) {
+    const tns = cong2.tinhNangShop;
+    return {
+      // ----- nguon doi tac (cau hinh cua shop) -----
+      "nguon-hang.ds": async () => lay(await tns("GET", "nguon")),
+      "nguon-hang.ghi": async (t) => {
+        const g = t.nguon;
+        if (!Array.isArray(g) || g.length > 30) throw new Error('"nguon" phải là danh sách (tối đa 30 nguồn).');
+        const nguon = g.map((x, i) => {
+          const o = x !== null && typeof x === "object" && !Array.isArray(x) ? x : {};
+          const ma = maNguon(o, "ma");
+          if (["kho", "sapo", "all"].includes(ma)) throw new Error(`Dòng ${i + 1}: mã "${ma}" đã dành cho nguồn sẵn có.`);
+          const maKho2 = chu(o, "maKho", { tran: 60 });
+          if (maKho2 !== "" && !/^[a-z0-9_*-]{2,60}$/i.test(maKho2)) throw new Error(`Dòng ${i + 1}: mã kho chỉ gồm chữ, số, gạch dưới.`);
+          return {
+            ma,
+            ten: chu(o, "ten", { tran: 80 }) || ma,
+            nenTang: mot(o, "nenTang", NEN_TANG, "haravan"),
+            diaChi: diaChiWeb(o, "diaChi"),
+            cheDo: mot(o, "cheDo", CHE_DO2, "web"),
+            dayKhoSan: o.dayKhoSan === true,
+            chiGiay: o.chiGiay !== false,
+            ...maKho2 === "" ? {} : { maKho: maKho2 }
+          };
+        });
+        if (new Set(nguon.map((n) => n.ma)).size !== nguon.length) throw new Error("Mã nguồn bị trùng.");
+        return lay(await tns("POST", "nguon", { nguon }));
+      },
+      // ----- kho doi tac web: tai / dong bo / day kho san -----
+      "doi-tac-web.xem": async () => lay(await tns("GET", "doi-tac/tai")),
+      "doi-tac-web.tai": async (t) => lay(await tns("POST", "doi-tac/tai", { nguon: maNguon(t, "nguon", false) || "all", chiConHang: t.chiConHang !== false })),
+      "doi-tac-web.dong-bo": async (t) => lay(await tns("POST", "doi-tac/dong-bo", { nguon: maNguon(t, "nguon", false) })),
+      "doi-tac-web.day-kho-san": async (t) => lay(await tns("POST", "doi-tac/day-kho-san", { nguon: maNguon(t) })),
+      // ----- doi tac thu cong (tick con/het, anh ton) -----
+      "thu-cong.ds": async (t) => lay(await tns("GET", `thu-cong${q({ nguon: maNguon(t) })}`)),
+      "thu-cong.tai": async (t) => lay(await tns("POST", "thu-cong/tai", { nguon: maNguon(t) })),
+      "thu-cong.size": async (t) => lay(await tns("POST", "thu-cong/size", { nguon: maNguon(t), ma: maHang2(t), size: sizeBatBuoc(t), con: t.con !== false })),
+      "thu-cong.anh-url": async (t) => {
+        const url = chu(t, "url", { batBuoc: true, tran: 2e3 });
+        if (!/^https?:\/\//i.test(url)) throw new Error("Asset URL ảnh không hợp lệ.");
+        return lay(await tns("POST", "thu-cong/anh-url", { ma: maHang2(t), url, goc: so(t, "goc", { macDinh: 1, tran: 4 }) || 1 }));
+      },
+      "anh-ton.doc": async (t) => lay(await tns("POST", "anh-ton/doc", { nguon: maNguon(t), anh: anhDataUrl(t, "anh", true), chuThich: chu(t, "chuThich", { tran: 300 }) })),
+      "anh-ton.ap-dung": async (t) => {
+        const sizes = (Array.isArray(t.sizes) ? t.sizes.map((x) => String(x ?? "")) : chu(t, "sizes", { tran: 200 }).replace(/(\d),(5)(?!\d)/g, "$1.$2").split(/[\s,;|/]+/)).map((x) => x.trim().replace(",", ".")).filter(Boolean);
+        if (sizes.length === 0) throw new Error("Thiếu size cần cập nhật.");
+        if (sizes.length > 40) throw new Error("Tối đa 40 size một lần.");
+        const anh2 = anhDataUrl(t, "anh", false);
+        return lay(await tns("POST", "anh-ton/ap-dung", {
+          nguon: maNguon(t),
+          ma: maHang2(t),
+          sizes,
+          gia: so(t, "gia", { tran: 1e9 }),
+          cheDo: mot(t, "cheDo", ["merge", "replace"], "merge"),
+          ...anh2 === "" ? {} : { anh: anh2 }
+        }));
+      },
+      // ----- tra kho nhieu nguon -----
+      "tra-ton": async (t) => {
+        const tuKhoa = chu(t, "q", { batBuoc: true, tran: 120 });
+        if (tuKhoa.length < 2) throw new Error("Nhập tên hoặc mã sản phẩm (ít nhất 2 ký tự).");
+        const nguon = Array.isArray(t.nguon) ? t.nguon.map((x) => String(x ?? "").trim().toLowerCase()).filter(Boolean) : [];
+        if (nguon.length === 0) throw new Error("Chọn ít nhất một nguồn kho.");
+        if (nguon.some((n) => !/^[a-z][a-z0-9-]{1,29}$/.test(n))) throw new Error("Có nguồn kho không hợp lệ.");
+        return lay(await tns("POST", "tra-ton", {
+          q: tuKhoa,
+          size: chu(t, "size", { tran: 20 }),
+          giaTu: so(t, "giaTu", { tran: 1e9 }),
+          giaDen: so(t, "giaDen", { tran: 1e9 }),
+          nguon,
+          chiConHang: t.chiConHang !== false
+        }));
+      },
+      "tra-ton.sua": async (t) => {
+        const nguon = maNguon(t);
+        if (nguon === "sapo") throw new Error("Tồn Sapo sửa trong Sapo — OMI chỉ đọc.");
+        const maKho2 = chu(t, "maKho", { tran: 60 });
+        return lay(await tns("POST", "sua-ton", { nguon, ma: maHang2(t), size: sizeBatBuoc(t), soLuong: so(t, "soLuong", { tran: 1e5 }), ...maKho2 === "" ? {} : { maKho: maKho2 } }));
+      },
+      // ----- hang doi mua ho tu dong + khoa tien ich trinh duyet -----
+      "mua-ho-tu-dong": async () => lay(await tns("GET", "mua-ho")),
+      "mua-ho-tu-dong.quet": async () => lay(await tns("POST", "mua-ho/quet", {})),
+      "mua-ho-tu-dong.xep-lai": async (t) => {
+        const ids = Array.isArray(t.ids) ? [...new Set(t.ids.map((x) => String(x ?? "").trim()).filter(Boolean))] : [];
+        if (ids.length === 0) throw new Error("Chưa chọn việc nào để xếp lại.");
+        if (ids.length > 100 || ids.some((i) => i.length > 80)) throw new Error("Danh sách việc không hợp lệ.");
+        return lay(await tns("POST", "mua-ho/xep-lai", { ids }));
+      },
+      "tien-ich.khoa": async () => lay(await tns("GET", "tien-ich/khoa")),
+      "tien-ich.tao-khoa": async () => lay(await tns("POST", "tien-ich/khoa", {})),
+      // ----- sao luu Google Drive (dia chi + token la cau hinh shop: cau-hinh.ghi) -----
+      "sao-luu": async () => lay(await tns("GET", "sao-luu")),
+      "sao-luu.chay": async (t) => lay(await tns("POST", "sao-luu/chay", { lyDo: mot(t, "lyDo", LY_DO_SAO_LUU, "manual"), ghiChu: chu(t, "ghiChu", { tran: 500 }) })),
+      // ----- lenh ton (giong chat Zalo) -----
+      "lenh-ton": async (t) => lay(await tns("POST", "lenh-ton", { chu: chu(t, "chu", { batBuoc: true, tran: 500 }) })),
+      // ----- tai khoan van chuyen theo site -----
+      "van-don.tai-khoan-site": async () => lay(await cong2.taiKhoanSite()),
+      "van-don.tai-khoan-site.ghi": async (t) => {
+        const site = siteSlug(t, "site");
+        if (site === "") throw new Error("Thiếu slug site.");
+        if (t.remove === true) return lay(await cong2.ghiTaiKhoanSite({ site, remove: true }));
+        const than = { site };
+        const label = chu(t, "label", { tran: 80 });
+        if (label !== "") than.label = label;
+        for (const k of ["spxUserId", "spxSecretKey", "spxSenderName", "spxSenderPhone", "vtpUsername", "vtpPassword", "vtpSenderName", "vtpSenderPhone"]) {
+          const v = chu(t, k, { tran: 300 });
+          if (v !== "") than[k] = v;
+        }
+        return lay(await cong2.ghiTaiKhoanSite(than));
+      }
+    };
+  }
+
   // ../omi/packages/omi/src/landing/ban-dieu-hanh.ts
+  var siteLoc = (t) => t.site === "chinh" ? "chinh" : siteSlug(t, "site");
   var TEN_MANH = {
     "hang-kho": "Hàng hoá & kho",
     "don-khach": "Đơn hàng & khách",
@@ -718,6 +1733,8 @@
       trangThaiTien: String(don.paymentStatus ?? ""),
       trangThaiGiao: String(don.fulfillmentStatus ?? ""),
       maVanDon: String(don.trackingCode ?? ""),
+      // D10: site sinh doi don den tu (rong = site chinh).
+      site: String(don.site ?? ""),
       soMon: mon.length,
       // Tu 16/09/2026: don xoa roi van doc duoc — man hinh ve no o tab "Da xoa", mo hon, co nut
       // Khoi phuc. Man hinh phai biet don nao dang o thung rac de khong ve nut xoa lan nua.
@@ -931,7 +1948,7 @@
   }
   var TRAN_SIZE = 200;
   var TRAN_SUA_NHANH = 1e3;
-  var TRAN_ANH = 2e3;
+  var TRAN_ANH2 = 2e3;
   function monTuThamSo(t) {
     const code = chu(t, "code", { batBuoc: true, tran: 128 });
     if (!/^[A-Za-z0-9][A-Za-z0-9._\-]*$/.test(code)) throw new Error(`Mã hàng "${code}" chỉ được chữ, số, chấm, gạch.`);
@@ -959,8 +1976,8 @@
         ...costPrice > 0 ? { costPrice } : {}
       };
     });
-    const anh = (k) => {
-      const u = chu(t, k, { tran: TRAN_ANH });
+    const anh2 = (k) => {
+      const u = chu(t, k, { tran: TRAN_ANH2 });
       if (u && !laAnhHopLe(u)) throw new Error(`"${k}" phải là một địa chỉ http(s) hoặc ảnh đã tải lên.`);
       return u;
     };
@@ -983,8 +2000,8 @@
       listPrice,
       discountPercent: Math.min(100, so(t, "discountPercent", { tran: 100 })),
       ...status2 ? { status: status2 } : {},
-      thumbnailImage: anh("thumbnailImage"),
-      highImage: anh("highImage"),
+      thumbnailImage: anh2("thumbnailImage"),
+      highImage: anh2("highImage"),
       galleryImages: gallery,
       shortDescription: chu(t, "shortDescription", { tran: 1e3 }),
       description: chu(t, "description", { tran: 2e4 }),
@@ -1082,7 +2099,9 @@
           gioiHan: so(t, "gioiHan", { macDinh: 50, tran: 500 }) || 50,
           ...daXoa === "" ? {} : { daXoa },
           ...nhom === "" ? {} : { nhom },
-          ...chu(t, "tuKhoa", { tran: 120 }) === "" ? {} : { tuKhoa: chu(t, "tuKhoa", { tran: 120 }) }
+          ...chu(t, "tuKhoa", { tran: 120 }) === "" ? {} : { tuKhoa: chu(t, "tuKhoa", { tran: 120 }) },
+          // D10 site sinh doi: "chinh" = site chinh, ma site = site do, rong = moi site.
+          ...siteLoc(t) === "" ? {} : { site: siteLoc(t) }
         });
         if (!k.ok) return lay(k);
         const ds = Array.isArray(k.than) ? k.than : [];
@@ -1164,7 +2183,7 @@
       "don.khoi-phuc": async (t) => lay(await cong2.khoiPhucDon(chu(t, "maDon", { batBuoc: true, tran: 64 }))),
       // So tren tung tab. Cua RIENG voi danh sach: so nay dem HET don dang hoat dong, khong doi theo
       // o tim kiem — nhet chung vao cua danh sach la so nhay theo cai nguoi ta vua go.
-      "don.dem-nhom": async () => lay(await cong2.demDonTheoNhom()),
+      "don.dem-nhom": async (t) => lay(await cong2.demDonTheoNhom(siteLoc(t))),
       // DOI MAU mot dong: doi tac bao het hang, nguoi ban doi cho khach sang doi khac. GIA khong gui
       // len — kho quyet gia, man hinh khong duoc dat gia cho mot mon hang.
       "don.dong.doi-mau": async (t) => lay(await cong2.doiMauDong(
@@ -1488,7 +2507,9 @@
           loc,
           q: chu(t, "q", { tran: 120 }),
           trang: chu(t, "trang", { tran: 1e3 }),
-          gioiHan: so(t, "gioiHan", { macDinh: 100, tran: 300 }) || 100
+          gioiHan: so(t, "gioiHan", { macDinh: 100, tran: 300 }) || 100,
+          // Dot D6 "tai them": con tro `conTruoc` cua trang truoc.
+          truoc: chu(t, "truoc", { tran: 300 })
         }));
       },
       "hop-thu.hoi-thoai.mo": async (t) => lay(await cong2.moHoiThoai(chu(t, "ma", { batBuoc: true, tran: 200 }))),
@@ -1498,7 +2519,7 @@
         const traLoiTin = chu(t, "traLoiTin", { tran: 160 });
         if (kenh === "facebook-binh-luan" && traLoiTin === "") throw new Error("Trả lời bình luận phải kèm mã bình luận.");
         const anhUrl = chu(t, "anhUrl", { tran: 2e3 });
-        if (anhUrl !== "" && !/^(https?:\/\/|\/api\/fanpage-media\/)/i.test(anhUrl)) throw new Error("Ảnh gửi khách phải là ảnh đã tải lên landing.");
+        if (anhUrl !== "" && !/^(https?:\/\/|\/api\/fanpage-media\/|\/api\/hang-kho\/anh\/)/i.test(anhUrl)) throw new Error("Ảnh gửi khách phải là ảnh đã tải lên landing.");
         return lay(await cong2.guiTin({
           nguoi: chu(t, "nguoi", { batBuoc: true, tran: 128 }),
           chu: chu(t, "chu", { batBuoc: anhUrl === "", tran: 4e3 }),
@@ -1527,10 +2548,27 @@
       "hop-thu.can-nguoi": async () => lay(await cong2.canNguoi()),
       "hop-thu.can-nguoi.xong": async (t) => lay(await cong2.canNguoiXong(chu(t, "maHoiThoai", { batBuoc: true, tran: 160 }))),
       "hop-thu.cau-hinh.doc": async () => lay(await cong2.cauHinhHopThu()),
+      // Dot D6: chi truong CO MAT moi gui — luu mau xac nhan khong xoa nguong tin cu.
       "hop-thu.cau-hinh.ghi": async (t) => {
-        const n = so(t, "nguongTinCuGio", { tran: 720 });
-        if (n < 1) throw new Error("Ngưỡng tin cũ phải từ 1 giờ.");
-        return lay(await cong2.ghiCauHinhHopThu({ nguongTinCuGio: n }));
+        const than = {};
+        if (t.nguongTinCuGio !== void 0) {
+          const n = so(t, "nguongTinCuGio", { tran: 720 });
+          if (n < 1) throw new Error("Ngưỡng tin cũ phải từ 1 giờ.");
+          than.nguongTinCuGio = n;
+        }
+        if (t.phutQuaHan !== void 0) {
+          const p = so(t, "phutQuaHan", { tran: 1440 });
+          if (p < 1) throw new Error("Thời gian chờ người thật phải từ 1 phút.");
+          than.phutQuaHan = p;
+        }
+        if (t.baoTelegram !== void 0) than.baoTelegram = t.baoTelegram === true;
+        if (t.mauXacNhan !== void 0) than.mauXacNhan = chu(t, "mauXacNhan", { tran: 2e3 });
+        if (t.nguoiCuaShop !== void 0) {
+          const ds = Array.isArray(t.nguoiCuaShop) ? t.nguoiCuaShop.map((x) => String(x ?? "")) : String(t.nguoiCuaShop ?? "").split(",");
+          than.nguoiCuaShop = ds.map((x) => x.trim()).filter(Boolean).slice(0, 50).map((x) => x.slice(0, 120));
+        }
+        if (Object.keys(than).length === 0) throw new Error("Không có gì để lưu.");
+        return lay(await cong2.ghiCauHinhHopThu(than));
       },
       "bao-cao.tong-quan": async (t) => lay(await cong2.baoCao(so(t, "soNgay", { macDinh: 14, tran: 365 }) || 14)),
       "ctv.danh-sach": async () => lay(await cong2.danhSachCtv()),
@@ -1563,7 +2601,12 @@
       ...viecKhachHoSo(cong2),
       ...viecVanDon(cong2),
       ...viecTaiChinhDoiTac(cong2),
-      ...viecHangHoa(cong2)
+      ...viecHangHoa(cong2),
+      ...viecFanpageZalo(cong2),
+      ...viecTroLyAi(cong2),
+      ...viecNoiDungDangBai(cong2),
+      ...viecKienThucKenh(cong2),
+      ...viecTinhNangShop(cong2)
     };
     return {
       viecDangMo: Object.keys(VIEC),
@@ -1811,7 +2854,8 @@
           viSao: String(r.viSao ?? ""),
           kenh: Array.isArray(r.kenh) ? r.kenh : [],
           ...typeof r.daDay === "number" ? { daDay: r.daDay } : {},
-          ...typeof r.loi === "string" && r.loi !== "" ? { loi: r.loi } : {}
+          ...typeof r.loi === "string" && r.loi !== "" ? { loi: r.loi } : {},
+          ...typeof r.anh === "string" && r.anh.startsWith("data:image/") ? { anh: r.anh, chupLuc: String(r.chupLuc ?? "") } : {}
         };
       } catch (e) {
         return { ok: false, viSao: humanError(e), kenh: [] };
@@ -1840,6 +2884,42 @@
         return { ...empty, ...r, ok: r.ok === true, viSao: String(r.viSao ?? "") };
       } catch (e) {
         return { ...empty, ok: false, viSao: humanError(e) };
+      }
+    }
+    /** Opens the system browser on a facebook.com https address (Meta login, the original post). The shell checks it. */
+    async openFacebook(url) {
+      try {
+        const r = asObject(await this.bridge.goi("tep", { viec: "mo-duong-dan", duongDan: url }));
+        return r === null ? { ok: false, viSao: "Vỏ trả về thứ không đọc được." } : { ok: r.ok === true, viSao: String(r.viSao ?? "") };
+      } catch (e) {
+        return { ok: false, viSao: humanError(e) };
+      }
+    }
+    /** Đ9: opens Video Studio in its own window. `url` is the ticket address the landing got from Xeon; the shell checks it. */
+    async openVideoStudio(url) {
+      try {
+        const r = asObject(await this.bridge.goi("tep", { viec: "mo-video-studio", duongDan: url }));
+        return r === null ? { ok: false, viSao: "Vỏ trả về thứ không đọc được." } : { ok: r.ok === true, viSao: String(r.viSao ?? "") };
+      } catch (e) {
+        return { ok: false, viSao: humanError(e) };
+      }
+    }
+    /** Đ10: opens one page of the shop's landing (/scan, /m, /warehouse) in the system browser. The shell adds the address. */
+    async openLandingPage(path) {
+      try {
+        const r = asObject(await this.bridge.goi("tep", { viec: "mo-trang-landing", duong: path }));
+        return r === null ? { ok: false, viSao: "Vỏ trả về thứ không đọc được." } : { ok: r.ok === true, viSao: String(r.viSao ?? "") };
+      } catch (e) {
+        return { ok: false, viSao: humanError(e) };
+      }
+    }
+    /** Đ10: copies an image the landing rendered (`/api/dang-bai/anh/…`) to the clipboard; the shell downloads it. */
+    async copyLandingImage(path) {
+      try {
+        const r = asObject(await this.bridge.goi("tep", { viec: "chep-anh", duong: path }));
+        return r === null ? { ok: false, viSao: "Vỏ trả về thứ không đọc được." } : { ok: r.ok === true, viSao: String(r.viSao ?? "") };
+      } catch (e) {
+        return { ok: false, viSao: humanError(e) };
       }
     }
     /** Opens the system browser on an image search; the shell builds the URL, not the page. */
@@ -1939,20 +3019,20 @@
   }
   function confirmTwice(button, askText, action) {
     const original = button.textContent ?? "";
-    let armed = false;
+    let armed3 = false;
     let timer = null;
     button.addEventListener("click", () => {
-      if (!armed) {
-        armed = true;
+      if (!armed3) {
+        armed3 = true;
         button.textContent = askText;
         timer = setTimeout(() => {
-          armed = false;
+          armed3 = false;
           button.textContent = original;
         }, 6e3);
         return;
       }
       if (timer !== null) clearTimeout(timer);
-      armed = false;
+      armed3 = false;
       button.textContent = original;
       action();
     });
@@ -1970,6 +3050,13 @@
     const thead = h("thead", null, h("tr", null, ...headers.map((t) => h("th", null, t))));
     const tbl = h("table", null, thead, h("tbody", { id: bodyId }));
     return h("div", { class: opts.scroll === false ? "table-wrap" : "table-wrap scroll" }, tbl);
+  }
+  var SVG_NS = `${[..."ptth"].reverse().join("")}://www.w3.org/2000/svg`;
+  function svg(tag, attrs = {}, ...children) {
+    const node = document.createElementNS(SVG_NS, tag);
+    for (const [key, value] of Object.entries(attrs)) node.setAttribute(key, String(value));
+    for (const child of children) node.appendChild(typeof child === "string" ? document.createTextNode(child) : child);
+    return node;
   }
 
   // ../omi/packages/omi-ui/src/screens/broken-screen.ts
@@ -2590,8 +3677,8 @@
       const match = (...texts) => query === "" || texts.some((t) => foldVietnamese(t).includes(query));
       const quick = el("help-nhanh");
       clear(quick);
-      const links = QUICK_LINKS.filter((q) => match(q.title, q.text, ...q.keywords));
-      for (const q of links) quick.appendChild(h("article", { class: "help-card" }, h("h4", null, q.title), h("p", null, q.text)));
+      const links = QUICK_LINKS.filter((q2) => match(q2.title, q2.text, ...q2.keywords));
+      for (const q2 of links) quick.appendChild(h("article", { class: "help-card" }, h("h4", null, q2.title), h("p", null, q2.text)));
       const faqs = FAQS.filter((f) => match(f.question, ...f.answer));
       if (links.length === 0 && faqs.length === 0) {
         quick.appendChild(h(
@@ -2676,8 +3763,15 @@
     glyph = "OV";
     period = "week";
     range = "all";
+    /** Đ10: "" = mọi site, "chinh" = site chính, hoặc mã site sinh đôi. */
+    site = "";
     actions = {
       "refresh-landing-analytics": () => this.loadAnalytics(),
+      "set-landing-analytics-site": (b) => {
+        this.site = str(b.dataset["site"]);
+        this.markActive("site", this.site);
+        return Promise.all([this.loadOperations(), this.loadAnalytics()]).then(() => void 0);
+      },
       "set-landing-analytics-period": (b) => {
         this.period = b.dataset["period"] ?? "week";
         this.markActive("period", this.period);
@@ -2715,6 +3809,11 @@
             h(
               "div",
               { class: "landing-analytics-actions" },
+              h(
+                "div",
+                { class: "segmented-control compact landing-analytics-site-tabs", "data-segment": "site", id: "tq-site", "aria-label": "Chọn website thống kê" },
+                h("button", { type: "button", class: "active", "data-action": "set-landing-analytics-site", "data-site": "" }, "Tất cả")
+              ),
               segment("period", [["week", "Tuần"], ["month", "Tháng"], ["year", "Năm"]], this.period, "set-landing-analytics-period"),
               h("button", { class: "secondary-button compact-button", type: "button", "data-action": "refresh-landing-analytics" }, "Làm mới")
             )
@@ -2848,8 +3947,20 @@
     }
     load() {
       this.drawReviews();
+      void this.loadSites();
       void this.loadOperations();
       void this.loadAnalytics();
+    }
+    /** Site tabs: the main site + the twin site the shop configured. No twin site = only "Tất cả". */
+    async loadSites() {
+      const r = await this.ctx.gateway.landing("cau-hinh.doc");
+      const fields = (r.than?.nhom ?? []).flatMap((g) => g.muc ?? []);
+      const value = (key) => str(fields.find((f) => f.khoa === key)?.giaTri);
+      const twin = value("site_doi_ma");
+      const box = el("tq-site");
+      clear(box);
+      const tab = (site, label) => h("button", { type: "button", class: site === this.site ? "active" : "", "data-action": "set-landing-analytics-site", "data-site": site }, label);
+      box.append(tab("", "Tất cả"), ...twin ? [tab("chinh", "Site chính"), tab(twin, value("site_doi_ten") || twin)] : []);
     }
     markActive(kind, value) {
       for (const b of this.root.querySelectorAll(`[data-segment="${kind}"] button`)) b.classList.toggle("active", b.dataset[kind] === value);
@@ -2859,8 +3970,8 @@
     }
     async loadOperations() {
       const [orders, counts, purchase, partners] = await Promise.all([
-        this.ctx.gateway.landing("don.danh-sach", { gioiHan: 500 }),
-        this.ctx.gateway.landing("don.dem-nhom"),
+        this.ctx.gateway.landing("don.danh-sach", { gioiHan: 500, ...this.site ? { site: this.site } : {} }),
+        this.ctx.gateway.landing("don.dem-nhom", this.site ? { site: this.site } : {}),
         this.ctx.gateway.landing("mua-ho.bang", { gioiHan: 500 }),
         this.ctx.gateway.landing("doi-tac.danh-sach")
       ]);
@@ -3055,7 +4166,7 @@
       };
       form.addEventListener("submit", (event) => {
         event.preventDefault();
-        close(Object.fromEntries(inputs.map((input) => [input.name, input.value])));
+        close(Object.fromEntries(inputs.map((input2) => [input2.name, input2.value])));
       });
       cancel.addEventListener("click", () => close(null));
       document.addEventListener("keydown", onKey, true);
@@ -3379,18 +4490,18 @@
     }
     // ----- form -----
     togglePassword() {
-      const input = el("affiliatePassword");
-      input.type = input.type === "password" ? "text" : "password";
+      const input2 = el("affiliatePassword");
+      input2.type = input2.type === "password" ? "text" : "password";
       const button = this.root.querySelector('[data-action="toggle-affiliate-password"]');
-      if (button) button.textContent = input.type === "password" ? "Hiện" : "Ẩn";
+      if (button) button.textContent = input2.type === "password" ? "Hiện" : "Ẩn";
     }
     generatePassword() {
-      const input = el("affiliatePassword");
-      input.value = initialPassword();
-      input.type = "text";
+      const input2 = el("affiliatePassword");
+      input2.value = initialPassword();
+      input2.type = "text";
       const button = this.root.querySelector('[data-action="toggle-affiliate-password"]');
       if (button) button.textContent = "Ẩn";
-      input.focus();
+      input2.focus();
     }
     async copyLogin() {
       const line = el("ctv-trang-thai");
@@ -3752,6 +4863,8 @@
   // ../omi/packages/omi-ui/src/views/channels.ts
   var CHANNEL_LABEL = { zalo: "Zalo nhóm", "fb-ca-nhan": "Facebook cá nhân" };
   var LOGIN_LABEL = { logged_in: "đã đăng nhập", logged_out: "CHƯA đăng nhập", checkpoint: "Facebook đòi xác minh", unknown: "chưa rõ" };
+  var BOT_LABEL = { off: "bot tắt", suggest: "gợi ý", auto: "tự gửi" };
+  var TASKS = { reload: "tai-lai", scan: "quet", show: "hien" };
   var ChannelsView = class extends View {
     id = "kenh";
     label = "Zalo / FB cá nhân";
@@ -3759,6 +4872,36 @@
     workspace = "common";
     glyph = "☰";
     onDuty = false;
+    groups = [];
+    active = null;
+    staffOnServer = [];
+    /** Đ7: the AI draft for the open group (from the landing, written by Xeon). */
+    suggestion = null;
+    suggesting = false;
+    actions = {
+      "zalo-show-qr": () => this.screenshot(),
+      "zalo-task": (b) => this.task(str(b.dataset["zaloTask"])),
+      "zalo-save-staff": (b) => this.saveStaff(b),
+      "zalo-confirm-customer": (b) => this.updateGroup(str(b.dataset["zaloKey"]), { daXacNhan: true, noiBo: false, bot: "auto" }, "Đã bật bot cho nhóm khách này."),
+      "zalo-mark-internal": (b) => this.updateGroup(str(b.dataset["zaloKey"]), { daXacNhan: true, noiBo: true, bot: "off" }, "Đã tắt bot cho nhóm nội bộ."),
+      "zalo-open-group": (b) => this.openGroup(str(b.dataset["zaloKey"])),
+      "zalo-set-bot": (b) => this.updateGroup(str(b.dataset["zaloKey"]), { bot: str(b.dataset["zaloBot"]) === "off" ? "off" : "auto" }, str(b.dataset["zaloBot"]) === "off" ? "Đã tắt bot cho nhóm này." : "Bot đã bật — sẽ tự trả lời khi khách nhắn."),
+      "zalo-toggle-group-form": () => {
+        el("zalo-form").hidden = !el("zalo-form").hidden;
+        el("zalo-form-nut").textContent = el("zalo-form").hidden ? "Thiết lập nhóm" : "Ẩn thiết lập";
+      },
+      "zalo-save-group": () => this.saveGroup(),
+      "zalo-refresh-messages": () => this.active ? this.openGroup(this.active.ma) : this.loadGroups(),
+      "zalo-send": () => this.sendToGroup(),
+      // Đ7 — AI soạn lại / dùng gợi ý (Desk `zalo-suggest`, `zalo-use-suggestion`).
+      "zalo-suggest": () => this.suggest(),
+      "zalo-use-suggestion": () => {
+        if (this.suggestion?.traLoi) el("zaloReply").value = this.suggestion.traLoi;
+      },
+      "zalo-open-in-fanpage": () => {
+        if (this.active) this.ctx.shell.open("fanpage", { maHoiThoai: this.active.ma });
+      }
+    };
     build(root) {
       root.append(
         h("div", { class: "runtime-alert", id: "kenh-loi-truc", hidden: true }, "Máy này không phải máy trực. Chỉ máy trực mới chạy Zalo / Facebook cá nhân — đổi máy trực ở trang quản lý máy trên Xeon (tab Cấu hình)."),
@@ -3782,11 +4925,145 @@
             )
           ),
           table(["Kênh", "Đăng nhập", "Đang chạy", "Quét lúc", "Gửi lúc", "Gửi / giờ", "Tin đã đẩy", "Lỗi cuối", ""], "kenh-bang")
+        ),
+        // Desk `zaloConnectPanelTemplate`: điều khiển cửa sổ Zalo + người của shop.
+        h(
+          "section",
+          { class: "panel" },
+          h(
+            "div",
+            { class: "panel-header" },
+            h("div", null, h("h3", null, "Kết nối nick phụ"), h("p", null, "Ảnh khung Zalo chụp ngay trên máy trực — mã QR hiện ở đây thì lấy điện thoại giữ SIM phụ quét trực tiếp."))
+          ),
+          h(
+            "div",
+            { class: "panel-body" },
+            h(
+              "div",
+              { class: "split-actions" },
+              h("button", { class: "primary-button", type: "button", "data-action": "zalo-show-qr" }, "Hiện mã QR để quét"),
+              h("button", { class: "secondary-button", type: "button", "data-action": "zalo-task", "data-zalo-task": "reload" }, "Tải lại trang Zalo"),
+              h("button", { class: "secondary-button", type: "button", "data-action": "zalo-task", "data-zalo-task": "scan" }, "Quét nhóm ngay"),
+              h("button", { class: "secondary-button", type: "button", "data-action": "zalo-task", "data-zalo-task": "show" }, "Hiện cửa sổ ở máy này")
+            ),
+            h(
+              "div",
+              { id: "zalo-anh-khung", hidden: true },
+              h("div", { class: "subtle", id: "zalo-anh-luc" }),
+              h("img", { id: "zalo-anh", class: "omi-zalo-shot", alt: "Màn hình Zalo ở máy trực" })
+            ),
+            h(
+              "div",
+              { class: "zalo-kv" },
+              h("span", null, "Người của shop trong nhóm"),
+              h("input", { type: "text", id: "zaloStaffNames", placeholder: "Tên Zalo chính, tên nhân viên trực — cách nhau dấu phẩy" })
+            ),
+            h("div", { class: "subtle" }, "Thiếu danh sách này thì bot coi mọi người trong nhóm là khách và sẽ đi trả lời chính lời của shop."),
+            h(
+              "div",
+              { class: "split-actions" },
+              h("button", { class: "secondary-button", type: "button", "data-action": "zalo-save-staff" }, "Lưu người của shop"),
+              h("span", { class: "status-line", id: "zalo-trang-thai" })
+            )
+          )
+        ),
+        // Desk `zaloUnconfirmedPanelTemplate`.
+        h(
+          "section",
+          { class: "panel", id: "zalo-chua-xac-nhan", hidden: true },
+          h("div", { class: "panel-header" }, h(
+            "div",
+            null,
+            h("h3", { id: "zalo-chua-xac-nhan-tieu-de" }, "Nhóm chưa xác nhận"),
+            h("p", null, "Nhóm mới phát sinh thì bot trả lời luôn. Xác nhận một lần để khỏi hỏi lại — hoặc tắt nếu đó là nhóm nội bộ.")
+          )),
+          h("div", { class: "panel-body", id: "zalo-chua-xac-nhan-ds" })
+        ),
+        h(
+          "div",
+          { class: "zalo-grid" },
+          h(
+            "div",
+            null,
+            h(
+              "section",
+              { class: "panel" },
+              h("div", { class: "panel-header" }, h("div", null, h("h3", { id: "zalo-nhom-tieu-de" }, "Nhóm"))),
+              h("div", { class: "panel-body" }, h("div", { class: "zalo-conv-list", id: "zalo-nhom-ds" }))
+            )
+          ),
+          h(
+            "div",
+            null,
+            h(
+              "section",
+              { class: "panel", id: "zalo-hoi-thoai" },
+              h(
+                "div",
+                { class: "facebook-chat-header" },
+                h("div", { class: "facebook-chat-identity" }, h("div", null, h("h3", { id: "zalo-ten-nhom" }, "Hội thoại"), h("p", { id: "zalo-mo-ta-nhom" }, "Chọn một nhóm ở cột bên trái để xem hội thoại và trả lời."))),
+                h(
+                  "div",
+                  { class: "facebook-chat-actions", id: "zalo-nut-bot" },
+                  h("button", { class: "facebook-icon-button", type: "button", "data-action": "zalo-refresh-messages", title: "Tải lại hội thoại" }, "↻")
+                )
+              ),
+              h(
+                "div",
+                { class: "zalo-chat-shell" },
+                h(
+                  "div",
+                  { class: "facebook-chat-detail" },
+                  h("div", { class: "chat-window facebook-chat-window", id: "zaloMsgs" }),
+                  h(
+                    "div",
+                    { class: "composer" },
+                    h(
+                      "div",
+                      { class: "inline-panel omi-tight", id: "zalo-goi-y", hidden: true },
+                      h("strong", { id: "zalo-goi-y-tieu-de" }, "AI gợi ý"),
+                      h("div", { id: "zalo-goi-y-chu" }),
+                      h("div", { class: "subtle", id: "zalo-goi-y-ly-do" }),
+                      h("div", { class: "split-actions omi-actions-top" }, h("button", { class: "secondary-button compact-button", type: "button", "data-action": "zalo-use-suggestion" }, "Dùng gợi ý"))
+                    ),
+                    h("div", { class: "field" }, h("label", { for: "zaloReply" }, "Trả lời vào nhóm"), h("textarea", { id: "zaloReply", rows: "3", placeholder: "Soạn tin gửi vào nhóm…" })),
+                    h(
+                      "div",
+                      { class: "split-actions" },
+                      h("button", { class: "secondary-button compact-button", type: "button", id: "zalo-ai-soan", "data-action": "zalo-suggest" }, "AI soạn lại"),
+                      h("button", { class: "primary-button compact-button", type: "button", "data-action": "zalo-send" }, "Gửi vào nhóm"),
+                      h("button", { class: "secondary-button compact-button", type: "button", "data-action": "zalo-open-in-fanpage" }, "Mở ở màn Fanpage"),
+                      h("span", { class: "omi-spacer" }),
+                      h("button", { class: "secondary-button compact-button", type: "button", id: "zalo-form-nut", "data-action": "zalo-toggle-group-form" }, "Thiết lập nhóm")
+                    ),
+                    h(
+                      "div",
+                      { id: "zalo-form", hidden: true },
+                      h(
+                        "div",
+                        { class: "zalo-kv" },
+                        h("span", null, "Tên khách"),
+                        h("input", { type: "text", id: "zaloCustomerName", placeholder: "để tra cứu, không bắt buộc" }),
+                        h("span", null, "Mã đơn"),
+                        h("input", { type: "text", id: "zaloOrderId", placeholder: "DH-…" }),
+                        h("span", null, "Bot"),
+                        h("select", { id: "zaloBotState" }, ...["off", "suggest", "auto"].map((v) => h("option", { value: v }, BOT_LABEL[v] ?? v)))
+                      ),
+                      h("div", { class: "split-actions" }, h("button", { class: "secondary-button compact-button", type: "button", "data-action": "zalo-save-group" }, "Lưu nhóm"))
+                    ),
+                    h("p", { class: "status-line", id: "zalo-nhom-trang-thai" })
+                  )
+                )
+              )
+            )
+          )
         )
       );
     }
     load() {
       void this.loadChannels();
+      void this.loadStaff();
+      void this.loadGroups();
     }
     licenseChanged(license2) {
       this.onDuty = license2?.truc === true;
@@ -3836,345 +5113,1200 @@
       this.renderRows(r.kenh);
       status(line, action === "quet" ? `Đã quét: đẩy ${r.daDay ?? 0} tin.${r.loi ? ` ${r.loi}` : ""}` : "Xong.", r.loi ? "bad" : "good");
     }
-  };
-
-  // ../omi/packages/omi-ui/src/views/content.ts
-  var STATUS_LABEL = { nhap: "nháp", dat: "đạt", hong: "còn lỗi", "da-len-lich": "đã lên lịch" };
-  var ContentView = class extends View {
-    // NOT "noi-dung": that id belongs to the "Nội dung web" screen (chữ trên trang bán hàng).
-    // Registering it twice kills the whole page — `AppShell.register` throws, and rightly.
-    id = "xuong-noi-dung";
-    label = "Content";
-    title = "Xưởng nội dung — 5 bước";
-    workspace = "common";
-    glyph = "ND";
-    frame = {};
-    batch = null;
-    openPostId = "";
-    build(root) {
-      root.append(
-        h(
-          "div",
-          { class: "toolbar" },
-          h("input", { id: "nd-ngay", type: "text", class: "short", placeholder: "Ngày (2026-09-20)" }),
-          h("input", { id: "nd-trang", type: "text", placeholder: "Fanpage, cách nhau dấu phẩy" }),
-          h("button", { class: "primary-button", id: "nut-noi-dung-tao", type: "button", onclick: () => void this.createBatch() }, "Lập kế hoạch ngày"),
-          h("button", { class: "secondary-button", id: "nut-noi-dung-tai", type: "button", onclick: () => void this.loadBatches() }, "Tải lô"),
-          h("span", { class: "status-line", id: "noi-dung-trang-thai" }, "Bấm để tải.")
-        ),
-        h(
-          "section",
-          { class: "panel" },
-          h("div", { class: "panel-header" }, h(
-            "div",
-            null,
-            h("h3", null, "Các lô đã lập"),
-            h("p", null, "Mỗi lô là một ngày đăng bài. Bấm một dòng để mở.")
-          )),
-          table(["Ngày", "Bước", "Số bài", "Đạt", "Còn lỗi", "Bỏ qua", "Sửa lúc"], "nd-bang-lo")
-        ),
-        h(
-          "section",
-          { class: "panel", id: "nd-lo", hidden: true },
-          h(
-            "div",
-            { class: "panel-header" },
-            h("div", null, h("h3", { id: "nd-lo-ten" }, "—"), h("p", { id: "nd-lo-buoc" }, "—")),
-            h(
-              "div",
-              { class: "toolbar compact" },
-              h("button", { class: "secondary-button compact-button", id: "nut-noi-dung-lui", type: "button", onclick: () => void this.step("lui") }, "← Bước trước"),
-              h("button", { class: "secondary-button compact-button", id: "nut-noi-dung-cham", type: "button", onclick: () => void this.judge() }, "Chấm lại"),
-              h("button", { class: "primary-button compact-button", id: "nut-noi-dung-toi", type: "button", onclick: () => void this.step("toi") }, "Bước sau →"),
-              h("button", { class: "primary-button compact-button", id: "nut-noi-dung-len-lich", type: "button", onclick: () => void this.schedule() }, "Lên lịch")
-            )
-          ),
-          h("div", { class: "facebook-tabs", id: "nd-buoc" }),
-          table(["Giờ", "Trang", "Dạng bài", "Mã", "Trạng thái", "Lỗi"], "nd-bang-bai")
-        ),
-        h(
-          "section",
-          { class: "panel", id: "nd-bai", hidden: true },
-          h(
-            "div",
-            { class: "panel-header" },
-            h("div", null, h("h3", { id: "nd-bai-ten" }, "—"), h("p", { id: "nd-bai-huong-dan" }, "—")),
-            h(
-              "div",
-              { class: "toolbar compact" },
-              h("button", { class: "secondary-button compact-button", id: "nut-noi-dung-xin-viet", type: "button", onclick: () => void this.askBrain() }, "Nhờ bộ não viết"),
-              h("button", { class: "secondary-button compact-button", id: "nut-noi-dung-bo-qua", type: "button", onclick: () => void this.skipPost() }, "Bỏ qua bài này"),
-              h("button", { class: "primary-button compact-button", id: "nut-noi-dung-luu-bai", type: "button", onclick: () => void this.savePost() }, "Lưu bài")
-            )
-          ),
-          h(
-            "div",
-            { class: "panel-body" },
-            h(
-              "div",
-              { class: "form-grid" },
-              h("label", { for: "nd-bai-ma" }, "Mã hàng (cách nhau dấu phẩy)"),
-              h("input", { id: "nd-bai-ma", type: "text" }),
-              h("label", { for: "nd-bai-chu-anh" }, "Chữ in trên ảnh chính"),
-              h("input", { id: "nd-bai-chu-anh", type: "text", placeholder: "lấy từ hook, đừng nói hết hook" }),
-              h("label", { for: "nd-bai-caption" }, "Caption"),
-              h("textarea", { id: "nd-bai-caption", rows: "12" }),
-              h("label", { for: "nd-bai-comment" }, "Bình luận đầu (chỗ để link)"),
-              h("textarea", { id: "nd-bai-comment", rows: "3" })
-            ),
-            h("div", { id: "nd-bai-cham" }),
-            h("p", { class: "status-line", id: "nd-bai-trang-thai" }, "—")
-          )
-        )
-      );
-    }
-    load() {
-      void this.loadFrame();
-      void this.loadBatches();
-    }
-    /** Steps and post shapes come from the landing so the screen cannot drift from the rules. */
-    async loadFrame() {
-      const r = await this.ctx.gateway.landing("noi-dung.khuon");
-      if (!r.ok) return;
-      this.frame = r.than ?? {};
-      this.paintSteps();
-    }
-    paintSteps() {
-      const bar = el("nd-buoc");
-      clear(bar);
-      for (const s of this.frame.buoc ?? []) {
-        bar.appendChild(h("button", { class: this.batch?.buoc === s.ma ? "active" : "", type: "button", disabled: true }, s.ten));
+    // ------------------------------------------------------------------ Đ6: Zalo desk
+    async screenshot() {
+      const line = el("zalo-trang-thai");
+      status(line, "Đang chụp khung Zalo…");
+      const r = await this.ctx.gateway.channel("chup", "zalo");
+      if (!r.ok || !r.anh) {
+        status(line, r.viSao || "Chưa chụp được — bấm Bật kênh Zalo trước.", "bad");
+        return;
       }
+      el("zalo-anh").src = r.anh;
+      el("zalo-anh-luc").textContent = `Ảnh màn hình khung Zalo · chụp lúc ${dayClock(r.chupLuc)}`;
+      el("zalo-anh-khung").hidden = false;
+      this.renderRows(r.kenh);
+      status(line, "Đã chụp. Mã QR hiện ở ảnh thì quét trực tiếp trên màn này.", "good");
     }
-    async loadBatches() {
-      const line = el("noi-dung-trang-thai");
-      status(line, "Đang tải…");
-      const r = await this.ctx.gateway.landing("noi-dung.lo");
+    async task(name) {
+      const job = TASKS[name];
+      const line = el("zalo-trang-thai");
+      if (job === void 0) {
+        status(line, `Lệnh "${name}" không có ở OMI.`, "bad");
+        return;
+      }
+      const r = await this.ctx.gateway.channel(job, "zalo");
       if (!r.ok) {
         status(line, r.viSao, "bad");
         return;
       }
-      const rows = r.than?.lo ?? [];
-      const body = el("nd-bang-lo");
-      clear(body);
-      for (const b of rows) {
-        const tr = tableRow([day(b.ngay), this.stepName(b.buoc), b.soBai, b.soDat, b.soHong, b.soBoQua, day(b.suaLuc)], [2, 3, 4, 5]);
-        tr.addEventListener("click", () => void this.openBatch(b.ma));
-        body.appendChild(tr);
+      this.renderRows(r.kenh);
+      status(line, job === "quet" ? `Đã quét: đẩy ${r.daDay ?? 0} tin.` : "Đã giao lệnh cho cửa sổ Zalo.", "good");
+      if (job === "quet") void this.loadGroups();
+    }
+    async loadStaff() {
+      const r = await this.ctx.gateway.landing("hop-thu.cau-hinh.doc");
+      if (!r.ok) return;
+      this.staffOnServer = r.than?.cauHinh?.nguoiCuaShop ?? [];
+      el("zaloStaffNames").value = this.staffOnServer.join(", ");
+    }
+    async saveStaff(button) {
+      const line = el("zalo-trang-thai");
+      const raw = el("zaloStaffNames").value.trim();
+      if (raw === "" && this.staffOnServer.length > 0 && button.dataset["armed"] !== "1") {
+        button.dataset["armed"] = "1";
+        status(line, `Ô đang trống. Bấm Lưu lần nữa sẽ XOÁ ${this.staffOnServer.length} tên (${this.staffOnServer.join(", ")}) — bot sẽ coi cả người của shop là khách.`, "bad");
+        setTimeout(() => {
+          delete button.dataset["armed"];
+        }, 6e3);
+        return;
       }
-      status(line, rows.length === 0 ? "Chưa có lô nào — lập kế hoạch cho một ngày." : `${rows.length} lô.`, "good");
+      delete button.dataset["armed"];
+      const r = await this.ctx.gateway.landing("hop-thu.cau-hinh.ghi", { nguoiCuaShop: raw });
+      if (!r.ok) {
+        status(line, r.viSao, "bad");
+        return;
+      }
+      this.staffOnServer = r.than?.cauHinh?.nguoiCuaShop ?? [];
+      status(line, "Đã lưu danh sách người của shop.", "good");
+    }
+    async loadGroups() {
+      const r = await this.ctx.gateway.landing("hop-thu.hoi-thoai", { kenh: "zalo", gioiHan: 300 });
+      if (!r.ok) {
+        status(el("zalo-nhom-trang-thai"), r.viSao, "bad");
+        return;
+      }
+      this.groups = r.than?.hoiThoai ?? [];
+      if (this.active) this.active = this.groups.find((g) => g.ma === this.active?.ma) ?? this.active;
+      this.paintGroups();
+    }
+    paintGroups() {
+      const unconfirmed = this.groups.filter((g) => !g.daXacNhan);
+      el("zalo-chua-xac-nhan").hidden = unconfirmed.length === 0;
+      el("zalo-chua-xac-nhan-tieu-de").textContent = `Nhóm chưa xác nhận (${unconfirmed.length})`;
+      const pending = el("zalo-chua-xac-nhan-ds");
+      clear(pending);
+      for (const g of unconfirmed) {
+        pending.appendChild(h(
+          "div",
+          { class: "inline-panel" },
+          h("strong", null, g.tenNguoi || g.nguoi),
+          h("span", { class: "subtle" }, ` · ${g.bot === "off" ? "bot đang TẮT" : "bot ĐANG TRẢ LỜI"}${g.hoatDongLuc ? ` · tin cuối ${dayClock(g.hoatDongLuc)}` : ""}`),
+          h(
+            "div",
+            { class: "split-actions" },
+            h("button", { class: "primary-button compact-button", type: "button", "data-action": "zalo-confirm-customer", "data-zalo-key": g.ma }, "Đúng, nhóm khách"),
+            h("button", { class: "secondary-button compact-button", type: "button", "data-action": "zalo-mark-internal", "data-zalo-key": g.ma }, "Nhóm nội bộ — tắt bot"),
+            h("button", { class: "secondary-button compact-button", type: "button", "data-action": "zalo-open-group", "data-zalo-key": g.ma }, "Xem hội thoại")
+          )
+        ));
+      }
+      el("zalo-nhom-tieu-de").textContent = `Nhóm (${this.groups.length})`;
+      const list = el("zalo-nhom-ds");
+      clear(list);
+      for (const g of this.groups) {
+        const on = (g.bot ?? "auto") !== "off" && !g.noiBo;
+        list.appendChild(h(
+          "div",
+          { class: `zalo-conv-item${g.ma === this.active?.ma ? " active" : ""}`, "data-action": "zalo-open-group", "data-zalo-key": g.ma },
+          h("span", { class: "zalo-conv-name" }, g.tenNguoi || g.nguoi),
+          h(
+            "div",
+            { class: "zalo-conv-meta" },
+            h("span", { class: `zalo-chip ${on ? "on" : "off"}` }, g.noiBo ? "nội bộ" : BOT_LABEL[g.bot ?? "auto"] ?? str(g.bot)),
+            g.daXacNhan ? null : h("span", { class: "zalo-chip warn" }, "chưa xác nhận"),
+            g.soChuaDoc > 0 ? h("span", { class: "zalo-chip warn" }, `${g.soChuaDoc} chưa đọc`) : null,
+            h("span", null, g.hoatDongLuc ? dayClock(g.hoatDongLuc) : "—")
+          ),
+          g.tenKhach ? h("div", { class: "subtle" }, `${g.tenKhach}${g.maDon ? ` · ${g.maDon}` : ""}`) : null
+        ));
+      }
+      if (this.groups.length === 0) list.appendChild(h("p", { class: "subtle" }, "Chưa thấy nhóm nào. Zalo chính mở nhóm rồi thêm nick phụ vào, bật kênh Zalo và quét — nhóm sẽ tự hiện ở đây."));
+    }
+    async openGroup(id) {
+      const line = el("zalo-nhom-trang-thai");
+      const r = await this.ctx.gateway.landing("hop-thu.hoi-thoai.mo", { ma: id });
+      if (!r.ok || !r.than?.hoiThoai) {
+        status(line, r.viSao || "Không mở được nhóm.", "bad");
+        return;
+      }
+      const group = r.than.hoiThoai;
+      const switched = this.active?.ma !== group.ma;
+      this.active = group;
+      el("zalo-ten-nhom").textContent = group.tenNguoi || group.nguoi;
+      el("zalo-mo-ta-nhom").textContent = `${group.noiBo ? "nhóm nội bộ" : BOT_LABEL[group.bot ?? "auto"] ?? ""}${group.tenKhach ? ` · ${group.tenKhach}` : ""}${group.maDon ? ` · ${group.maDon}` : ""} · mã nhóm ${group.nguoi}`;
+      const buttons = el("zalo-nut-bot");
+      clear(buttons);
+      buttons.append(
+        (group.bot ?? "auto") === "off" ? h("button", { class: "primary-button compact-button", type: "button", "data-action": "zalo-set-bot", "data-zalo-key": group.ma, "data-zalo-bot": "auto" }, "Bật bot trả lời") : h("button", { class: "secondary-button compact-button", type: "button", "data-action": "zalo-set-bot", "data-zalo-key": group.ma, "data-zalo-bot": "off" }, "Tắt bot"),
+        h("button", { class: "facebook-icon-button", type: "button", "data-action": "zalo-refresh-messages", title: "Tải lại hội thoại" }, "↻")
+      );
+      if (switched || el("zalo-form").hidden) {
+        el("zaloCustomerName").value = str(group.tenKhach);
+        el("zaloOrderId").value = str(group.maDon);
+        el("zaloBotState").value = group.bot ?? "auto";
+      }
+      const box = el("zaloMsgs");
+      clear(box);
+      for (const m of (group.tin ?? []).slice(-60)) {
+        const mine = m.chieu === "di";
+        const who = mine ? m.boi === "bo-nao" ? "bot" : m.boi || "người của shop" : "khách";
+        box.appendChild(h(
+          "div",
+          { class: `message ${mine ? "ai" : "customer"}` },
+          ...(m.anh ?? []).map((u) => h("img", { src: u, alt: "ảnh khách gửi", loading: "lazy", class: "omi-zalo-image" })),
+          h("div", { class: "facebook-message-text" }, m.chu || (m.soAnh ? `[${m.soAnh} ảnh]` : "[tin không có nội dung]")),
+          h("div", { class: "subtle" }, `${who} · ${dayClock(m.luc)}${m.trangThai === "cho-gui" ? " · chờ máy trực gõ" : ""}`)
+        ));
+      }
+      if ((group.tin ?? []).length === 0) box.appendChild(h("div", { class: "message system" }, "Chưa đọc được tin nào trong nhóm này."));
+      box.scrollTop = box.scrollHeight;
+      this.paintGroups();
+      status(line, "");
+      if (switched) {
+        this.suggestion = null;
+        const draft = await this.ctx.gateway.landing("ai.goi-y.xem", { maHoiThoai: group.ma });
+        if (this.active?.ma === group.ma && draft.ok && draft.than?.goiY) this.suggestion = { traLoi: str(draft.than.goiY.traLoi), canNguoi: draft.than.goiY.canNguoi === true, lyDo: str(draft.than.goiY.lyDo) };
+      }
+      this.paintSuggestion();
+    }
+    /** Desk: "AI gợi ý — CẦN NGƯỜI THẬT" above the reply box. */
+    paintSuggestion() {
+      const s = this.suggestion;
+      el("zalo-goi-y").hidden = s === null || s.traLoi === "" && !s.canNguoi;
+      el("zalo-goi-y-tieu-de").textContent = `AI gợi ý${s?.canNguoi ? " — CẦN NGƯỜI THẬT" : ""}`;
+      el("zalo-goi-y-chu").textContent = s?.traLoi ?? "";
+      el("zalo-goi-y-ly-do").textContent = s?.lyDo ?? "";
+      const button = el("zalo-ai-soan");
+      button.disabled = this.suggesting;
+      button.textContent = this.suggesting ? "AI đang soạn…" : "AI soạn lại";
+    }
+    /** Asks Xeon (through the landing) for a draft. Locked while it runs: a draft can take a minute. */
+    async suggest() {
+      const group = this.active;
+      const line = el("zalo-nhom-trang-thai");
+      if (group === null || this.suggesting) return;
+      this.suggesting = true;
+      this.paintSuggestion();
+      try {
+        const r = await this.ctx.gateway.landing("ai.goi-y", { maHoiThoai: group.ma });
+        if (!r.ok || !r.than?.goiY) {
+          status(line, r.viSao || "AI không soạn được.", "bad");
+          return;
+        }
+        if (this.active?.ma !== group.ma) return;
+        this.suggestion = { traLoi: str(r.than.goiY.traLoi), canNguoi: r.than.goiY.canNguoi === true, lyDo: str(r.than.goiY.lyDo) };
+        status(line, "AI đã soạn gợi ý — bấm Dùng gợi ý rồi sửa trước khi gửi.", "good");
+      } finally {
+        this.suggesting = false;
+        this.paintSuggestion();
+      }
+    }
+    async updateGroup(id, patch, done) {
+      const line = el("zalo-nhom-trang-thai");
+      if (id === "") {
+        status(line, "Chưa chọn nhóm.", "bad");
+        return;
+      }
+      const r = await this.ctx.gateway.landing("hop-thu.thong-tin", { ma: id, ...patch });
+      if (!r.ok) {
+        status(line, r.viSao, "bad");
+        return;
+      }
+      status(line, done, "good");
+      await this.loadGroups();
+      if (this.active?.ma === id) await this.openGroup(id);
+    }
+    async saveGroup() {
+      if (this.active === null) {
+        status(el("zalo-nhom-trang-thai"), "Chưa chọn nhóm.", "bad");
+        return;
+      }
+      await this.updateGroup(this.active.ma, {
+        tenKhach: el("zaloCustomerName").value.trim(),
+        maDon: el("zaloOrderId").value.trim(),
+        bot: el("zaloBotState").value
+      }, "Đã lưu nhóm.");
+    }
+    async sendToGroup() {
+      const line = el("zalo-nhom-trang-thai");
+      const group = this.active;
+      const box = el("zaloReply");
+      const text2 = box.value.trim();
+      if (group === null) {
+        status(line, "Chưa chọn nhóm.", "bad");
+        return;
+      }
+      if (text2 === "") {
+        status(line, "Chưa có gì để gửi.", "bad");
+        return;
+      }
+      const r = await this.ctx.gateway.landing("hop-thu.tra-loi", { kenh: "zalo", nguoi: group.nguoi, chu: text2 });
+      if (!r.ok) {
+        status(line, r.viSao, "bad");
+        return;
+      }
+      box.value = "";
+      status(line, "Đã xếp hàng — máy trực sẽ gõ vào nhóm.", "good");
+      const ai = this.suggestion?.traLoi ?? "";
+      if (ai !== "" && ai.trim() !== text2) void this.ctx.gateway.landing("ai.goi-y.phan-hoi", { maHoiThoai: group.ma, traLoiAiGoc: ai, traLoiSua: text2, lyDoSua: "correct" });
+      this.suggestion = null;
+      await this.openGroup(group.ma);
+    }
+  };
+
+  // ../omi/packages/omi-ui/src/views/content/kit.ts
+  function option(value, label, selected) {
+    return h("option", { value, selected: value === selected }, label);
+  }
+  function imageUrl(url, base) {
+    const u = str(url).trim();
+    if (u === "" || /^(https?:|data:)/i.test(u)) return u;
+    return base === "" ? "" : `${base.replace(/\/+$/, "")}/${u.replace(/^\/+/, "")}`;
+  }
+  function savedTime(iso) {
+    const d = new Date(str(iso));
+    if (Number.isNaN(d.getTime())) return "—";
+    const two3 = (n) => n < 10 ? `0${n}` : String(n);
+    return `${two3(d.getHours())}:${two3(d.getMinutes())} ${two3(d.getDate())}/${two3(d.getMonth() + 1)}/${d.getFullYear()}`;
+  }
+  function localInputValue(iso) {
+    const d = new Date(str(iso));
+    if (Number.isNaN(d.getTime())) return "";
+    return new Date(d.getTime() - d.getTimezoneOffset() * 6e4).toISOString().slice(0, 16);
+  }
+  function readFileAsDataUrl(file) {
+    return new Promise((resolve, reject) => {
+      const reader = new FileReader();
+      reader.onload = () => resolve(String(reader.result ?? ""));
+      reader.onerror = () => reject(reader.error ?? new Error("Không đọc được tệp."));
+      reader.readAsDataURL(file);
+    });
+  }
+
+  // ../omi/packages/omi-ui/src/views/content/comments.ts
+  var CATEGORIES = ["shop_link", "product_link", "upsell", "size_advice", "promotion", "inbox"];
+  var SEED_STATUS = { pending: "Chờ đến giờ", published: "Đã comment", failed: "Lỗi", skipped_desk: "Bỏ qua (bài đã có comment)" };
+  var TemplatesSection = class {
+    constructor(host, templates, reload) {
+      this.host = host;
+      this.templates = templates;
+      this.reload = reload;
+    }
+    host;
+    templates;
+    reload;
+    editing = "";
+    build() {
+      return h("div", { id: "nd-sec-templates" });
+    }
+    actions = {
+      "new-facebook-comment-template": () => {
+        this.editing = "new";
+        this.paint();
+      },
+      "edit-facebook-comment-template": (b) => {
+        this.editing = str(b.dataset["id"]);
+        this.paint();
+      },
+      "close-facebook-comment-template-editor": () => {
+        this.editing = "";
+        this.paint();
+      },
+      "save-facebook-comment-template": () => this.save(),
+      "delete-facebook-comment-template": (b) => this.remove(str(b.dataset["id"]))
+    };
+    paint() {
+      const root = document.getElementById("nd-sec-templates");
+      if (root === null) return;
+      const list = this.templates();
+      const editing = list.find((t) => t.id === this.editing) ?? null;
+      clear(root);
+      root.append(h(
+        "section",
+        { class: "panel facebook-comment-template-manager" },
+        h(
+          "div",
+          { class: "panel-header" },
+          h("div", null, h("h3", null, "Comment mẫu"), h("p", null, "Quản lý comment link mua hàng, upsell và tư vấn; hỗ trợ tag động.")),
+          h("button", { class: "secondary-button", type: "button", "data-action": "new-facebook-comment-template", id: "nut-mau-moi" }, "Tạo mẫu")
+        ),
+        h(
+          "div",
+          { class: "panel-body facebook-comment-template-grid" },
+          h("div", { class: "facebook-comment-template-list", id: "nd-ds-mau" }, ...list.length ? list.map((t) => h(
+            "button",
+            { class: `facebook-comment-template-card${editing?.id === t.id ? " active" : ""}`, type: "button", "data-action": "edit-facebook-comment-template", "data-id": t.id },
+            h("strong", null, t.ten),
+            h("span", null, t.nhom || "comment"),
+            h("p", null, t.noiDung)
+          )) : [h("p", { class: "subtle" }, "Chưa có comment mẫu.")]),
+          editing || this.editing === "new" ? h(
+            "div",
+            { class: "config-form facebook-comment-template-editor" },
+            h("label", null, "Tên mẫu", h("input", { id: "facebookCommentTemplateName", value: editing?.ten ?? "" })),
+            h("label", null, "Nhóm", h("select", { id: "facebookCommentTemplateCategory" }, ...CATEGORIES.map((c) => option(c, c, editing?.nhom ?? "shop_link")))),
+            h("label", null, "Nội dung", h("textarea", { id: "facebookCommentTemplateBody", rows: "5", placeholder: "Xem hàng tại {SHOP_LINK}", value: editing?.noiDung ?? "" })),
+            h("p", { class: "subtle" }, "Tag: {SHOP_LINK}, {PRODUCT_LINK}, {PRODUCT_NAME}, {PRODUCT_CODE}, {PAGE_NAME}"),
+            h(
+              "div",
+              { class: "split-actions" },
+              h("button", { class: "primary-button", type: "button", "data-action": "save-facebook-comment-template", id: "nut-luu-mau" }, "Lưu mẫu"),
+              editing ? h("button", { class: "danger-button", type: "button", "data-action": "delete-facebook-comment-template", "data-id": editing.id }, "Xóa") : "",
+              h("button", { class: "ghost-button", type: "button", "data-action": "close-facebook-comment-template-editor" }, "Đóng")
+            ),
+            h("p", { class: "status-line", id: "nd-mau-trang-thai" }, "")
+          ) : h("div", { class: "content-manager-empty" }, h("p", null, "Chọn một mẫu để sửa hoặc tạo mẫu mới."))
+        )
+      ));
+    }
+    async save() {
+      const v = (id) => document.getElementById(id)?.value ?? "";
+      const r = await this.host.ctx.gateway.landing("dang-bai.mau.ghi", {
+        id: this.editing === "new" ? "" : this.editing,
+        ten: v("facebookCommentTemplateName"),
+        nhom: v("facebookCommentTemplateCategory"),
+        noiDung: v("facebookCommentTemplateBody")
+      }).catch((e) => ({ ok: false, than: null, viSao: e instanceof Error ? e.message : String(e) }));
+      if (!r.ok) {
+        status(document.getElementById("nd-mau-trang-thai"), r.viSao, "bad");
+        return;
+      }
+      this.editing = str(r.than?.mau?.id);
+      await this.reload();
+      this.paint();
+    }
+    async remove(id) {
+      const r = await this.host.ctx.gateway.landing("dang-bai.mau.xoa", { id });
+      if (!r.ok) return;
+      this.editing = "";
+      await this.reload();
+      this.paint();
+    }
+  };
+  var SeedSection = class {
+    constructor(host) {
+      this.host = host;
+    }
+    host;
+    data = null;
+    busy = "";
+    done = "";
+    build() {
+      return h("div", { id: "nd-sec-seed" });
+    }
+    actions = {
+      "run-facebook-seed-comments": () => this.task("run", "dang-bai.phu-link.quet", {}),
+      "toggle-facebook-seed-comments": () => this.task("toggle", "dang-bai.phu-link.ghi", { enabled: !(this.data?.config.settings.enabled ?? false) }),
+      "resume-facebook-seed-comments": () => this.task("resume", "dang-bai.phu-link.ghi", { resume: true }),
+      "save-facebook-seed-comments": () => this.task("save", "dang-bai.phu-link.ghi", this.readForm()),
+      "retry-facebook-seed-comment": (b) => this.task(`retry:${str(b.dataset["postId"])}`, "dang-bai.phu-link.thu-lai", { postId: str(b.dataset["postId"]) })
+    };
+    async load() {
+      const r = await this.host.ctx.gateway.landing("dang-bai.phu-link");
+      if (r.ok && r.than) this.data = r.than;
+      this.paint();
+    }
+    readForm() {
+      const root = document.getElementById("nd-sec-seed");
+      const v = (id) => document.getElementById(id)?.value ?? "";
+      const pageIds = [...root?.querySelectorAll("input[data-seed-page-id]") ?? []].filter((x) => x.checked).map((x) => str(x.dataset["seedPageId"]));
+      const all = root?.querySelectorAll("input[data-seed-page-id]").length ?? 0;
+      const topics = [...root?.querySelectorAll("#facebookSeedTopicTable tr[data-seed-topic-id]") ?? []].map((tr) => ({
+        id: str(tr.dataset["seedTopicId"]),
+        label: tr.querySelector("[data-seed-topic-label]")?.value ?? "",
+        keywords: tr.querySelector("[data-seed-topic-keywords]")?.value ?? "",
+        link: tr.querySelector("[data-seed-topic-link]")?.value ?? ""
+      })).filter((t) => t.label.trim() !== "" && t.link.trim() !== "");
+      return {
+        pageIds: pageIds.length === all ? [] : pageIds,
+        maxPerDay: Number(v("facebookSeedMaxPerDay")) || 40,
+        delayMinMinutes: Number(v("facebookSeedDelayMin")) || 3,
+        delayMaxMinutes: Number(v("facebookSeedDelayMax")) || 10,
+        topics,
+        variants: v("facebookSeedVariants")
+      };
+    }
+    async task(kind, job, params) {
+      if (this.busy) return;
+      this.busy = kind;
+      this.paint();
+      const r = await this.host.ctx.gateway.landing(job, params);
+      this.busy = "";
+      this.done = r.ok ? kind : "";
+      if (job === "dang-bai.phu-link.thu-lai") await this.load();
+      else if (r.ok && r.than) this.data = r.than;
+      this.paint();
+      const line = document.getElementById("nd-seed-trang-thai");
+      if (line !== null) status(line, r.ok ? str(r.than?.message) || "Xong ✓" : r.viSao, r.ok ? "good" : "bad");
+      setTimeout(() => {
+        if (this.done === kind) {
+          this.done = "";
+          this.paint();
+        }
+      }, 2500);
+    }
+    button(kind, idle, busyLabel, doneLabel) {
+      if (this.busy === kind) return { label: busyLabel, disabled: true };
+      if (this.done === kind) return { label: doneLabel, disabled: false };
+      return { label: idle, disabled: this.busy !== "" };
+    }
+    paint() {
+      const root = document.getElementById("nd-sec-seed");
+      if (root === null) return;
+      clear(root);
+      const data = this.data;
+      if (data === null) {
+        root.append(h("section", { class: "panel facebook-seed-comment-manager" }, h("div", { class: "panel-header" }, h("div", null, h("h3", null, "Comment phủ link sale (bài mới)"), h("p", null, "Đang tải cấu hình...")))));
+        return;
+      }
+      const s = data.config.settings;
+      const pages = this.host.pages();
+      const run = this.button("run", "Quét ngay", "Đang quét...", "Đã quét xong ✓");
+      const toggle = this.button("toggle", s.enabled ? "🟢 Đang bật — bấm để tắt" : "⚪ Đang tắt — bấm để bật", s.enabled ? "Đang tắt..." : "Đang bật...", s.enabled ? "Đã bật ✓" : "Đã tắt ✓");
+      const resume = this.button("resume", "Đã kiểm tra — chạy tiếp", "Đang mở lại...", "Đã mở lại ✓");
+      const save = this.button("save", "Lưu cấu hình", "Đang lưu...", "Đã lưu ✓");
+      const topics = [...data.config.topics, { id: "", label: "", keywords: [], link: "" }, { id: "", label: "", keywords: [], link: "" }];
+      root.append(h(
+        "section",
+        { class: "panel facebook-seed-comment-manager", id: "facebookSeedCommentPanel" },
+        h(
+          "div",
+          { class: "panel-header" },
+          h(
+            "div",
+            null,
+            h("h3", null, "Comment phủ link sale (bài mới)"),
+            h("p", null, 'Tự comment 1 link lọc "Sale nhiều nhất" dưới mỗi bài Facebook mới; link chọn theo nội dung bài, câu chữ xoay vòng để tránh bị Facebook coi là spam. Không đụng bài cũ.')
+          ),
+          h(
+            "div",
+            { class: "split-actions" },
+            h("button", { class: "secondary-button", type: "button", "data-action": "run-facebook-seed-comments", disabled: run.disabled, id: "nut-phu-link-quet" }, run.label),
+            h("button", { class: s.enabled ? "danger-button" : "primary-button", type: "button", "data-action": "toggle-facebook-seed-comments", disabled: toggle.disabled, id: "nut-phu-link-bat" }, toggle.label)
+          )
+        ),
+        h(
+          "div",
+          { class: "panel-body" },
+          s.paused ? h(
+            "p",
+            null,
+            h("strong", null, "⚠ Đang tạm dừng vì Meta báo lỗi: "),
+            s.pausedReason,
+            " ",
+            h("button", { class: "secondary-button", type: "button", "data-action": "resume-facebook-seed-comments", disabled: resume.disabled }, resume.label)
+          ) : "",
+          h(
+            "p",
+            { class: "subtle", id: "nd-seed-tom-tat" },
+            "Trạng thái: ",
+            h("strong", null, s.enabled ? `ĐANG BẬT (nhận bài mới từ ${data.enabledAt ? new Date(data.enabledAt).toLocaleString("vi-VN") : ""})` : "ĐANG TẮT"),
+            ` · Hôm nay đã comment: ${data.daily.count}/${s.maxPerDay} · Chờ đến giờ: ${data.pendingCount} · Lỗi: ${data.failedCount}`
+          ),
+          h("p", { class: "status-line", id: "nd-seed-trang-thai" }, ""),
+          h(
+            "div",
+            { class: "config-form" },
+            h(
+              "label",
+              null,
+              "Fanpage áp dụng (bỏ trống hết = tất cả page)",
+              h("div", null, ...pages.length ? pages.map((p) => h("label", { class: "omi-inline-check" }, h("input", { type: "checkbox", "data-seed-page-id": p.ma, checked: s.pageIds.length === 0 || s.pageIds.includes(p.ma) }), p.ten || p.ma)) : [h("span", { class: "subtle" }, "Chưa kết nối fanpage nào.")])
+            ),
+            h("label", null, "Trần comment mỗi ngày", h("input", { id: "facebookSeedMaxPerDay", type: "number", min: "1", max: "200", value: String(s.maxPerDay) })),
+            h(
+              "label",
+              null,
+              "Trễ sau bài đăng (phút, từ - đến)",
+              h(
+                "div",
+                { class: "omi-row-gap" },
+                h("input", { id: "facebookSeedDelayMin", type: "number", min: "1", max: "60", value: String(Math.round(s.delayMinMs / 6e4)) }),
+                h("input", { id: "facebookSeedDelayMax", type: "number", min: "1", max: "120", value: String(Math.round(s.delayMaxMs / 6e4)) })
+              )
+            )
+          ),
+          h(
+            "details",
+            null,
+            h("summary", null, h("strong", null, `Bảng chọn link theo nội dung bài (${data.config.topics.length} chủ đề, xét từ trên xuống)`)),
+            h(
+              "table",
+              { class: "sample-score-table", id: "facebookSeedTopicTable" },
+              h("thead", null, h("tr", null, h("th", null, "Nhãn (điền vào câu comment)"), h("th", null, "Từ khóa (phẩy)"), h("th", null, "Link"))),
+              h("tbody", null, ...topics.map((t, i) => h(
+                "tr",
+                { "data-seed-topic-id": t.id || `moi_${i}` },
+                h("td", null, h("input", { "data-seed-topic-label": "", value: t.label })),
+                h("td", null, h("input", { "data-seed-topic-keywords": "", value: t.keywords.join(", "), placeholder: "(trống = chủ đề mặc định)" })),
+                h("td", null, h("input", { "data-seed-topic-link": "", value: t.link, placeholder: `${this.host.base()}/?q=...` }))
+              )))
+            )
+          ),
+          h(
+            "details",
+            null,
+            h("summary", null, h("strong", null, `Biến thể câu comment (${data.config.variants.length} mẫu, xoay vòng; tag {LABEL} và {LINK})`)),
+            h("textarea", { id: "facebookSeedVariants", rows: "8", value: data.config.variants.join("\n---\n") }),
+            h("p", { class: "subtle" }, "Mỗi biến thể cách nhau một dòng chỉ chứa ba dấu gạch (---). Nên giữ tối thiểu 3 biến thể.")
+          ),
+          h("div", { class: "split-actions" }, h("button", { class: "primary-button", type: "button", "data-action": "save-facebook-seed-comments", disabled: save.disabled, id: "nut-phu-link-luu" }, save.label)),
+          data.recent.length ? h(
+            "table",
+            { class: "sample-score-table", id: "nd-bang-phu-link" },
+            h("thead", null, h("tr", null, ...["Bài đăng", "Page", "Chủ đề", "Trạng thái", ""].map((t) => h("th", null, t)))),
+            h("tbody", null, ...data.recent.slice(0, 15).map((item) => {
+              const retry = this.button(`retry:${item.postId}`, "Thử lại", "Đang gửi lại...", "Đã gửi ✓");
+              return h(
+                "tr",
+                null,
+                h("td", null, (item.excerpt || item.postId).slice(0, 60) || "(không có chữ)", h("br"), h("span", { class: "subtle" }, new Date(item.createdAt).toLocaleString("vi-VN"))),
+                h("td", null, item.pageName),
+                h("td", null, item.topicId || "—"),
+                h("td", null, SEED_STATUS[item.status] ?? item.status, item.error ? h("br") : "", item.error ? h("span", { class: "subtle" }, item.error.slice(0, 80)) : ""),
+                h("td", null, item.status === "failed" ? h("button", { class: "secondary-button", type: "button", "data-action": "retry-facebook-seed-comment", "data-post-id": item.postId, disabled: retry.disabled }, retry.label) : "")
+              );
+            }))
+          ) : h("p", { class: "subtle" }, "Chưa có bài mới nào được theo dõi.")
+        )
+      ));
+    }
+  };
+
+  // ../omi/packages/omi-ui/src/views/content/flow.ts
+  var STEPS = [
+    { label: "Kế hoạch", hint: "Chọn mã và chủ đề cho các khung giờ" },
+    { label: "Viết bài", hint: "Bộ não trên Xeon viết theo phong cách shop" },
+    { label: "Phản biện", hint: "Ba người chấm" },
+    { label: "Tối ưu", hint: "Sửa và chấm lại tới khi đạt" },
+    { label: "Lên lịch", hint: "Dựng ảnh và đẩy sang Meta" }
+  ];
+  var STATUS_LABEL = { nhap: "nháp", dat: "đạt", hong: "còn lỗi", "da-len-lich": "đã lên lịch" };
+  var RUN_JOB = { "content-write-all": "viet", "content-write-failed": "viet-loi", "content-review-all": "phan-bien", "content-optimize-all": "toi-uu", "content-run-all": "chu-trinh" };
+  var FlowSection = class {
+    constructor(host) {
+      this.host = host;
+    }
+    host;
+    frame = {};
+    rows = [];
+    batch = null;
+    topics = { list: [], counts: null };
+    openIndex = -1;
+    onlyFailed = false;
+    loading = false;
+    lastError = "";
+    note = "";
+    drafts = {};
+    ask = null;
+    poll = null;
+    build() {
+      return h("div", { id: "nd-sec-flow" }, h("section", { class: "cflow", id: "nd-flow" }), h("section", { class: "cflow-topics", id: "nd-topics" }));
+    }
+    actions = {
+      "content-build-plan": () => this.buildPlan(),
+      "content-write-all": (b) => this.run(b),
+      "content-write-failed": (b) => this.run(b),
+      "content-review-all": (b) => this.run(b),
+      "content-optimize-all": (b) => this.run(b),
+      "content-run-all": async (b) => {
+        if (!await this.confirm("Chạy cả chu trình sẽ viết, phản biện, tối ưu rồi LÊN LỊCH THẬT các bài đạt trên Meta.\nTiếp tục?")) return;
+        await this.run(b);
+      },
+      "content-schedule-all": () => this.schedule(),
+      "content-ask-yes": () => this.answer(true),
+      "content-ask-no": () => this.answer(false),
+      "content-keep-post": (b) => this.toggleKeep(str(b.dataset["key"])),
+      "content-keep-all": () => this.keep("all"),
+      "content-keep-passed": () => this.keep("passed"),
+      "content-keep-none": () => this.keep("none"),
+      "content-drop-post": (b) => this.drop(str(b.dataset["key"])),
+      "content-undo": () => this.undo(),
+      "content-filter-failed": () => {
+        this.onlyFailed = !this.onlyFailed;
+        this.paint();
+      },
+      "open-content-post": (b) => {
+        this.captureDraft();
+        const i = Number(b.dataset["index"]);
+        this.openIndex = this.openIndex === i ? -1 : i;
+        this.paint();
+      },
+      "save-content-post": () => this.savePost(),
+      "content-suggest-codes": () => this.suggestCodes(),
+      "add-content-topic": () => this.addTopic(),
+      "content-topic-status": (b) => this.topicStatus(str(b.dataset["id"]), str(b.dataset["status"])),
+      "save-selected-slot-to-library": () => this.toLibrary(),
+      "go-publish-content-slot": () => this.toComposer()
+    };
+    async load() {
+      const [frame, rows] = await Promise.all([
+        this.host.ctx.gateway.landing("noi-dung.khuon"),
+        this.host.ctx.gateway.landing("noi-dung.lo"),
+        this.loadTopics()
+      ]);
+      if (frame.ok) this.frame = frame.than ?? {};
+      this.rows = rows.ok ? rows.than?.lo ?? [] : [];
+      if (!rows.ok) this.lastError = rows.viSao;
+      const first = this.rows[0];
+      if (this.batch === null && first !== void 0) await this.openBatch(first.ma, false);
+      this.paint();
+    }
+    async loadTopics() {
+      const r = await this.host.ctx.gateway.landing("noi-dung.chu-de");
+      if (r.ok) this.topics = { list: r.than?.list ?? [], counts: r.than?.counts ?? null };
+      this.paintTopics();
+    }
+    async openBatch(ma, repaint = true) {
+      const r = await this.host.ctx.gateway.landing("noi-dung.lo.mo", { ma });
+      if (!r.ok) {
+        this.lastError = r.viSao;
+        if (repaint) this.paint();
+        return;
+      }
+      this.batch = r.than?.lo ?? null;
+      this.schedulePoll();
+      if (repaint) this.paint();
+    }
+    /** While the landing runs a step in the background, re-read the batch every 2 s. */
+    schedulePoll() {
+      if (this.poll !== null) {
+        clearTimeout(this.poll);
+        this.poll = null;
+      }
+      if (this.batch?.chay?.dangChay !== true) return;
+      const ma = this.batch.ma;
+      this.poll = setTimeout(() => {
+        this.poll = null;
+        this.captureDraft();
+        void this.openBatch(ma);
+      }, 2e3);
+    }
+    dateValue() {
+      const input2 = document.getElementById("nd-ngay");
+      if (input2 !== null && input2.value !== "") return input2.value;
+      if (this.batch !== null) return this.batch.ngay;
+      const d = new Date(Date.now() + 7 * 3600 * 1e3);
+      d.setUTCDate(d.getUTCDate() + 1);
+      return d.toISOString().slice(0, 10);
+    }
+    pageIds() {
+      const typed = document.getElementById("nd-trang")?.value ?? "";
+      return typed.split(",").map((p) => p.trim()).filter(Boolean);
+    }
+    live() {
+      return (this.batch?.bai ?? []).filter((p) => p.boQua !== "anh_bo");
+    }
+    stepIndex() {
+      const posts = this.live().filter((p) => str(p.boQua) === "");
+      if (posts.length === 0) return 0;
+      if (!posts.some((p) => p.caption)) return 1;
+      if (!posts.some((p) => p.phanBien)) return 2;
+      if (!posts.every((p) => p.trangThai === "dat" || str(p.maLenh) !== "")) return 3;
+      return 4;
+    }
+    needsRewrite(p) {
+      if (str(p.boQua) !== "" || str(p.maLenh) !== "") return false;
+      return !p.caption || str(p.loiAi) !== "" || p.phanBien?.dat === false || p.trangThai === "hong";
+    }
+    schedulable() {
+      const chosen = new Set(this.batch?.chon ?? []);
+      return this.live().filter((p) => str(p.boQua) === "" && !p.maLenh && p.caption && chosen.has(p.id));
+    }
+    // ------------------------------------------------------------------ paint
+    paint() {
+      const root = document.getElementById("nd-flow");
+      if (root === null) return;
+      const batch = this.batch;
+      const posts = batch?.bai ?? [];
+      const running = batch?.chay?.dangChay === true;
+      const busy = this.loading || running;
+      const step2 = this.stepIndex();
+      const failed = posts.filter((p) => this.needsRewrite(p)).length;
+      const liveCount = posts.filter((p) => str(p.boQua) === "").length;
+      const ready2 = this.schedulable().length;
+      const button = (action, label, primary = false, disabled = false, id = "") => h("button", { class: `cflow-btn${primary ? " pri" : ""}`, type: "button", "data-action": action, disabled: disabled || busy, ...id ? { id } : {} }, label);
+      const actions = [];
+      if (posts.length === 0) {
+        actions.push(button("content-build-plan", this.loading ? "Đang dựng…" : "Dựng kế hoạch cho ngày này", true, false, "nut-noi-dung-tao"));
+      } else {
+        actions.push(button("content-build-plan", "Dựng lại kế hoạch", false, false, "nut-noi-dung-tao"));
+        actions.push(button("content-write-all", `Viết ${liveCount} bài`, step2 === 1));
+        if (failed > 0 && posts.some((p) => p.caption)) actions.push(button("content-write-failed", `Viết lại ${failed} bài lỗi`));
+        actions.push(button("content-review-all", "Phản biện", step2 === 2, step2 < 2));
+        actions.push(button("content-optimize-all", "Tối ưu và chấm lại", step2 === 3, step2 < 3));
+        actions.push(button("content-schedule-all", `Lên lịch ${ready2 ? `${ready2} bài đã chọn` : "bài đã chọn"}`, ready2 > 0 && step2 >= 3, false, "nut-noi-dung-len-lich"));
+      }
+      actions.push(button("content-run-all", running ? "Đang chạy…" : "Chạy cả chu trình", !running));
+      if (posts.length) {
+        actions.push(h(
+          "label",
+          { class: "cflow-filter" },
+          h("input", { type: "checkbox", "data-action": "content-filter-failed", checked: this.onlyFailed }),
+          ` Chỉ bài lỗi${failed ? ` (${failed})` : ""}`
+        ));
+      }
+      const dateInput = h("input", { id: "nd-ngay", type: "date", value: batch?.ngay ?? this.dateValue() });
+      dateInput.addEventListener("change", () => void this.dateChanged());
+      dateInput.addEventListener("input", () => void this.dateChanged());
+      const pagesValue = document.getElementById("nd-trang")?.value || [...new Set(posts.map((p) => p.page))].join(", ") || this.host.pages().map((p) => p.ma).join(", ");
+      const passed = posts.filter((p) => p.trangThai === "dat").length;
+      const cap = batch ? h("span", { class: "cflow-cap" }, `${posts.length} bài · ${new Set(posts.flatMap((p) => p.codes)).size} mã · ${passed} đạt · ${posts.filter((p) => p.maChuDe).length} bài từ chủ đề anh gợi ý`) : null;
+      const chosen = new Set(batch?.chon ?? []);
+      const locked = posts.filter((p) => p.maLenh).length;
+      const keepbar = posts.length ? h(
+        "div",
+        { class: "cflow-keepbar" },
+        h(
+          "span",
+          null,
+          "Đã chọn ",
+          h("b", null, String([...chosen].filter((id) => !posts.find((p) => p.id === id)?.maLenh).length)),
+          " bài",
+          ready2 ? ` · ${ready2} bài lên lịch được` : "",
+          locked ? ` · ${locked} bài đã lên lịch` : ""
+        ),
+        h("button", { type: "button", "data-action": "content-keep-all", disabled: busy }, "chọn hết"),
+        h("button", { type: "button", "data-action": "content-keep-passed", disabled: busy || passed === 0 }, "chỉ chọn bài đạt"),
+        h("button", { type: "button", "data-action": "content-keep-none", disabled: busy }, "bỏ chọn hết"),
+        batch?.hoanTac ? h("button", { type: "button", class: "omi-push-right", "data-action": "content-undo", disabled: busy }, `hoàn tác: ${batch.hoanTac.nhan}`) : null
+      ) : null;
+      const run = batch?.chay;
+      const progress = run && (run.dangChay || run.thongBao || run.loi) ? h("div", { class: `cflow-note cflow-progress${run.loi ? " bad" : ""}`, id: "nd-tien-do" }, `${run.dangChay ? "Đang chạy · " : ""}${run.thongBao}${run.loi ? ` · ${run.loi}` : ""}`) : null;
+      const lastError = this.lastError ? h("div", { class: "cflow-note bad" }, h("b", null, "Bước vừa rồi lỗi. "), this.lastError) : null;
+      const note = this.note ? h("div", { class: "cflow-note" }, this.note) : null;
+      const askBar = this.ask ? h(
+        "div",
+        { class: "cflow-ask", role: "alertdialog" },
+        h("div", { class: "cflow-ask-msg" }, ...this.ask.message.split("\n").flatMap((line, i) => i === 0 ? [line] : [h("br"), line])),
+        h(
+          "div",
+          { class: "cflow-ask-actions" },
+          h("button", { class: "cflow-btn pri", type: "button", "data-action": "content-ask-yes", id: "nd-hoi-co" }, "Xác nhận"),
+          h("button", { class: "cflow-btn", type: "button", "data-action": "content-ask-no" }, "Huỷ")
+        )
+      ) : null;
+      const rows = posts.map((post, index) => ({ post, index })).filter(({ post }) => !this.onlyFailed || this.needsRewrite(post));
+      const list = h("div", { class: "cflow-list", id: "nd-bang-bai" }, ...rows.map(({ post, index }) => this.row(post, index, busy)));
+      const empty = posts.length === 0 ? h("p", { class: "cflow-empty" }, "Chưa có kế hoạch cho ngày này. Bấm nút trên, vài giây là có đủ bài kèm chủ đề và mã hàng.") : rows.length === 0 ? h("p", { class: "cflow-empty" }, 'Không còn bài lỗi. Bỏ chọn "Chỉ bài lỗi" để xem cả lô.') : null;
+      clear(root);
+      root.append(
+        this.stepBar(step2),
+        h(
+          "div",
+          { class: "cflow-bar" },
+          h("label", { class: "cflow-date" }, "Ngày đăng", dateInput),
+          h("label", { class: "cflow-date" }, "Fanpage", h("input", { id: "nd-trang", type: "text", value: pagesValue, placeholder: "mã trang, cách nhau dấu phẩy" })),
+          ...actions,
+          cap
+        ),
+        h("div", { class: "cflow-note omi-tight", id: "nd-lo-buoc" }, batch ? `Lô ${day(batch.ngay)} · đang ở bước: ${this.stepName(batch.buoc)}` : "Chưa có lô."),
+        h("p", { class: "status-line", id: "noi-dung-trang-thai" }, ""),
+        askBar ?? "",
+        keepbar ?? "",
+        progress ?? "",
+        lastError ?? "",
+        note ?? "",
+        posts.length ? list : h("div", { id: "nd-bang-bai" }),
+        empty ?? ""
+      );
     }
     stepName(ma) {
       return (this.frame.buoc ?? []).find((s) => s.ma === ma)?.ten ?? ma;
     }
-    async createBatch() {
-      const line = el("noi-dung-trang-thai");
-      const ngay3 = el("nd-ngay").value.trim();
-      const pages = el("nd-trang").value.split(",").map((p) => p.trim()).filter((p) => p !== "");
-      if (pages.length === 0) {
-        status(line, "Điền ít nhất một fanpage.", "bad");
-        return;
-      }
-      status(line, "Đang lập kế hoạch…");
-      const r = await this.ctx.gateway.landing("noi-dung.lo.tao", { ngay: ngay3, trang: pages, khungGio: this.frame.khungGio ?? [] });
-      if (!r.ok) {
-        status(line, r.viSao, "bad");
-        return;
-      }
-      this.batch = r.than?.lo ?? null;
-      this.paintBatch();
-      await this.loadBatches();
-      status(line, `Đã lập ${this.batch?.bai.length ?? 0} bài cho ngày ${ngay3}.`, "good");
-    }
-    async openBatch(ma) {
-      const line = el("noi-dung-trang-thai");
-      const r = await this.ctx.gateway.landing("noi-dung.lo.mo", { ma });
-      if (!r.ok) {
-        status(line, r.viSao, "bad");
-        return;
-      }
-      this.batch = r.than?.lo ?? null;
-      this.openPostId = "";
-      el("nd-bai").hidden = true;
-      this.paintBatch();
-    }
-    paintBatch() {
-      const batch = this.batch;
-      el("nd-lo").hidden = batch === null;
-      if (batch === null) return;
-      el("nd-lo-ten").textContent = `Lô ngày ${day(batch.ngay)}`;
-      el("nd-lo-buoc").textContent = `Đang ở bước: ${this.stepName(batch.buoc)}`;
-      this.paintSteps();
-      el("nut-noi-dung-len-lich").hidden = batch.buoc !== "len-lich";
-      const body = el("nd-bang-bai");
-      clear(body);
-      for (const post of batch.bai) {
-        const dropped = str(post.boQua) !== "";
-        const state = dropped ? `bỏ qua — ${post.boQua}` : STATUS_LABEL[post.trangThai] ?? post.trangThai;
-        const tr = tableRow([
-          post.time,
-          post.page,
-          this.formatName(post.format),
-          post.codes.join(", ") || "—",
-          state,
-          post.loi.length === 0 ? post.canhBao.length === 0 ? "—" : `${post.canhBao.length} nhắc` : `${post.loi.length} lỗi`
-        ], [5]);
-        tr.addEventListener("click", () => this.openPost(post.id));
-        body.appendChild(tr);
-      }
+    stepBar(current) {
+      return h("div", { class: "cflow-steps" }, ...STEPS.map((s, i) => h(
+        "div",
+        { class: `cflow-step ${i < current ? "done" : i === current ? "now" : "todo"}` },
+        h("span", { class: "n" }, i < current ? "XONG" : `BƯỚC ${i + 1}`),
+        h("b", null, s.label),
+        h("small", null, s.hint)
+      )));
     }
     formatName(ma) {
       return (this.frame.dangBai ?? []).find((f) => f.ma === ma)?.ten ?? ma;
     }
-    postById(id) {
-      return this.batch?.bai.find((p) => p.id === id) ?? null;
+    angleName(id) {
+      return (this.frame.goc ?? []).find((a) => a.id === id)?.label ?? id;
     }
-    openPost(id) {
-      const post = this.postById(id);
-      if (post === null) return;
-      this.openPostId = id;
-      el("nd-bai").hidden = false;
+    row(post, index, busy) {
+      const pageName = this.host.pages().find((p) => p.ma === post.page)?.ten || post.page;
+      if (post.boQua === "anh_bo") {
+        return h("div", { class: "cflow-item" }, h(
+          "div",
+          { class: "cflow-slot" },
+          h("span", { class: "cflow-time" }, post.time),
+          h("span", { class: "cflow-page" }, pageName),
+          h("span", null, "khung trống — lần dựng lại sẽ trám bài mới vào đây")
+        ));
+      }
+      const review = post.phanBien ?? null;
+      const badges = [];
+      if (post.maChuDe) badges.push(h("span", { class: "cflow-tag anh" }, "anh gợi ý"));
+      if (post.goc) badges.push(h("span", { class: "cflow-tag angle", title: `Góc mua: ${this.angleName(post.goc)}` }, this.angleName(post.goc)));
+      if (post.loi.length) badges.push(h("span", { class: "cflow-tag bad" }, `${post.loi.length} lỗi`));
+      if (str(post.boQua) !== "") badges.push(h("span", { class: "cflow-tag skip", title: post.boQua }, "bỏ qua"));
+      if (post.maLenh) badges.push(h("span", { class: "cflow-tag done" }, "đã lên lịch"));
+      if (!post.maLenh && review && !review.dat) badges.push(h("span", { class: "cflow-tag bad" }, "chưa đạt"));
+      if (post.loiAi) badges.push(h("span", { class: "cflow-tag bad", title: post.loiAi }, "lỗi bộ não"));
+      const scores = review ? [
+        h("span", { class: "cflow-sc" }, "chuyên môn ", h("b", { class: review.chuyenMon >= 7 ? "ok" : "bad" }, String(review.chuyenMon))),
+        h("span", { class: "cflow-sc" }, "giọng ", h("b", { class: review.giong >= 7 ? "ok" : "mid" }, String(review.giong))),
+        h("span", { class: "cflow-sc" }, "dạng bài ", h("b", { class: review.dangBai >= 7 ? "ok" : "mid" }, String(review.dangBai)))
+      ] : [h("span", { class: `cflow-sc${post.caption ? "" : " muted"}` }, post.caption ? `${post.caption.length} ký tự · ${STATUS_LABEL[post.trangThai] ?? post.trangThai}` : "chưa viết")];
+      const open = this.openIndex === index;
+      const kept = Boolean(post.maLenh) || (this.batch?.chon ?? []).includes(post.id);
+      const locked = Boolean(post.maLenh);
+      return h(
+        "div",
+        { class: `cflow-item${open ? " open" : ""}${kept ? " kept" : ""}` },
+        h(
+          "div",
+          { class: "cflow-row" },
+          h("input", {
+            class: "cflow-keep",
+            type: "checkbox",
+            "data-action": "content-keep-post",
+            "data-key": post.id,
+            checked: kept,
+            disabled: locked || busy,
+            title: locked ? "Bài đã lên lịch Meta — luôn giữ khi dựng lại" : "Chọn bài: bài được tick sẽ được lên lịch, và được giữ khi Dựng lại kế hoạch"
+          }),
+          h(
+            "span",
+            { class: "cflow-open", "data-action": "open-content-post", "data-index": String(index) },
+            h("span", { class: "cflow-time" }, post.time),
+            h("span", { class: "cflow-page" }, pageName),
+            h("span", { class: "cflow-format" }, this.formatName(post.format)),
+            h(
+              "span",
+              { class: "cflow-topic-cell" },
+              h("b", null, post.chuDe || "(chưa có chủ đề)"),
+              h("span", { class: "cflow-codes" }, post.codes.join(" · ")),
+              h("span", { class: "cflow-badges" }, ...badges)
+            ),
+            h("span", { class: "cflow-scores" }, ...scores)
+          ),
+          h("button", {
+            class: "cflow-drop",
+            type: "button",
+            "data-action": "content-drop-post",
+            "data-key": post.id,
+            disabled: locked || busy,
+            title: locked ? "Huỷ lịch ở tab Bài đã đăng trước rồi mới bỏ được" : "Bỏ bài này, trả khung giờ về trống"
+          }, "×")
+        ),
+        open ? this.detail(post, busy) : ""
+      );
+    }
+    detail(post, busy) {
+      const draft = this.drafts[post.id] ?? {};
+      const value = (field, fallback) => draft[field] ?? fallback;
       const shape = (this.frame.dangBai ?? []).find((f) => f.ma === post.format);
-      el("nd-bai-ten").textContent = `${post.time} · ${post.page} · ${this.formatName(post.format)}`;
-      el("nd-bai-huong-dan").textContent = shape === void 0 ? str(post.chuDe) : `${shape.huongDan} (${shape.tuMa}–${shape.denMa} mã)`;
-      el("nd-bai-ma").value = post.codes.join(", ");
-      el("nd-bai-chu-anh").value = post.main;
-      el("nd-bai-caption").value = post.caption;
-      el("nd-bai-comment").value = post.comment;
-      this.paintVerdict(post);
-      status(el("nd-bai-trang-thai"), STATUS_LABEL[post.trangThai] ?? post.trangThai, post.trangThai === "hong" ? "bad" : post.trangThai === "nhap" ? "" : "good");
+      const notes = [];
+      if (post.loi.length) notes.push(h("div", { class: "cflow-note bad", id: "nd-bai-cham" }, ...post.loi.map((e, i) => h("p", { class: "status-line bad" }, `${i ? "" : "Lỗi · "}${e.message}`))));
+      else notes.push(h("div", { id: "nd-bai-cham" }, post.trangThai === "dat" ? h("p", { class: "status-line good" }, "Bài đạt hết luật.") : ""));
+      if (post.canhBao.length) notes.push(h("div", { class: "cflow-note warn" }, h("b", null, "Nhắc. "), post.canhBao.map((w) => w.message).join(" · ")));
+      if (post.loiAi) notes.push(h("div", { class: "cflow-note bad" }, `Bộ não: ${post.loiAi}`));
+      const angles = this.frame.goc ?? [];
+      const locked = Boolean(post.maLenh);
+      return h(
+        "div",
+        { class: "cflow-detail", id: "nd-bai" },
+        ...notes,
+        h("p", { class: "subtle", id: "nd-bai-huong-dan" }, shape ? `${shape.huongDan} (${shape.tuMa}–${shape.denMa} mã)` : ""),
+        h("label", { class: "cflow-field" }, "Chủ đề", h("input", { type: "text", id: "nd-bai-chu-de", value: value("chuDe", post.chuDe) })),
+        angles.length ? h(
+          "label",
+          { class: "cflow-field" },
+          "Góc mua — khách muốn mua vì mục tiêu gì",
+          h("select", { id: "nd-bai-goc" }, option("", "(chưa đặt góc)", value("goc", str(post.goc))), ...angles.map((a) => option(a.id, a.label, value("goc", str(post.goc)))))
+        ) : "",
+        h("label", { class: "cflow-field" }, "Mã hàng, cách nhau bằng dấu phẩy", h("input", { type: "text", id: "nd-bai-ma", value: value("codes", post.codes.join(", ")) })),
+        h("label", { class: "cflow-field" }, "Chữ to trên ảnh bìa", h("input", { type: "text", id: "nd-bai-chu-anh", maxlength: "46", value: value("main", post.main) })),
+        h("label", { class: "cflow-field" }, "Dòng nhỏ trên ảnh bìa", h("input", { type: "text", id: "nd-bai-dong-nho", maxlength: "60", value: value("sub", str(post.sub)) })),
+        h("label", { class: "cflow-field" }, "Nội dung bài", h("textarea", { id: "nd-bai-caption", rows: "12", placeholder: "Chưa viết. Bấm Viết bài ở trên hoặc Nhờ bộ não viết.", value: value("caption", post.caption) })),
+        h("label", { class: "cflow-field" }, "Bình luận đầu", h("textarea", { id: "nd-bai-comment", rows: "3", value: value("comment", post.comment) })),
+        post.phanBien?.ghiChu?.length ? h("div", { class: "cflow-review" }, h("b", null, "Ba người chấm nói gì."), h("ul", null, ...post.phanBien.ghiChu.map((n) => h("li", null, n)))) : "",
+        h(
+          "div",
+          { class: "cflow-detail-actions" },
+          h("button", { class: "cflow-btn", type: "button", "data-action": "save-content-post", id: "nut-noi-dung-luu-bai", disabled: busy || locked }, "Lưu bài này"),
+          h("button", { class: "cflow-btn", type: "button", "data-action": "content-suggest-codes", disabled: busy || locked }, "Gợi ý mã khác"),
+          h("button", { class: "cflow-btn", type: "button", id: "nut-noi-dung-xin-viet", disabled: busy || locked, onclick: () => void this.askBrain(post) }, "Nhờ bộ não viết"),
+          h("button", { class: "cflow-btn", type: "button", id: "nut-noi-dung-phan-bien-bai", disabled: busy || !post.caption, onclick: () => void this.reviewOne(post) }, "Phản biện bài này"),
+          h("button", { class: "cflow-btn", type: "button", id: "nut-noi-dung-cham", disabled: busy, onclick: () => void this.judge() }, "Chấm lại luật"),
+          h("button", { class: "cflow-btn", type: "button", "data-action": "save-selected-slot-to-library", disabled: !post.caption }, "Lưu vào Kho content"),
+          h("button", { class: "cflow-btn", type: "button", "data-action": "go-publish-content-slot", disabled: !post.caption || locked }, "Đi đăng bài này ▸")
+        ),
+        h("p", { class: "status-line", id: "nd-bai-trang-thai" }, locked ? "Bài đã lên lịch Meta — sửa ở tab Bài đã đăng." : STATUS_LABEL[post.trangThai] ?? post.trangThai)
+      );
     }
-    /** A verdict of "hỏng" with nothing to read is useless: every line says what to change. */
-    paintVerdict(post) {
-      const box = el("nd-bai-cham");
-      clear(box);
-      for (const e of post.loi) box.appendChild(h("p", { class: "status-line bad" }, `Lỗi · ${e.message}`));
-      for (const w of post.canhBao) box.appendChild(h("p", { class: "status-line" }, `Nhắc · ${w.message}`));
-      if (post.loi.length === 0 && post.canhBao.length === 0 && post.trangThai === "dat") {
-        box.appendChild(h("p", { class: "status-line good" }, "Bài đạt hết luật."));
-      }
+    paintTopics() {
+      const root = document.getElementById("nd-topics");
+      if (root === null) return;
+      const waiting = this.topics.list.filter((t) => t.status === "waiting");
+      const pages = this.host.pages();
+      const counts = this.topics.counts;
+      clear(root);
+      root.append(
+        h("header", null, h("h3", null, "Chủ đề anh gợi ý"), h("span", { class: "cflow-sub" }, counts ? `${counts.today} dùng ngay · ${counts.queue} để dành · ${counts.used} đã dùng` : "")),
+        h(
+          "div",
+          { class: "cflow-topicform" },
+          h("input", { id: "contentTopicText", type: "text", placeholder: "Ví dụ: Giày chạy cho người bàn chân bẹt" }),
+          h("select", { id: "contentTopicPage" }, option("", "Trang nào cũng được", ""), ...pages.map((p) => option(p.ma, p.ten || p.ma, ""))),
+          h("select", { id: "contentTopicPriority" }, option("today", "Dùng ngay hôm nay", "queue"), option("queue", "Để dành dùng sau", "queue")),
+          h("button", { class: "cflow-btn", type: "button", "data-action": "add-content-topic" }, "Thêm vào hàng chờ")
+        ),
+        h("ul", { class: "cflow-topiclist", id: "nd-chu-de" }, ...waiting.length ? waiting.map((t) => h(
+          "li",
+          { class: "cflow-topic" },
+          h("span", { class: `cflow-topic-when${t.priority === "today" ? " today" : ""}` }, t.priority === "today" ? "dùng ngay" : "để dành"),
+          h("span", { class: "cflow-topic-text" }, t.text),
+          h("span", { class: "cflow-topic-page" }, t.page ? pages.find((p) => p.ma === t.page)?.ten || t.page : "trang nào cũng được"),
+          h("button", { class: "cflow-linkbtn", type: "button", "data-action": "content-topic-status", "data-id": t.id, "data-status": "skipped" }, "bỏ")
+        )) : [h("li", { class: "cflow-empty" }, "Chưa có chủ đề nào chờ. Gõ vào ô trên để máy dùng cho ngày tới.")])
+      );
     }
-    async savePost() {
-      const line = el("nd-bai-trang-thai");
-      const batch = this.batch;
-      if (batch === null || this.openPostId === "") {
-        status(line, "Chưa mở bài nào.", "bad");
-        return;
-      }
-      status(line, "Đang lưu…");
-      const r = await this.ctx.gateway.landing("noi-dung.lo.sua-bai", {
-        maLo: batch.ma,
-        maBai: this.openPostId,
-        ma: el("nd-bai-ma").value.split(",").map((c) => c.trim()).filter((c) => c !== ""),
-        chuAnh: el("nd-bai-chu-anh").value,
-        caption: el("nd-bai-caption").value,
-        comment: el("nd-bai-comment").value
+    // ------------------------------------------------------------------ actions
+    say(text2, tone = "") {
+      const line = document.getElementById("noi-dung-trang-thai");
+      if (line !== null) status(line, text2, tone);
+    }
+    confirm(message) {
+      return new Promise((resolve) => {
+        this.ask = { message, resolve };
+        this.paint();
       });
-      if (!r.ok) {
-        status(line, r.viSao, "bad");
+    }
+    answer(yes) {
+      const ask = this.ask;
+      this.ask = null;
+      this.paint();
+      ask?.resolve(yes);
+    }
+    async dateChanged() {
+      const date = this.dateValue();
+      const found = this.rows.find((r) => r.ngay === date);
+      if (found !== void 0 && found.ma !== this.batch?.ma) {
+        this.openIndex = -1;
+        await this.openBatch(found.ma);
         return;
       }
-      this.replacePost(r.than?.bai ?? null);
-      status(line, "Đã lưu. Bấm Chấm lại để xem bài có đạt luật không.", "good");
+      if (found === void 0 && this.batch !== null && this.batch.ngay !== date) {
+        this.batch = null;
+        this.openIndex = -1;
+        this.paint();
+      }
     }
-    async skipPost() {
-      const line = el("nd-bai-trang-thai");
+    async buildPlan() {
       const batch = this.batch;
-      if (batch === null || this.openPostId === "") {
-        status(line, "Chưa mở bài nào.", "bad");
+      if (batch !== null && batch.ngay === this.dateValue()) {
+        if (!await this.confirm("Dựng lại kế hoạch: bài đã tick và bài đã lên lịch được giữ, bài còn lại thay bằng bài mới.\nTiếp tục?")) return;
+        this.loading = true;
+        this.paint();
+        const r2 = await this.host.ctx.gateway.landing("noi-dung.lo.dung-lai", { ma: batch.ma });
+        this.loading = false;
+        if (!r2.ok) {
+          this.lastError = r2.viSao;
+          this.paint();
+          return;
+        }
+        this.batch = r2.than?.lo ?? batch;
+        this.lastError = "";
+        this.note = `Đã giữ ${r2.than?.giu ?? 0} bài, dựng mới ${r2.than?.moi ?? 0} bài.`;
+        this.paint();
         return;
       }
-      const r = await this.ctx.gateway.landing("noi-dung.lo.sua-bai", {
-        maLo: batch.ma,
-        maBai: this.openPostId,
-        boQua: "Người trực bỏ qua bài này"
-      });
+      const ngay3 = this.dateValue();
+      const trang = this.pageIds();
+      if (trang.length === 0) {
+        this.lastError = "Điền ít nhất một fanpage.";
+        this.paint();
+        return;
+      }
+      this.loading = true;
+      this.paint();
+      const r = await this.host.ctx.gateway.landing("noi-dung.lo.tao", { ngay: ngay3, trang, khungGio: this.frame.khungGio ?? [] });
+      this.loading = false;
       if (!r.ok) {
-        status(line, r.viSao, "bad");
+        this.lastError = r.viSao;
+        this.paint();
         return;
       }
-      this.replacePost(r.than?.bai ?? null);
-      el("nd-bai").hidden = true;
-      status(el("noi-dung-trang-thai"), "Đã bỏ bài khỏi lô. Lô vẫn đi tiếp được.", "good");
+      this.batch = r.than?.lo ?? null;
+      this.lastError = "";
+      this.note = `Đã lập ${this.batch?.bai.length ?? 0} bài cho ngày ${day(ngay3)}.`;
+      const rows = await this.host.ctx.gateway.landing("noi-dung.lo");
+      if (rows.ok) this.rows = rows.than?.lo ?? [];
+      this.paint();
+      this.say(this.note, "good");
     }
-    replacePost(post) {
-      if (post === null || this.batch === null) return;
-      this.batch = { ...this.batch, bai: this.batch.bai.map((p) => p.id === post.id ? post : p) };
-      this.paintBatch();
-      if (this.openPostId === post.id) this.paintVerdict(post);
-    }
-    async judge() {
-      const line = el("noi-dung-trang-thai");
+    async run(button) {
       const batch = this.batch;
-      if (batch === null) {
-        status(line, "Chưa mở lô nào.", "bad");
+      const job = RUN_JOB[str(button.dataset["action"])];
+      if (batch === null || job === void 0) {
+        this.lastError = "Dựng kế hoạch trước.";
+        this.paint();
         return;
       }
-      status(line, "Đang chấm…");
-      const r = await this.ctx.gateway.landing("noi-dung.lo.cham", { ma: batch.ma });
+      this.captureDraft();
+      const r = await this.host.ctx.gateway.landing("noi-dung.lo.chay", { ma: batch.ma, viec: job });
       if (!r.ok) {
-        status(line, r.viSao, "bad");
+        this.lastError = r.viSao;
+        this.paint();
         return;
       }
-      this.batch = r.than?.lo ?? this.batch;
-      this.paintBatch();
-      if (this.openPostId !== "") {
-        const post = this.postById(this.openPostId);
-        if (post !== null) this.paintVerdict(post);
-      }
-      const live = (this.batch?.bai ?? []).filter((p) => str(p.boQua) === "");
-      const passed = live.filter((p) => p.trangThai === "dat" || p.trangThai === "da-len-lich").length;
-      const wholeBatch = r.than?.loChung?.loi ?? [];
-      status(line, `${passed}/${live.length} bài đạt${wholeBatch.length === 0 ? "." : ` · cả lô: ${wholeBatch.map((e) => e.message).join("; ")}`}`, wholeBatch.length === 0 && passed === live.length ? "good" : "bad");
-    }
-    async step(direction) {
-      const line = el("noi-dung-trang-thai");
-      const batch = this.batch;
-      if (batch === null) {
-        status(line, "Chưa mở lô nào.", "bad");
-        return;
-      }
-      const r = await this.ctx.gateway.landing("noi-dung.lo.buoc", { ma: batch.ma, huong: direction });
-      if (!r.ok) {
-        status(line, r.viSao, "bad");
-        return;
-      }
+      this.lastError = "";
+      this.note = str(r.than?.message);
       await this.openBatch(batch.ma);
-      status(line, `Đang ở bước ${str(r.than?.ten)}.`, "good");
     }
     async schedule() {
-      const line = el("noi-dung-trang-thai");
       const batch = this.batch;
-      if (batch === null) {
-        status(line, "Chưa mở lô nào.", "bad");
+      if (batch === null) return;
+      const chosen = this.schedulable();
+      if (chosen.length === 0) {
+        this.lastError = "Anh tick chọn bài đã viết cần lên lịch (hoặc bấm chọn hết) rồi bấm lại.";
+        this.paint();
         return;
       }
-      status(line, "Đang lên lịch…");
-      const r = await this.ctx.gateway.landing("noi-dung.lo.len-lich", { ma: batch.ma });
+      if (!await this.confirm(`Lên lịch THẬT ${chosen.length} bài trên Meta (dựng ảnh bìa + card, album ít nhất 5 ảnh).
+Tiếp tục?`)) return;
+      this.loading = true;
+      this.paint();
+      const r = await this.host.ctx.gateway.landing("noi-dung.lo.len-lich", { ma: batch.ma, chon: chosen.map((p) => p.id) });
+      this.loading = false;
+      if (!r.ok) {
+        this.lastError = r.viSao;
+        this.paint();
+        return;
+      }
+      this.batch = r.than?.lo ?? batch;
+      this.lastError = (r.than?.loi ?? []).join(" · ");
+      this.note = str(r.than?.message);
+      this.paint();
+      this.say(this.note, (r.than?.loi ?? []).length ? "bad" : "good");
+    }
+    async saveKeep(chon) {
+      const batch = this.batch;
+      if (batch === null) return;
+      this.batch = { ...batch, chon };
+      this.captureDraft();
+      this.paint();
+      const r = await this.host.ctx.gateway.landing("noi-dung.lo.chon", { ma: batch.ma, chon });
+      if (!r.ok) {
+        this.lastError = r.viSao;
+        this.paint();
+        return;
+      }
+      if (this.batch) this.batch = { ...this.batch, chon: r.than?.chon ?? chon };
+      this.paint();
+    }
+    toggleKeep(id) {
+      const current = this.batch?.chon ?? [];
+      return this.saveKeep(current.includes(id) ? current.filter((x) => x !== id) : [...current, id]);
+    }
+    keep(which) {
+      const live = this.live().filter((p) => str(p.boQua) === "");
+      const ids = which === "none" ? [] : live.filter((p) => which === "all" || p.trangThai === "dat").map((p) => p.id);
+      return this.saveKeep(ids);
+    }
+    async drop(id) {
+      const batch = this.batch;
+      if (batch === null) return;
+      const r = await this.host.ctx.gateway.landing("noi-dung.lo.bo-bai", { maLo: batch.ma, maBai: id });
+      if (!r.ok) {
+        this.lastError = r.viSao;
+        this.paint();
+        return;
+      }
+      this.openIndex = -1;
+      await this.openBatch(batch.ma);
+    }
+    async undo() {
+      const batch = this.batch;
+      if (batch === null) return;
+      const r = await this.host.ctx.gateway.landing("noi-dung.lo.hoan-tac", { ma: batch.ma });
+      if (!r.ok) {
+        this.lastError = r.viSao;
+        this.paint();
+        return;
+      }
+      this.note = `Đã hoàn tác: ${str(r.than?.nhan)}`;
+      await this.openBatch(batch.ma);
+    }
+    openPost() {
+      return this.openIndex >= 0 ? this.batch?.bai[this.openIndex] ?? null : null;
+    }
+    /** Keeps what the person typed in the open post across a repaint (Desk rule R3). */
+    captureDraft() {
+      const post = this.openPost();
+      if (post === null || document.getElementById("nd-bai-caption") === null) return;
+      const read = (id) => document.getElementById(id)?.value;
+      const draft = {};
+      for (const [field, id] of [["chuDe", "nd-bai-chu-de"], ["goc", "nd-bai-goc"], ["codes", "nd-bai-ma"], ["main", "nd-bai-chu-anh"], ["sub", "nd-bai-dong-nho"], ["caption", "nd-bai-caption"], ["comment", "nd-bai-comment"]]) {
+        const v = read(id);
+        if (v !== void 0) draft[field] = v;
+      }
+      this.drafts[post.id] = draft;
+    }
+    replacePost(post) {
+      if (!post || this.batch === null) return;
+      this.batch = { ...this.batch, bai: this.batch.bai.map((p) => p.id === post.id ? post : p) };
+      delete this.drafts[post.id];
+    }
+    async savePost() {
+      const batch = this.batch;
+      const post = this.openPost();
+      if (batch === null || post === null) return;
+      const read = (id) => document.getElementById(id)?.value ?? "";
+      const line = el("nd-bai-trang-thai");
+      status(line, "Đang lưu…");
+      const r = await this.host.ctx.gateway.landing("noi-dung.lo.sua-bai", {
+        maLo: batch.ma,
+        maBai: post.id,
+        chuDe: read("nd-bai-chu-de"),
+        ...document.getElementById("nd-bai-goc") ? { goc: read("nd-bai-goc") } : {},
+        ma: read("nd-bai-ma").split(",").map((c) => c.trim()).filter(Boolean),
+        chuAnh: read("nd-bai-chu-anh"),
+        dongNho: read("nd-bai-dong-nho"),
+        caption: read("nd-bai-caption"),
+        comment: read("nd-bai-comment")
+      });
       if (!r.ok) {
         status(line, r.viSao, "bad");
         return;
       }
-      await this.openBatch(batch.ma);
-      status(line, `${r.than?.soBai ?? 0} bài đã lên lịch. Đẩy sang Meta là việc của bước sau — chưa bài nào được đăng.`, "good");
+      this.replacePost(r.than?.bai);
+      this.paint();
+      status(el("nd-bai-trang-thai"), "Đã lưu. Bấm Chấm lại luật hoặc Phản biện để xem bài có đạt không.", "good");
     }
-    /**
-     * Asks the brain for a draft.
-     *
-     * The landing judges what comes back with the same rules as everything else, and retries once
-     * with the errors if the first draft fails — so what arrives here is a draft AND its verdict.
-     * The screen shows both: a draft that still breaks a rule is kept, with the reason next to it,
-     * because the last mile is faster for a person than for another round of guessing.
-     */
-    async askBrain() {
-      const line = el("nd-bai-trang-thai");
+    async suggestCodes() {
       const batch = this.batch;
-      if (batch === null || this.openPostId === "") {
-        status(line, "Chưa mở bài nào.", "bad");
+      const post = this.openPost();
+      if (batch === null || post === null) return;
+      const r = await this.host.ctx.gateway.landing("noi-dung.lo.goi-y-ma", { maLo: batch.ma, maBai: post.id });
+      const line = el("nd-bai-trang-thai");
+      if (!r.ok) {
+        status(line, r.viSao, "bad");
         return;
       }
+      const codes = r.than?.ma ?? [];
+      if (codes.length === 0) {
+        status(line, "Không còn mã bán được nào ngoài lô.", "bad");
+        return;
+      }
+      el("nd-bai-ma").value = codes.join(", ");
+      status(line, `Gợi ý: ${(r.than?.lyDo ?? []).map((x) => `${x.ma} (${x.lyDo.slice(0, 2).join(", ") || "còn hàng"})`).join(" · ")}. Bấm Lưu bài này để dùng.`, "good");
+    }
+    async askBrain(post) {
+      const batch = this.batch;
+      if (batch === null) return;
+      const line = el("nd-bai-trang-thai");
       status(line, "Đang hỏi bộ não… (viết một bài mất tới một phút)");
-      const r = await this.ctx.gateway.landing("noi-dung.lo.xin-viet", { maLo: batch.ma, maBai: this.openPostId });
+      const r = await this.host.ctx.gateway.landing("noi-dung.lo.xin-viet", { maLo: batch.ma, maBai: post.id });
       if (!r.ok) {
         status(line, r.viSao, "bad");
         return;
@@ -4184,14 +6316,1253 @@
         status(line, "Bộ não chưa trả về bài nào.", "bad");
         return;
       }
-      el("nd-bai-caption").value = written.caption;
-      el("nd-bai-chu-anh").value = written.main;
-      el("nd-bai-comment").value = written.comment;
       this.replacePost(written);
-      this.paintVerdict(written);
+      this.paint();
       const rounds = Number(r.than?.soLuot ?? 1);
       const passed = written.trangThai === "dat";
-      status(line, passed ? `Bộ não viết xong sau ${rounds} lượt, bài đạt hết luật. Đọc lại rồi bấm Lưu bài.` : `Bộ não viết ${rounds} lượt, bài vẫn còn ${written.loi.length} lỗi — sửa nốt rồi bấm Lưu bài.`, passed ? "good" : "bad");
+      status(el("nd-bai-trang-thai"), passed ? `Bộ não viết xong sau ${rounds} lượt, bài đạt hết luật. Đọc lại rồi bấm Lưu bài này.` : `Bộ não viết ${rounds} lượt, bài vẫn còn ${written.loi.length} lỗi — sửa nốt rồi bấm Lưu bài này.`, passed ? "good" : "bad");
+    }
+    async reviewOne(post) {
+      const batch = this.batch;
+      if (batch === null) return;
+      status(el("nd-bai-trang-thai"), "Ba người chấm đang đọc bài…");
+      const r = await this.host.ctx.gateway.landing("noi-dung.lo.phan-bien-bai", { maLo: batch.ma, maBai: post.id });
+      if (!r.ok) {
+        status(el("nd-bai-trang-thai"), r.viSao, "bad");
+        return;
+      }
+      this.replacePost(r.than?.bai);
+      this.paint();
+      const review = r.than?.bai?.phanBien;
+      status(el("nd-bai-trang-thai"), review ? `Chuyên môn ${review.chuyenMon} · giọng ${review.giong} · dạng bài ${review.dangBai} — ${review.dat ? "đạt" : "chưa đạt"}.` : "Đã chấm.", review?.dat ? "good" : "bad");
+    }
+    async judge() {
+      const batch = this.batch;
+      if (batch === null) return;
+      this.captureDraft();
+      const r = await this.host.ctx.gateway.landing("noi-dung.lo.cham", { ma: batch.ma });
+      if (!r.ok) {
+        this.lastError = r.viSao;
+        this.paint();
+        return;
+      }
+      this.batch = r.than?.lo ?? batch;
+      for (const p of this.batch.bai) delete this.drafts[p.id];
+      const wholeBatch = r.than?.loChung?.loi ?? [];
+      this.lastError = wholeBatch.map((e) => e.message).join("; ");
+      this.paint();
+    }
+    async addTopic() {
+      const text2 = el("contentTopicText").value.trim();
+      const r = await this.host.ctx.gateway.landing("noi-dung.chu-de.them", { text: text2, page: el("contentTopicPage").value, priority: el("contentTopicPriority").value });
+      if (!r.ok) {
+        this.lastError = r.viSao;
+        this.paint();
+        return;
+      }
+      await this.loadTopics();
+    }
+    async topicStatus(id, statusValue) {
+      const r = await this.host.ctx.gateway.landing("noi-dung.chu-de.trang-thai", { id, status: statusValue });
+      if (!r.ok) {
+        this.lastError = r.viSao;
+        this.paint();
+        return;
+      }
+      await this.loadTopics();
+    }
+    async toLibrary() {
+      const batch = this.batch;
+      const post = this.openPost();
+      if (batch === null || post === null) return;
+      const r = await this.host.ctx.gateway.landing("noi-dung.lo.vao-kho", { maLo: batch.ma, maBai: post.id });
+      status(el("nd-bai-trang-thai"), r.ok ? "Đã lưu bài vào Kho content." : r.viSao, r.ok ? "good" : "bad");
+    }
+    toComposer() {
+      const post = this.openPost();
+      if (post === null) return;
+      this.host.compose({ trang: post.page, noiDung: post.caption, binhLuan: { cheDo: post.comment ? "custom" : "none", mauId: "", chu: post.comment, trangThai: "", loi: "" }, nguon: { maLo: this.batch?.ma ?? "", maBai: post.id, maKhoBai: "", maSP: post.codes } });
+    }
+  };
+
+  // ../omi/packages/omi-ui/src/views/content/library.ts
+  var CHANNEL = { facebook: "Facebook post", seo: "SEO website", review: "Review / tư vấn" };
+  var STATUS = { draft: "Nháp", ready: "Sẵn sàng", published: "Đã đăng" };
+  var LibrarySection = class {
+    constructor(host) {
+      this.host = host;
+    }
+    host;
+    items = [];
+    counts = { tong: 0, facebook: 0, seo: 0 };
+    expanded = "";
+    editing = null;
+    styles = { chon: "", danhSach: [] };
+    brand = null;
+    query = "";
+    channel = "all";
+    build() {
+      return h("div", { id: "nd-sec-library" }, h("div", { id: "nd-lib-metrics", class: "grid three" }), h("div", { id: "nd-style" }), h("div", { id: "nd-brand" }), h("div", { id: "nd-library" }));
+    }
+    actions = {
+      "refresh-content-library": () => this.loadItems(),
+      "save-content-library-item": () => this.saveItem(),
+      "toggle-content-library-detail": (b) => {
+        const id = str(b.dataset["id"]);
+        this.expanded = this.expanded === id ? "" : id;
+        this.paintLibrary();
+      },
+      "copy-content-library-item": (b) => this.copy(str(b.dataset["id"])),
+      "load-content-library-item": (b) => {
+        this.editing = this.items.find((i) => i.id === str(b.dataset["id"])) ?? null;
+        this.paintLibrary();
+      },
+      "delete-content-library-item": (b) => this.remove(b, str(b.dataset["id"])),
+      "prepare-facebook-publish": (b) => {
+        const item = this.items.find((i) => i.id === str(b.dataset["id"]));
+        if (item) this.host.compose({ noiDung: item.noiDung, maKhoBai: item.id, nguon: { maLo: "", maBai: "", maKhoBai: item.id, maSP: item.maSanPham } });
+      },
+      "load-content-prompt-style": () => this.loadStyles(true),
+      "save-content-prompt-style": () => this.saveStyle()
+    };
+    async load() {
+      await Promise.all([this.loadItems(), this.loadStyles(false), this.loadBrand()]);
+    }
+    /** "Bài gốc trong Kho content" from a published post. */
+    focus(id) {
+      this.expanded = id;
+      this.query = "";
+      void this.loadItems();
+    }
+    async loadItems() {
+      const r = await this.host.ctx.gateway.landing("noi-dung.kho-bai", { q: this.query, kenh: this.channel === "all" ? "" : this.channel });
+      if (r.ok) {
+        this.items = r.than?.muc ?? [];
+        this.counts = r.than?.dem ?? this.counts;
+      }
+      this.paintLibrary();
+    }
+    async loadStyles(announce) {
+      const r = await this.host.ctx.gateway.landing("noi-dung.phong-cach");
+      if (r.ok) this.styles = { chon: str(r.than?.chon), danhSach: r.than?.danhSach ?? [] };
+      this.paintStyle();
+      if (announce) this.sayStyle(r.ok ? "Đã nạp style từ landing." : r.viSao, r.ok ? "good" : "bad");
+    }
+    async loadBrand() {
+      const r = await this.host.ctx.gateway.landing("dang-bai.thuong-hieu");
+      if (r.ok) this.brand = r.than?.thuongHieu ?? null;
+      this.paintBrand();
+    }
+    sayStyle(text2, tone) {
+      const line = document.getElementById("nd-style-trang-thai");
+      if (line !== null) status(line, text2, tone);
+    }
+    paintStyle() {
+      const root = document.getElementById("nd-style");
+      if (root === null) return;
+      const style = this.styles.danhSach.find((s) => s.id === this.styles.chon) ?? this.styles.danhSach[0] ?? { id: "", ten: "", moTa: "", luatViet: "", cauTruc: "", baiMau: "" };
+      const select = h("select", { id: "contentPromptStyleSelect" }, ...this.styles.danhSach.map((s) => option(s.id, s.ten || s.id, style.id)));
+      select.addEventListener("change", () => void this.chooseStyle(select.value));
+      clear(root);
+      root.append(h(
+        "section",
+        { class: "panel content-brief-panel omi-section-gap" },
+        h(
+          "div",
+          { class: "panel-header" },
+          h("div", null, h("h3", null, "Phong cách & prompt mẫu"), h("p", null, "Lưu phong cách, cấu trúc output và bài viral mẫu. Style đang chọn đi kèm mọi lần nhờ bộ não trên Xeon viết, phản biện, tối ưu.")),
+          h(
+            "div",
+            { class: "split-actions" },
+            h("button", { class: "secondary-button", type: "button", "data-action": "load-content-prompt-style" }, "Nạp style"),
+            h("button", { class: "primary-button", type: "button", "data-action": "save-content-prompt-style", id: "nut-luu-style" }, "Lưu style")
+          )
+        ),
+        h(
+          "div",
+          { class: "panel-body" },
+          h("p", { class: "status-line", id: "nd-style-trang-thai" }, ""),
+          h(
+            "div",
+            { class: "content-objective-grid" },
+            h("div", { class: "field" }, h("label", null, "Style đang dùng"), select),
+            h("div", { class: "field" }, h("label", null, "ID style"), h("input", { id: "contentPromptStyleId", value: style.id })),
+            h("div", { class: "field" }, h("label", null, "Tên style"), h("input", { id: "contentPromptStyleName", value: style.ten })),
+            h("div", { class: "field omi-span-3" }, h("label", null, "Mô tả phong cách"), h("input", { id: "contentPromptStyleDescription", value: style.moTa })),
+            h("div", { class: "field omi-span-3" }, h("label", null, "System prompt / luật viết"), h("textarea", { id: "contentPromptStyleSystem", class: "code-textarea", rows: "6", value: style.luatViet })),
+            h("div", { class: "field omi-span-3" }, h("label", null, "Cấu trúc output bắt buộc"), h("textarea", { id: "contentPromptStyleOutput", class: "code-textarea", rows: "7", value: style.cauTruc })),
+            h("div", { class: "field omi-span-3" }, h("label", null, "Bài viral mẫu / câu mẫu yêu thích"), h("textarea", { id: "contentPromptStyleExamples", class: "code-textarea", rows: "8", placeholder: "Dán các bài/câu bạn thích để bộ não học nhịp viết, không copy nguyên văn.", value: style.baiMau }))
+          )
+        )
+      ));
+    }
+    async chooseStyle(id) {
+      const r = await this.host.ctx.gateway.landing("noi-dung.phong-cach.ghi", { chon: id });
+      if (r.ok) this.styles = { chon: str(r.than?.chon), danhSach: r.than?.danhSach ?? this.styles.danhSach };
+      this.paintStyle();
+      this.sayStyle(r.ok ? "Đã đổi style đang dùng." : r.viSao, r.ok ? "good" : "bad");
+    }
+    async saveStyle() {
+      const v = (id) => document.getElementById(id)?.value ?? "";
+      const r = await this.host.ctx.gateway.landing("noi-dung.phong-cach.ghi", {
+        id: v("contentPromptStyleId").trim(),
+        ten: v("contentPromptStyleName"),
+        moTa: v("contentPromptStyleDescription"),
+        luatViet: v("contentPromptStyleSystem"),
+        cauTruc: v("contentPromptStyleOutput"),
+        baiMau: v("contentPromptStyleExamples")
+      });
+      if (r.ok) this.styles = { chon: str(r.than?.chon), danhSach: r.than?.danhSach ?? [] };
+      this.paintStyle();
+      this.sayStyle(r.ok ? str(r.than?.message) || "Đã lưu style." : r.viSao, r.ok ? "good" : "bad");
+    }
+    paintBrand() {
+      const root = document.getElementById("nd-brand");
+      if (root === null) return;
+      const b = this.brand ?? { tenHienThi: "", tenMien: "", mauNhan: "#FF7022", huyHieu: "" };
+      const save = h("button", { class: "primary-button", type: "button", id: "nut-luu-thuong-hieu", onclick: () => void this.saveBrand() }, "Lưu nhận diện");
+      clear(root);
+      root.append(h(
+        "section",
+        { class: "panel content-brief-panel omi-section-gap" },
+        h(
+          "div",
+          { class: "panel-header" },
+          h("div", null, h("h3", null, "Nhận diện thương hiệu trên ảnh"), h("p", null, "Tên, tên miền, màu giá và huy hiệu in trên card sản phẩm và ảnh bìa bài đăng — cấu hình của shop, không cố định theo một cửa hàng.")),
+          h("div", { class: "split-actions" }, save)
+        ),
+        h(
+          "div",
+          { class: "panel-body content-objective-grid" },
+          h("div", { class: "field" }, h("label", null, "Tên hiển thị"), h("input", { id: "nd-th-ten", value: b.tenHienThi })),
+          h("div", { class: "field" }, h("label", null, "Tên miền"), h("input", { id: "nd-th-mien", value: b.tenMien })),
+          h("div", { class: "field" }, h("label", null, "Màu giá (#RRGGBB)"), h("input", { id: "nd-th-mau", value: b.mauNhan })),
+          h("div", { class: "field" }, h("label", null, "Huy hiệu"), h("input", { id: "nd-th-huy-hieu", value: b.huyHieu, placeholder: "CHÍNH HÃNG" })),
+          h("p", { class: "status-line omi-span-3", id: "nd-th-trang-thai" }, "")
+        )
+      ));
+    }
+    async saveBrand() {
+      const v = (id) => document.getElementById(id)?.value ?? "";
+      const r = await this.host.ctx.gateway.landing("dang-bai.thuong-hieu.ghi", { tenHienThi: v("nd-th-ten"), tenMien: v("nd-th-mien"), mauNhan: v("nd-th-mau"), huyHieu: v("nd-th-huy-hieu") });
+      if (r.ok) this.brand = r.than?.thuongHieu ?? this.brand;
+      this.paintBrand();
+      status(document.getElementById("nd-th-trang-thai"), r.ok ? "Đã lưu nhận diện thương hiệu." : r.viSao, r.ok ? "good" : "bad");
+    }
+    paintLibrary() {
+      const metrics = document.getElementById("nd-lib-metrics");
+      if (metrics !== null) {
+        clear(metrics);
+        metrics.append(metric("Bài đã lưu", "nd-lib-tong", "Facebook, SEO, review"), metric("Facebook", "nd-lib-fb", "Caption/post ngắn"), metric("SEO website", "nd-lib-seo", "Bài dài, landing/product guide"));
+        document.getElementById("nd-lib-tong").textContent = String(this.counts.tong);
+        document.getElementById("nd-lib-fb").textContent = String(this.counts.facebook);
+        document.getElementById("nd-lib-seo").textContent = String(this.counts.seo);
+      }
+      const root = document.getElementById("nd-library");
+      if (root === null) return;
+      const e = this.editing;
+      const query = h("input", { id: "contentLibraryQuery", value: this.query, placeholder: "Tìm tiêu đề, quote, nội dung, tag, mã sản phẩm" });
+      query.addEventListener("change", () => {
+        this.query = query.value;
+        void this.loadItems();
+      });
+      const channel = h("select", { id: "contentLibraryChannelFilter" }, option("all", "Tất cả", this.channel), option("facebook", "Facebook", this.channel), option("seo", "SEO website", this.channel), option("review", "Review / tư vấn", this.channel));
+      channel.addEventListener("change", () => {
+        this.channel = channel.value;
+        void this.loadItems();
+      });
+      clear(root);
+      root.append(h(
+        "section",
+        { class: "panel content-brief-panel omi-section-gap" },
+        h(
+          "div",
+          { class: "panel-header" },
+          h("div", null, h("h3", null, "Kho content"), h("p", null, "Lưu bài theo dòng sản phẩm để gọi lại khi đăng Facebook hoặc viết SEO website.")),
+          h(
+            "div",
+            { class: "split-actions" },
+            h("button", { class: "secondary-button", type: "button", "data-action": "refresh-content-library" }, "Tải lại kho"),
+            h("button", { class: "primary-button", type: "button", "data-action": "save-content-library-item", id: "nut-luu-kho" }, e ? "Lưu thay đổi" : "Lưu bài vào kho")
+          )
+        ),
+        h(
+          "div",
+          { class: "panel-body" },
+          h(
+            "div",
+            { class: "content-objective-grid" },
+            h("div", { class: "field" }, h("label", null, "Tiêu đề / chủ đề"), h("input", { id: "contentLibraryTitle", value: e?.tieuDe ?? "", placeholder: "VD: Review nhanh cho tempo" })),
+            h("div", { class: "field" }, h("label", null, "Kênh dùng"), h("select", { id: "contentLibraryChannel" }, ...Object.entries(CHANNEL).map(([k, l]) => option(k, l, e?.kenh ?? "facebook")))),
+            h("div", { class: "field" }, h("label", null, "Trạng thái"), h("select", { id: "contentLibraryStatus" }, option("draft", "Nháp", e?.trangThai ?? "draft"), option("ready", "Sẵn sàng dùng", e?.trangThai ?? "draft"), option("published", "Đã đăng", e?.trangThai ?? "draft"))),
+            h("div", { class: "field" }, h("label", null, "Dòng sản phẩm"), h("input", { id: "contentLibraryProductLine", value: e?.dongSanPham ?? "" })),
+            h("div", { class: "field omi-span-2" }, h("label", null, "Mã sản phẩm liên quan"), h("input", { id: "contentLibraryProductCodes", value: (e?.maSanPham ?? []).join(", "), placeholder: "Mỗi mã cách nhau bằng dấu phẩy" })),
+            h("div", { class: "field omi-span-3" }, h("label", null, "Quote hiển thị ở tab review"), h("textarea", { id: "contentLibraryQuote", rows: "3", value: e?.quote ?? "" })),
+            h("div", { class: "field omi-span-3" }, h("label", null, "Nội dung bài viết"), h("textarea", { id: "contentLibraryBody", class: "code-textarea", rows: "9", value: e?.noiDung ?? "" })),
+            h("div", { class: "field" }, h("label", null, "Tag"), h("input", { id: "contentLibraryTags", value: (e?.tag ?? []).join(", ") })),
+            h("div", { class: "field omi-span-2" }, h("label", null, "Ghi chú dùng lại"), h("input", { id: "contentLibraryNotes", value: e?.ghiChu ?? "" }))
+          ),
+          h("p", { class: "status-line", id: "nd-kho-trang-thai" }, ""),
+          h("div", { class: "content-filters omi-section-gap" }, h("div", { class: "field" }, h("label", null, "Tìm trong kho"), query), h("div", { class: "field" }, h("label", null, "Kênh"), channel)),
+          h("div", { class: "content-library-list omi-section-gap", id: "nd-ds-kho" }, ...this.items.length ? this.items.map((item) => this.card(item)) : [h("p", { class: "subtle" }, "Chưa có bài phù hợp bộ lọc.")])
+        )
+      ));
+    }
+    card(item) {
+      const expanded = this.expanded === item.id;
+      const quote = item.quote || item.noiDung.split(/\n+/).map((l) => l.trim()).filter(Boolean)[0] || "";
+      return h(
+        "article",
+        { class: `content-library-row${expanded ? " expanded" : ""}` },
+        h(
+          "div",
+          { class: "content-library-row-main" },
+          h(
+            "div",
+            { class: "content-library-row-text" },
+            h("div", { class: "product-title" }, item.tieuDe),
+            h("div", { class: "subtle" }, [CHANNEL[item.kenh] ?? item.kenh, STATUS[item.trangThai] ?? item.trangThai, item.dongSanPham || "chưa gắn dòng"].join(" · ")),
+            quote ? h("div", { class: "content-library-row-quote" }, quote) : "",
+            h("div", { class: "thread-meta" }, ...item.maSanPham.slice(0, 5).map((c) => h("span", { class: "badge green" }, c)), ...item.tag.slice(0, 4).map((t) => h("span", { class: "badge amber" }, t)))
+          ),
+          h(
+            "div",
+            { class: "content-library-row-actions" },
+            item.kenh === "facebook" ? h("button", { class: "primary-button compact-button", type: "button", "data-action": "prepare-facebook-publish", "data-id": item.id }, "Đăng Facebook") : "",
+            h("button", { class: "secondary-button compact-button", type: "button", "data-action": "toggle-content-library-detail", "data-id": item.id }, expanded ? "Thu gọn" : "Xem"),
+            h("button", { class: "secondary-button compact-button", type: "button", "data-action": "copy-content-library-item", "data-id": item.id }, "Copy"),
+            h("button", { class: "secondary-button compact-button", type: "button", "data-action": "load-content-library-item", "data-id": item.id }, "Sửa"),
+            h("button", { class: "danger-button compact-button", type: "button", "data-action": "delete-content-library-item", "data-id": item.id }, "Xóa")
+          )
+        ),
+        expanded ? h(
+          "div",
+          { class: "content-library-detail" },
+          h("div", { class: "content-library-detail-body" }, ...item.noiDung.split("\n").flatMap((line, i) => i === 0 ? [line] : [h("br"), line])),
+          item.ghiChu ? h("div", { class: "subtle" }, item.ghiChu) : ""
+        ) : ""
+      );
+    }
+    async saveItem() {
+      const v = (id) => document.getElementById(id)?.value ?? "";
+      const r = await this.host.ctx.gateway.landing("noi-dung.kho-bai.ghi", {
+        id: this.editing?.id ?? "",
+        tieuDe: v("contentLibraryTitle"),
+        kenh: v("contentLibraryChannel"),
+        trangThai: v("contentLibraryStatus"),
+        dongSanPham: v("contentLibraryProductLine"),
+        maSanPham: v("contentLibraryProductCodes"),
+        quote: v("contentLibraryQuote"),
+        noiDung: v("contentLibraryBody"),
+        tag: v("contentLibraryTags"),
+        ghiChu: v("contentLibraryNotes")
+      });
+      if (!r.ok) {
+        status(document.getElementById("nd-kho-trang-thai"), r.viSao, "bad");
+        return;
+      }
+      this.editing = null;
+      await this.loadItems();
+      status(document.getElementById("nd-kho-trang-thai"), "Đã lưu bài vào kho.", "good");
+    }
+    async copy(id) {
+      const item = this.items.find((i) => i.id === id);
+      if (!item) return;
+      const text2 = `${item.tieuDe}${item.quote ? `
+
+"${item.quote}"` : ""}
+
+${item.noiDung}${item.maSanPham.length ? `
+
+---
+Mã liên quan: ${item.maSanPham.join(", ")}` : ""}`.trim();
+      let ok = true;
+      try {
+        await navigator.clipboard.writeText(text2);
+      } catch {
+        ok = false;
+      }
+      status(document.getElementById("nd-kho-trang-thai"), ok ? "Đã copy bài." : "Không copy được — chọn chữ trong phần Xem rồi Ctrl+C.", ok ? "good" : "bad");
+    }
+    armedDelete = "";
+    async remove(button, id) {
+      if (this.armedDelete !== id) {
+        this.armedDelete = id;
+        button.textContent = "Bấm lần nữa để xoá";
+        return;
+      }
+      this.armedDelete = "";
+      const r = await this.host.ctx.gateway.landing("noi-dung.kho-bai.xoa", { id });
+      await this.loadItems();
+      status(document.getElementById("nd-kho-trang-thai"), r.ok ? "Đã xoá bài khỏi kho." : r.viSao, r.ok ? "good" : "bad");
+    }
+  };
+
+  // ../omi/packages/omi-ui/src/views/content/pool.ts
+  var PoolSection = class {
+    constructor(host) {
+      this.host = host;
+    }
+    host;
+    pool = null;
+    loading = false;
+    trends = null;
+    researching = false;
+    filter = { q: "", hang: "", nhom: "", gocChup: false, moi: false };
+    build() {
+      return h("div", { id: "nd-sec-pool" }, h("section", { class: "cpool", id: "nd-pool" }), h("div", { id: "nd-trend" }));
+    }
+    actions = {
+      "reload-content-pool": () => this.reload(),
+      "refresh-content-trend-status": () => this.loadTrends(),
+      "run-content-trend-research": () => this.research()
+    };
+    async load() {
+      this.paint();
+      await this.loadTrends();
+    }
+    readFilter() {
+      const v = (id) => document.getElementById(id);
+      this.filter = { q: v("contentPoolQuery")?.value ?? "", hang: v("contentPoolBrand")?.value ?? "", nhom: v("contentPoolCategory")?.value ?? "", gocChup: v("contentPoolGallery")?.checked === true, moi: v("contentPoolFresh")?.checked === true };
+    }
+    async reload() {
+      this.readFilter();
+      this.loading = true;
+      this.paint();
+      const r = await this.host.ctx.gateway.landing("noi-dung.kho-ma", { q: this.filter.q, hang: this.filter.hang, nhom: this.filter.nhom, gocChup: this.filter.gocChup, moi: this.filter.moi });
+      this.loading = false;
+      if (r.ok && r.than) this.pool = r.than;
+      this.paint();
+      if (!r.ok) status(document.getElementById("nd-pool-trang-thai"), r.viSao, "bad");
+    }
+    paint() {
+      const root = document.getElementById("nd-pool");
+      if (root === null) return;
+      const pool = this.pool;
+      const rows = pool?.rows ?? [];
+      const body = this.loading ? [h("tr", null, h("td", { colspan: "9", class: "cpool-empty" }, "Đang đọc kho mã…"))] : rows.length === 0 ? [h("tr", null, h("td", { colspan: "9", class: "cpool-empty" }, pool ? "Không có mã nào khớp bộ lọc." : "Bấm Tải kho mã để bắt đầu."))] : rows.map((row) => h(
+        "tr",
+        null,
+        h("td", null, h("code", null, row.code)),
+        h("td", null, row.name.slice(0, 44)),
+        h("td", null, row.brand),
+        h("td", null, row.category),
+        h("td", { class: "cpool-num" }, `${Math.round(row.salePrice / 1e3)}k`),
+        h("td", { class: "cpool-num" }, String(row.sizeCount)),
+        h("td", { class: "cpool-num" }, String(row.imageCount)),
+        h("td", { class: "cpool-num", title: row.priorityReasons.join(" · ") }, String(row.priorityScore)),
+        h("td", null, row.isHotProduct ? h("span", { class: "cpool-tag ok" }, "được quan tâm") : "", ...row.priorityReasons.slice(0, 2).map((r) => h("span", { class: "cpool-tag" }, r)), row.galleryReady ? h("span", { class: "cpool-tag" }, "đủ góc chụp") : "")
+      ));
+      clear(root);
+      root.append(
+        h(
+          "header",
+          { class: "cpool-head" },
+          h(
+            "div",
+            null,
+            h("h2", null, "Kho mã"),
+            h("p", { class: "cpool-sub" }, `Chỉ hiện mã còn size, có ảnh và có tên, xếp theo bán chạy, tương tác, xu hướng tuần và giảm sâu. ${pool ? `${pool.matched} mã khớp trên tổng ${pool.total}.` : "Bấm Tải kho mã để đọc từ catalog."}`)
+          ),
+          h("button", { class: "cpool-btn", type: "button", "data-action": "reload-content-pool", id: "nut-kho-ma" }, "Tải kho mã")
+        ),
+        h(
+          "div",
+          { class: "cpool-filters" },
+          h("input", { id: "contentPoolQuery", type: "search", placeholder: "Tìm mã hoặc tên", value: this.filter.q }),
+          h("select", { id: "contentPoolBrand" }, option("", "Tất cả hãng", this.filter.hang), ...(pool?.brands ?? []).map((b) => option(b, b, this.filter.hang))),
+          h("select", { id: "contentPoolCategory" }, option("", "Tất cả nhóm", this.filter.nhom), ...(pool?.categories ?? []).map((c) => option(c, c, this.filter.nhom))),
+          h("label", null, h("input", { type: "checkbox", id: "contentPoolGallery", checked: this.filter.gocChup }), " Đủ góc chụp"),
+          h("label", null, h("input", { type: "checkbox", id: "contentPoolFresh", checked: this.filter.moi }), " Chưa từng đăng")
+        ),
+        h("p", { class: "status-line", id: "nd-pool-trang-thai" }, ""),
+        h(
+          "div",
+          { class: "cpool-wrap" },
+          h(
+            "table",
+            { class: "cpool-table" },
+            h("thead", null, h("tr", null, ...["Mã", "Tên", "Hãng", "Nhóm", "Giá", "Cỡ", "Ảnh", "Ưu tiên", "Ghi chú"].map((t) => h("th", t === "Ưu tiên" ? { title: "Bán chạy + tương tác + xu hướng + sale sâu" } : null, t)))),
+            h("tbody", { id: "nd-bang-kho-ma" }, ...body)
+          )
+        )
+      );
+    }
+    async loadTrends() {
+      const r = await this.host.ctx.gateway.landing("noi-dung.xu-huong");
+      if (r.ok && r.than) this.trends = r.than;
+      this.paintTrends();
+    }
+    async research() {
+      this.researching = true;
+      this.paintTrends();
+      const r = await this.host.ctx.gateway.landing("noi-dung.xu-huong.chay");
+      this.researching = false;
+      if (r.ok && r.than) this.trends = r.than;
+      this.paintTrends();
+      const line = document.getElementById("nd-trend-trang-thai");
+      if (line !== null) status(line, r.ok ? str(r.than?.message) : r.viSao, r.ok ? "good" : "bad");
+    }
+    paintTrends() {
+      const root = document.getElementById("nd-trend");
+      if (root === null) return;
+      const t = this.trends;
+      const statusLabel = { ok: "OK", partial: "OK một phần", skipped: "Bỏ qua", error: "Lỗi" };
+      const line = t && t.lastRunAt ? `Lần chạy gần nhất: ${new Date(t.lastRunAt).toLocaleString("vi-VN")}${statusLabel[t.lastStatus] ? ` · ${statusLabel[t.lastStatus]}` : ""}${t.lastSummary ? ` · ${t.lastSummary}` : ""}${t.lastError ? ` · ${t.lastError}` : ""}` : "Chưa có dữ liệu nghiên cứu trend (tự chạy mỗi tuần khi mở màn Content, hoặc bấm nút bên phải).";
+      const cards = [...t?.cards ?? []].sort((a, b) => b.hotScore - a.hotScore);
+      clear(root);
+      root.append(h(
+        "section",
+        { class: "panel content-brief-panel omi-section-gap" },
+        h(
+          "div",
+          { class: "panel-header" },
+          h(
+            "div",
+            null,
+            h("h3", null, "Thẻ kiến thức model · trend tuần"),
+            h("p", null, "Bộ não trên Xeon nghiên cứu mỗi tuần: độ hot 0–20 (kẹp ±5đ/tuần), lý do trend. Kho mã đọc độ hot này khi xếp ưu tiên."),
+            h("p", { class: "subtle", id: "nd-trend-dong" }, line)
+          ),
+          h(
+            "div",
+            { class: "split-actions" },
+            h("button", { class: "secondary-button", type: "button", "data-action": "refresh-content-trend-status" }, "Tải trạng thái"),
+            h("button", { class: "primary-button", type: "button", "data-action": "run-content-trend-research", disabled: this.researching, id: "nut-xu-huong" }, this.researching ? "Đang nghiên cứu…" : "Nghiên cứu trend tuần")
+          )
+        ),
+        h(
+          "div",
+          { class: "panel-body", id: "nd-bang-xu-huong" },
+          h("p", { class: "status-line", id: "nd-trend-trang-thai" }, ""),
+          ...cards.length ? cards.slice(0, 20).map((c) => h(
+            "p",
+            { class: "subtle" },
+            h("span", { class: "badge amber" }, `Hot ${c.hotScore}`),
+            " ",
+            h("span", { class: `badge ${c.trendStatus === "rising" ? "green" : c.trendStatus === "cooling" ? "amber" : "blue"}` }, c.trendStatus === "rising" ? "Đang lên" : c.trendStatus === "cooling" ? "Đang nguội" : "Ổn định"),
+            " ",
+            h("strong", null, c.dong || c.key),
+            c.hang ? ` (${c.hang})` : "",
+            c.trendReason ? ` · ${c.trendReason}` : "",
+            c.lastResearchedAt ? ` · cập nhật ${new Date(c.lastResearchedAt).toLocaleDateString("vi-VN")}` : ""
+          )) : [h("p", { class: "subtle" }, 'Chưa có thẻ trend nào — bấm "Nghiên cứu trend tuần" để tạo đợt đầu.')]
+        )
+      ));
+    }
+  };
+
+  // ../omi/packages/omi-ui/src/views/content/posts.ts
+  var STATUS_TABS = [["all", "Tất cả"], ["scheduled", "Đã lên lịch"], ["published", "Đã đăng"], ["draft", "Nháp"], ["failed", "Lỗi"], ["cancelled", "Đã hủy"]];
+  var emptyDraft = () => ({ id: "", trangThai: "", trang: "", noiDung: "", lienKet: "", anh: [], anhBinhLuan: [], nenChu: "", lichDang: "", cheDo: "none", mauId: "", chuBinhLuan: "", maSP: [], maKhoBai: "", maLo: "", maBai: "" });
+  var PostsSection = class {
+    constructor(host) {
+      this.host = host;
+    }
+    host;
+    jobs = [];
+    counts = {};
+    templates = [];
+    presets = [];
+    pageList = [];
+    tab = "all";
+    query = "";
+    pageFilter = "all";
+    menuOpen = "";
+    composerOpen = false;
+    draft = emptyDraft();
+    device = "desktop";
+    cards = [];
+    cardFilters = {};
+    gallerySelection = {};
+    cardBusy = "";
+    pages() {
+      return this.pageList;
+    }
+    templateList() {
+      return this.templates;
+    }
+    build() {
+      return h("div", { id: "nd-sec-posts" }, h("div", { id: "nd-posts" }), h("div", { id: "nd-composer" }));
+    }
+    actions = {
+      "sync-facebook-publish-jobs": () => this.sync(),
+      "refresh-facebook-publish-jobs": () => this.load(),
+      "cm2-new-post": () => {
+        this.draft = emptyDraft();
+        this.composerOpen = true;
+        this.paintComposer();
+      },
+      "cm2-status-tab": (b) => {
+        this.tab = str(b.dataset["status"]) || "all";
+        this.paint();
+      },
+      "toggle-cm2-menu": (b) => {
+        const id = str(b.dataset["id"]);
+        this.menuOpen = this.menuOpen === id ? "" : id;
+        this.paint();
+      },
+      "edit-facebook-publish-job": (b) => this.edit(str(b.dataset["id"])),
+      "cancel-facebook-publish-job": (b) => this.jobAction("dang-bai.huy", str(b.dataset["id"]), "Đã huỷ lịch trên Meta."),
+      "publish-now-facebook-job": (b) => this.jobAction("dang-bai.dang-ngay", str(b.dataset["id"]), "Đã đăng ngay."),
+      "delete-facebook-publish-job": (b) => this.jobAction("dang-bai.xoa", str(b.dataset["id"]), "Đã xoá."),
+      "retry-facebook-publish-comments": (b) => this.jobAction("dang-bai.binh-luan-lai", str(b.dataset["id"]), "Đã gửi lại comment lỗi."),
+      "run-tool-publish-job": (b) => this.jobAction("dang-bai.dang-ngay", str(b.dataset["id"]), "Đã đăng ngay."),
+      "open-content-from-facebook": (b) => this.host.openLibraryItem(str(b.dataset["contentId"])),
+      "clear-content-manager-editor": () => {
+        this.composerOpen = false;
+        this.draft = emptyDraft();
+        this.paintComposer();
+      },
+      "clear-facebook-publish-draft": () => {
+        this.draft = emptyDraft();
+        this.paintComposer();
+      },
+      "submit-facebook-publish": (b) => this.submit(str(b.dataset["mode"])),
+      "cm2-preview-device": (b) => {
+        this.readForm();
+        this.device = b.dataset["device"] === "mobile" ? "mobile" : "desktop";
+        this.paintComposer();
+      },
+      "select-facebook-text-preset": (b) => {
+        this.readForm();
+        this.draft.nenChu = str(b.dataset["id"]);
+        this.paintComposer();
+      },
+      "remove-facebook-post-image": (b) => {
+        this.readForm();
+        this.draft.anh.splice(Number(b.dataset["index"]), 1);
+        this.paintComposer();
+      },
+      "remove-facebook-comment-image": (b) => {
+        this.readForm();
+        this.draft.anhBinhLuan.splice(Number(b.dataset["index"]), 1);
+        this.paintComposer();
+      },
+      "search-facebook-product-cards": () => this.searchCards(),
+      "toggle-facebook-card-gallery-image": (b) => {
+        const code = str(b.dataset["code"]);
+        const image = str(b.dataset["image"]);
+        const list = this.gallerySelection[code] ?? [];
+        this.gallerySelection[code] = list.includes(image) ? list.filter((x) => x !== image) : [...list, image];
+        this.readForm();
+        this.paintComposer();
+      },
+      "add-facebook-product-card": (b) => this.addCards(str(b.dataset["code"]), [""]),
+      "add-facebook-product-card-gallery": (b) => this.addCards(str(b.dataset["code"]), this.gallerySelection[str(b.dataset["code"])] ?? []),
+      "add-all-facebook-product-cards": () => this.addAllCards()
+    };
+    async load() {
+      const r = await this.host.ctx.gateway.landing("dang-bai.bai", {});
+      if (r.ok) {
+        this.jobs = r.than?.lenh ?? [];
+        this.counts = r.than?.dem ?? {};
+        this.templates = r.than?.mau ?? [];
+        this.pageList = r.than?.trang ?? [];
+        this.presets = r.than?.nenChu ?? [];
+      }
+      this.paint();
+      if (!r.ok) this.say(r.viSao, "bad");
+    }
+    say(text2, tone = "") {
+      const line = document.getElementById("nd-posts-trang-thai");
+      if (line !== null) status(line, text2, tone);
+    }
+    filtered() {
+      const q2 = this.query.toLowerCase();
+      return this.jobs.filter((j) => {
+        const effective = j.trangThai === "deleted" ? "cancelled" : j.trangThai;
+        if (this.tab !== "all" && effective !== this.tab) return false;
+        if (this.pageFilter !== "all" && j.trang !== this.pageFilter) return false;
+        return q2 === "" || `${j.tenTrang} ${j.noiDung}`.toLowerCase().includes(q2);
+      });
+    }
+    paint() {
+      const root = document.getElementById("nd-posts");
+      if (root === null) return;
+      const query = h("input", { id: "contentManagerQuery", value: this.query, placeholder: "🔍 Tìm theo tiêu đề, nội dung hoặc Fanpage..." });
+      query.addEventListener("input", () => {
+        this.query = query.value;
+        this.paintRows();
+      });
+      const pageFilter = h("select", { id: "contentManagerPageFilter" }, option("all", "Fanpage: tất cả", this.pageFilter), ...this.pageList.map((p) => option(p.ma, p.ten || p.ma, this.pageFilter)));
+      pageFilter.addEventListener("change", () => {
+        this.pageFilter = pageFilter.value;
+        this.paintRows();
+      });
+      const count = (key) => key === "all" ? this.jobs.length : Number(this.counts[key] ?? 0);
+      clear(root);
+      root.append(h(
+        "section",
+        { class: "panel content-manager-shell" },
+        h(
+          "div",
+          { class: "panel-header" },
+          h("div", null, h("h3", null, "Bảng tin bài viết"), h("p", null, "Mỗi dòng là một bài đã gửi hoặc chuẩn bị gửi lên Fanpage — trạng thái, số liệu, thao tác tại chỗ.")),
+          h(
+            "div",
+            { class: "split-actions" },
+            h("button", { class: "secondary-button", type: "button", "data-action": "sync-facebook-publish-jobs", id: "nut-db-dong-bo" }, "Đồng bộ kết quả"),
+            h("button", { class: "secondary-button", type: "button", "data-action": "refresh-facebook-publish-jobs" }, "Tải lại"),
+            h("button", { class: "primary-button", type: "button", "data-action": "cm2-new-post", id: "nut-db-tao" }, "＋ Tạo bài viết")
+          )
+        ),
+        h("div", { class: "cm2-tabs" }, ...STATUS_TABS.map(([key, label]) => h("button", { class: `cm2-tab${this.tab === key ? " on" : ""}`, type: "button", "data-action": "cm2-status-tab", "data-status": key }, `${label} · ${count(key)}`))),
+        h("div", { class: "content-manager-toolbar cm2-filters" }, query, pageFilter),
+        h("p", { class: "status-line", id: "nd-posts-trang-thai" }, ""),
+        h(
+          "div",
+          { class: "cm2-table-scroll" },
+          h(
+            "table",
+            { class: "cm2-posts" },
+            h("thead", null, h("tr", null, ...["Bài viết", "Trạng thái", "Thời gian", "Tiếp cận", "Cảm xúc", "Bình luận", "Chia sẻ", "Hiệu quả", ""].map((t, i) => h("th", i >= 3 && i <= 7 ? { class: "num" } : null, t)))),
+            h("tbody", { id: "nd-bang-dang" })
+          )
+        )
+      ));
+      this.paintRows();
+      this.paintComposer();
+    }
+    paintRows() {
+      const body = document.getElementById("nd-bang-dang");
+      if (body === null) return;
+      clear(body);
+      const rows = this.filtered();
+      if (rows.length === 0) {
+        body.append(h("tr", null, h("td", { colspan: "9" }, h("div", { class: "content-manager-empty" }, h("strong", null, "Chưa có bài phù hợp."), h("p", null, 'Bấm "＋ Tạo bài viết" hoặc vào Kho content chọn “Đăng Facebook” để đưa bài vào bảng tin.')))));
+        return;
+      }
+      for (const job of rows) body.append(this.row(job));
+    }
+    row(job) {
+      const statusClass = job.trangThai === "published" ? "green" : job.trangThai === "failed" ? "red" : job.trangThai === "scheduled" ? "blue" : "neutral";
+      const commentFailed = job.binhLuan.trangThai === "failed" || (job.anhBinhLuan ?? []).some((a) => a.trangThai === "failed");
+      const first = job.anh[0] ? imageUrl(job.anh[0], this.host.base()) : "";
+      const num = (v) => job.trangThai === "published" && job.soLieu ? String(Number(v ?? 0)) : "—";
+      const menu = this.menuOpen === job.id;
+      const item = (action, label, danger = false) => h("button", { type: "button", "data-action": action, "data-id": job.id, class: danger ? "danger" : "" }, label);
+      const open = job.duongDan ? h("button", { class: "cm2-icobtn", type: "button", title: "Xem trên Facebook", onclick: () => void this.host.ctx.gateway.openFacebook(job.duongDan) }, "👁") : null;
+      return h(
+        "tr",
+        { class: job.trangThai === "failed" ? "cm2-row-err" : "", "data-job": job.id },
+        h("td", null, h(
+          "div",
+          { class: "cm2-postcell" },
+          first ? h("img", { class: "cm2-thumb", src: first, alt: "", loading: "lazy" }) : h("div", { class: "cm2-thumb placeholder" }, "FB", job.anh.length ? h("em", null, `${job.anh.length} ảnh`) : ""),
+          h(
+            "div",
+            { class: "cm2-postmeta" },
+            h("strong", null, job.noiDung.split("\n")[0]?.slice(0, 70) || "Bài Facebook"),
+            h("span", null, `${job.tenTrang || "Fanpage"}${job.noiDung ? ` · ${job.noiDung.slice(0, 60)}${job.noiDung.length > 60 ? "…" : ""}` : ""}`),
+            job.loi ? h("small", { class: "cm2-err" }, job.loi.slice(0, 110)) : "",
+            commentFailed ? h("small", { class: "cm2-err" }, "Comment sau bài bị lỗi") : ""
+          )
+        )),
+        h("td", null, h("span", { class: `badge ${statusClass}` }, job.nhanTrangThai || job.trangThai)),
+        h("td", { class: "cm2-time" }, savedTime(job.dangLuc || job.lichDang || job.suaLuc || job.taoLuc)),
+        h("td", { class: "num" }, num(job.soLieu?.tiepCan)),
+        h("td", { class: "num" }, num(job.soLieu?.camXuc)),
+        h("td", { class: "num" }, num(job.soLieu?.binhLuan)),
+        h("td", { class: "num" }, num(job.soLieu?.chiaSe)),
+        h("td", { class: "num" }, job.hieuQua ? h("span", { class: `badge ${job.hieuQua.diem >= 60 ? "green" : job.hieuQua.diem >= 40 ? "amber" : "neutral"}` }, `${job.hieuQua.diem} · ${job.hieuQua.nhan}`) : "—"),
+        h("td", null, h(
+          "div",
+          { class: "cm2-rowact" },
+          open ?? "",
+          h("button", { class: "cm2-icobtn", type: "button", "data-action": "edit-facebook-publish-job", "data-id": job.id, title: job.trangThai === "scheduled" ? "Sửa / đổi lịch" : job.trangThai === "published" ? "Sửa chữ (ảnh khóa)" : job.trangThai === "draft" ? "Sửa nháp" : "Sửa & đăng lại" }, "✏"),
+          h(
+            "div",
+            { class: "cm2-menu" },
+            h("button", { class: "cm2-icobtn", type: "button", "data-action": "toggle-cm2-menu", "data-id": job.id, title: "Thêm thao tác" }, "⋯"),
+            menu ? h(
+              "div",
+              { class: "cm2-menu-pop" },
+              job.nguon.maKhoBai ? h("button", { type: "button", "data-action": "open-content-from-facebook", "data-content-id": job.nguon.maKhoBai }, "Bài gốc trong Kho content") : "",
+              commentFailed ? item("retry-facebook-publish-comments", "Đăng lại comment lỗi") : "",
+              job.trangThai === "failed" ? item("edit-facebook-publish-job", "Sửa & thử lại") : "",
+              job.trangThai === "scheduled" ? item("publish-now-facebook-job", "Đăng ngay") : "",
+              job.trangThai === "scheduled" ? item("cancel-facebook-publish-job", "Hủy lịch", true) : "",
+              job.trangThai === "published" ? item("delete-facebook-publish-job", "Xóa bài trên Facebook", true) : "",
+              job.trangThai === "draft" ? item("delete-facebook-publish-job", "Xóa nháp", true) : "",
+              ["failed", "cancelled", "deleted"].includes(job.trangThai) ? item("delete-facebook-publish-job", "Gỡ khỏi danh sách", true) : ""
+            ) : ""
+          )
+        ))
+      );
+    }
+    /** Opens the composer prefilled (from a batch post or a library item). */
+    compose(prefill) {
+      this.draft = {
+        ...emptyDraft(),
+        trang: str(prefill.trang),
+        noiDung: str(prefill.noiDung),
+        anh: [...prefill.anh ?? []],
+        cheDo: prefill.binhLuan?.cheDo ?? "none",
+        chuBinhLuan: prefill.binhLuan?.chu ?? "",
+        maSP: prefill.nguon?.maSP ?? [],
+        maKhoBai: str(prefill.maKhoBai ?? prefill.nguon?.maKhoBai),
+        maLo: str(prefill.nguon?.maLo),
+        maBai: str(prefill.nguon?.maBai)
+      };
+      this.composerOpen = true;
+      this.paintComposer();
+    }
+    edit(id) {
+      const job = this.jobs.find((j) => j.id === id);
+      if (!job) return;
+      this.draft = {
+        id: job.id,
+        trangThai: job.trangThai,
+        trang: job.trang,
+        noiDung: job.noiDung,
+        lienKet: job.lienKet,
+        anh: [...job.anh],
+        anhBinhLuan: (job.anhBinhLuan ?? []).map((a) => a.url),
+        nenChu: str(job.nenChu),
+        lichDang: job.lichDang,
+        cheDo: job.binhLuan.cheDo,
+        mauId: job.binhLuan.mauId,
+        chuBinhLuan: job.binhLuan.cheDo === "custom" ? job.binhLuan.chu : "",
+        maSP: job.nguon.maSP,
+        maKhoBai: job.nguon.maKhoBai,
+        maLo: job.nguon.maLo,
+        maBai: job.nguon.maBai
+      };
+      this.menuOpen = "";
+      this.composerOpen = true;
+      this.paint();
+    }
+    /** Reads the composer's inputs into the draft before a repaint. */
+    readForm() {
+      const v = (id) => document.getElementById(id)?.value;
+      if (document.getElementById("cm2-noi-dung") === null) return;
+      this.draft.trang = v("cm2-trang") ?? this.draft.trang;
+      this.draft.noiDung = v("cm2-noi-dung") ?? this.draft.noiDung;
+      this.draft.lienKet = v("cm2-lien-ket") ?? this.draft.lienKet;
+      this.draft.cheDo = v("cm2-che-do-bl") ?? this.draft.cheDo;
+      this.draft.mauId = v("cm2-mau-bl") ?? this.draft.mauId;
+      this.draft.chuBinhLuan = v("cm2-chu-bl") ?? this.draft.chuBinhLuan;
+      const when = v("cm2-lich");
+      if (when !== void 0) this.draft.lichDang = when === "" ? "" : new Date(when).toISOString();
+      const extra = v("cm2-anh-url");
+      if (extra) this.draft.anh.push(...extra.split(/\s+/).filter((u) => /^https?:\/\//i.test(u)));
+    }
+    paintComposer() {
+      const root = document.getElementById("nd-composer");
+      if (root === null) return;
+      clear(root);
+      if (!this.composerOpen) return;
+      const d = this.draft;
+      const isPublished = d.trangThai === "published";
+      const isScheduled = d.trangThai === "scheduled";
+      const titles = { draft: "Sửa nháp", scheduled: "Sửa bài đã lên lịch", published: "Sửa bài đã đăng", failed: "Sửa & thử lại", cancelled: "Sửa & đăng lại" };
+      const subtitle = isPublished ? "Meta chỉ cho sửa chữ — ảnh và nền màu đã khóa 🔒" : isScheduled ? "Chữ/giờ cập nhật thẳng vào bài đang chờ; đổi ảnh hệ thống tự hủy lịch cũ và tạo lại" : d.trangThai === "failed" ? "Sửa nội dung rồi gửi lại lên Meta" : "Bài soạn trực tiếp — có thể đẩy nội dung từ Kho content / Soạn bài sang, không bắt buộc";
+      const actionButtons = isPublished || isScheduled ? [h("button", { class: "primary-button", type: "button", "data-action": "submit-facebook-publish", "data-mode": "update", id: "nut-cm2-luu" }, isPublished ? "Lưu chữ mới" : "Lưu thay đổi")] : [
+        h("button", { class: "ghost-button", type: "button", "data-action": "submit-facebook-publish", "data-mode": "draft", id: "nut-cm2-nhap" }, "Lưu nháp"),
+        h("button", { class: "primary-button", type: "button", "data-action": "submit-facebook-publish", "data-mode": "schedule", id: "nut-cm2-len-lich" }, "Lên lịch"),
+        h("button", { class: "secondary-button", type: "button", "data-action": "submit-facebook-publish", "data-mode": "now", id: "nut-cm2-dang-ngay" }, "Đăng ngay")
+      ];
+      const pageSelect = h("select", { id: "cm2-trang", disabled: isPublished || isScheduled }, option("", "Chọn Fanpage", d.trang), ...this.pageList.map((p) => option(p.ma, p.ten || p.ma, d.trang)));
+      const message = h("textarea", { id: "cm2-noi-dung", rows: "10", value: d.noiDung });
+      message.addEventListener("input", () => {
+        this.draft.noiDung = message.value;
+        this.paintPreview();
+      });
+      pageSelect.addEventListener("change", () => {
+        this.draft.trang = pageSelect.value;
+        this.paintPreview();
+      });
+      const fileInput = h("input", { id: "facebookPostImageFiles", type: "file", accept: "image/*", multiple: true, class: "omi-an" });
+      fileInput.addEventListener("change", () => void this.uploadFiles(fileInput, "anh"));
+      const commentFiles = h("input", { id: "facebookCommentImageFiles", type: "file", accept: "image/*", multiple: true, class: "omi-an" });
+      commentFiles.addEventListener("change", () => void this.uploadFiles(commentFiles, "anhBinhLuan"));
+      const modeSelect = h("select", { id: "cm2-che-do-bl" }, option("none", "Không comment", d.cheDo), option("template", "Chọn comment mẫu", d.cheDo), option("custom", "Nhập comment riêng", d.cheDo));
+      modeSelect.addEventListener("change", () => {
+        this.readForm();
+        this.paintComposer();
+      });
+      const bulk = Object.entries(this.gallerySelection).reduce((n, [, list]) => n + list.length, 0);
+      root.append(h(
+        "section",
+        { class: "panel content-manager-editor", id: "content-manager-editor" },
+        h(
+          "div",
+          { class: "panel-header" },
+          h("div", null, h("h3", null, titles[d.trangThai] ?? "Tạo bài viết mới"), h("p", null, subtitle)),
+          h("button", { class: "ghost-button", type: "button", "data-action": "clear-content-manager-editor" }, "Đóng")
+        ),
+        h(
+          "div",
+          { class: "cm2-composer" },
+          h(
+            "div",
+            { class: "panel-body config-form cm2-compose-form" },
+            h("label", null, "Fanpage", pageSelect),
+            h("label", null, "Nội dung", message),
+            isPublished ? h("div", { class: "cm2-lock-note" }, "🔒 Ảnh, card sản phẩm, nền màu và lịch đăng đã khóa — Meta không cho đổi sau khi đăng.") : h(
+              "div",
+              null,
+              h(
+                "div",
+                { class: "facebook-comment-image-queue" },
+                h(
+                  "div",
+                  { class: "section-title-row" },
+                  h("div", null, h("h4", null, "Ảnh bài viết (album)"), h("p", { class: "subtle" }, "Tối đa 10 ảnh, đăng kèm bài dưới dạng album; bài có ảnh cần tối thiểu 5 ảnh.")),
+                  h("label", { class: "secondary-button compact-button file-button" }, "Thêm ảnh", fileInput)
+                ),
+                h("div", { class: "facebook-comment-image-list", id: "cm2-ds-anh" }, ...d.anh.length ? d.anh.map((url, i) => h(
+                  "div",
+                  { class: "facebook-comment-image-row" },
+                  h("span", null, String(i + 1)),
+                  h("strong", null, url.split("/").pop() ?? url),
+                  h("small", null, "đã tải"),
+                  h("button", { class: "ghost-button compact-button", type: "button", "data-action": "remove-facebook-post-image", "data-index": String(i) }, "Bỏ")
+                )) : [h("p", { class: "subtle" }, "Chưa chọn ảnh — bài sẽ đăng không kèm album.")]),
+                h("input", { id: "cm2-anh-url", placeholder: "Hoặc dán URL ảnh công khai (cách nhau dấu cách) rồi bấm Lưu nháp" })
+              ),
+              h(
+                "div",
+                { class: "facebook-comment-image-queue" },
+                h("div", { class: "section-title-row" }, h("div", null, h("h4", null, "Ảnh sản phẩm tự sinh (card giá + size)"), h("p", { class: "subtle" }, 'Card sinh từ giá web hiện tại: giá bán, size còn hàng, nhận diện thương hiệu của shop. Bấm "Card sideview" hoặc chọn ảnh gallery.'))),
+                h(
+                  "div",
+                  { class: "facebook-product-card-search omi-wrap" },
+                  h("input", { id: "facebookProductCardQuery", placeholder: "Mã hoặc tên (bỏ trống được nếu đã chọn bộ lọc)" }),
+                  h("select", { id: "facebookProductCardSport", title: "Lọc theo môn" }, option("", "Môn: tất cả", ""), ...(this.cardFilters["sports"] ?? []).map((x) => option(x.id, x.label, ""))),
+                  h("select", { id: "facebookProductCardType", title: "Lọc theo loại" }, option("", "Loại: tất cả", ""), ...(this.cardFilters["types"] ?? []).map((x) => option(x.id, x.label, ""))),
+                  h("select", { id: "facebookProductCardSource", title: "Lọc theo nguồn hàng" }, option("", "Nguồn: tất cả", ""), ...(this.cardFilters["sources"] ?? []).map((x) => option(x.id, x.label, ""))),
+                  h("select", { id: "facebookProductCardBrand", title: "Lọc theo thương hiệu" }, option("", "Hãng: tất cả", ""), ...(this.cardFilters["brands"] ?? []).map((x) => option(x.id, x.label, ""))),
+                  h("select", { id: "facebookProductCardSort" }, option("sale-desc", "Sale sâu nhất", "sale-desc"), option("price-asc", "Giá thấp → cao", ""), option("price-desc", "Giá cao → thấp", "")),
+                  h("button", { class: "secondary-button compact-button", type: "button", "data-action": "search-facebook-product-cards", disabled: this.cardBusy !== "" }, this.cardBusy === "search" ? "Đang tìm..." : "Tìm"),
+                  h("button", { class: "primary-button compact-button", type: "button", "data-action": "add-all-facebook-product-cards", disabled: bulk === 0 || this.cardBusy !== "" }, this.cardBusy === "bulk" ? "Đang sinh..." : `＋ Sinh tất cả (${bulk} ảnh)`)
+                ),
+                h("div", { id: "cm2-the-sp" }, ...this.cards.map((item) => this.cardRow(item)))
+              ),
+              h(
+                "div",
+                { class: "facebook-text-preset-picker" },
+                h("div", { class: "section-title-row" }, h("div", null, h("h4", null, "Nền màu chữ (thử nghiệm)"), h("p", { class: "subtle" }, "Chữ hiện to trên nền màu như soạn trực tiếp trên Facebook; nội dung ngắn (~130 ký tự) mới hiện cỡ to."))),
+                h(
+                  "div",
+                  { class: "facebook-text-preset-row" },
+                  h("button", { class: `facebook-text-preset-swatch none${d.nenChu ? "" : " active"}`, type: "button", "data-action": "select-facebook-text-preset", "data-id": "", title: "Không nền" }, "✕"),
+                  ...this.presets.map((p, i) => h("button", { class: `facebook-text-preset-swatch omi-preset-${i + 1}${d.nenChu === p.id ? " active" : ""}`, type: "button", "data-action": "select-facebook-text-preset", "data-id": p.id, title: p.label }))
+                )
+              ),
+              h(
+                "div",
+                { class: "grid two" },
+                h("label", null, "Comment sau khi đăng", modeSelect),
+                d.cheDo === "template" ? h("label", null, "Comment mẫu", h("select", { id: "cm2-mau-bl" }, option("", "Chọn mẫu", d.mauId), ...this.templates.filter((t) => t.bat !== false).map((t) => option(t.id, `${t.ten} · ${t.nhom}`, d.mauId)))) : ""
+              ),
+              d.cheDo === "custom" ? h("label", null, "Comment riêng", h("textarea", { id: "cm2-chu-bl", rows: "4", placeholder: "Có thể dùng {SHOP_LINK}, {PRODUCT_LINK}, {PRODUCT_CODE}, {PAGE_NAME}", value: d.chuBinhLuan })) : "",
+              h(
+                "div",
+                { class: "facebook-comment-image-queue" },
+                h(
+                  "div",
+                  { class: "section-title-row" },
+                  h("div", null, h("h4", null, "Ảnh sẽ comment lần lượt"), h("p", { class: "subtle" }, "Sau khi bài lên sóng, từng ảnh được comment theo thứ tự (tối đa 30).")),
+                  h("label", { class: "secondary-button compact-button file-button" }, "Chọn ảnh", commentFiles)
+                ),
+                h("div", { class: "facebook-comment-image-list" }, ...d.anhBinhLuan.length ? d.anhBinhLuan.map((url, i) => h(
+                  "div",
+                  { class: "facebook-comment-image-row" },
+                  h("span", null, String(i + 1)),
+                  h("strong", null, url.split("/").pop() ?? url),
+                  h("small", null, "đã tải"),
+                  h("button", { class: "ghost-button compact-button", type: "button", "data-action": "remove-facebook-comment-image", "data-index": String(i) }, "Bỏ")
+                )) : [h("p", { class: "subtle" }, "Chưa có ảnh comment.")])
+              ),
+              h(
+                "div",
+                { class: "grid two" },
+                h("label", null, "Link", h("input", { id: "cm2-lien-ket", value: d.lienKet, placeholder: `${this.host.base()}/...` })),
+                h("label", null, "Ngày giờ đăng (lịch Meta — máy tắt vẫn đăng)", h("input", { id: "cm2-lich", type: "datetime-local", value: localInputValue(d.lichDang) }))
+              )
+            ),
+            h("div", { class: "split-actions" }, ...actionButtons),
+            h("p", { class: "status-line", id: "cm2-trang-thai" }, isPublished ? "Muốn thêm ảnh cho bài đã đăng: dùng comment kèm ảnh." : "Bản đã đăng không bị sửa ngược lịch sử.")
+          ),
+          h(
+            "div",
+            { class: "cm2-preview-pane" },
+            h(
+              "div",
+              { class: "cm2-prevtabs" },
+              h("button", { class: `cm2-prevtab${this.device !== "mobile" ? " on" : ""}`, type: "button", "data-action": "cm2-preview-device", "data-device": "desktop" }, "Máy tính"),
+              h("button", { class: `cm2-prevtab${this.device === "mobile" ? " on" : ""}`, type: "button", "data-action": "cm2-preview-device", "data-device": "mobile" }, "Điện thoại")
+            ),
+            h("div", { id: "cm2-preview" })
+          )
+        )
+      ));
+      this.paintPreview();
+    }
+    cardRow(item) {
+      const selection = this.gallerySelection[item.code] ?? [];
+      const base = this.host.base();
+      return h(
+        "div",
+        { class: "facebook-product-card-row" },
+        item.thumb ? h("img", { src: imageUrl(item.thumb, base), alt: "" }) : "",
+        h(
+          "div",
+          { class: "facebook-product-card-info" },
+          h("strong", null, item.name),
+          h(
+            "span",
+            { class: "subtle" },
+            `${item.code}${item.priceText ? ` · ${item.priceText}` : ""}`,
+            item.salePercent ? h("strong", { class: "omi-sale" }, ` · -${item.salePercent}%`) : "",
+            item.sourceId !== "landing" ? h("strong", { class: "omi-source" }, ` · ${item.sourceLabel}`) : "",
+            item.brand ? ` · ${item.brand}` : ""
+          ),
+          item.gallery.length ? h("div", { class: "facebook-product-card-gallery" }, ...item.gallery.map((g) => h("img", { src: imageUrl(g, base), class: selection.includes(g) ? "selected" : "", title: "Bấm để chọn / bỏ chọn ảnh này", "data-action": "toggle-facebook-card-gallery-image", "data-code": item.code, "data-image": g }))) : ""
+        ),
+        h(
+          "div",
+          { class: "facebook-product-card-actions" },
+          h("button", { class: "secondary-button compact-button", type: "button", "data-action": "add-facebook-product-card", "data-code": item.code, disabled: this.cardBusy !== "" }, this.cardBusy === item.code ? "Đang sinh..." : "＋ Card sideview"),
+          h("button", { class: "secondary-button compact-button", type: "button", "data-action": "add-facebook-product-card-gallery", "data-code": item.code, disabled: selection.length === 0 || this.cardBusy !== "" }, `＋ Card gallery (${selection.length} ảnh)`)
+        )
+      );
+    }
+    /** Desk `cm2ComposerPreviewHTML` — only this node is redrawn on each key press. */
+    paintPreview() {
+      const node = document.getElementById("cm2-preview");
+      if (node === null) return;
+      const d = this.draft;
+      const page = this.pageList.find((p) => p.ma === d.trang);
+      const pageName = page?.ten || "Fanpage";
+      const initials2 = pageName.split(/\s+/).filter(Boolean).slice(0, 2).map((w) => w[0]).join("").toUpperCase() || "FB";
+      const presetIndex = this.presets.findIndex((p) => p.id === d.nenChu);
+      const shown = d.anh.slice(0, 4);
+      const extra = d.anh.length - shown.length;
+      const template = d.cheDo === "template" ? this.templates.find((t) => t.id === d.mauId) : null;
+      const commentText = d.cheDo === "custom" ? d.chuBinhLuan : str(template?.noiDung);
+      clear(node);
+      node.append(h(
+        "div",
+        { class: `cm2-fbprev${this.device === "mobile" ? " mobile" : ""}` },
+        h(
+          "div",
+          { class: "cm2-fbcard" },
+          h(
+            "div",
+            { class: "cm2-fbhead" },
+            h("div", { class: "cm2-avatar" }, initials2),
+            h("div", null, h("div", { class: "cm2-fbname" }, pageName), h("div", { class: "cm2-fbtime" }, `${d.lichDang ? `Đã lên lịch · ${savedTime(d.lichDang)}` : "Đăng ngay khi gửi"} · 🌐`))
+          ),
+          presetIndex >= 0 && d.noiDung.trim() ? h("div", { class: `cm2-fbmsg-preset omi-preset-${presetIndex + 1}${d.noiDung.length <= 130 ? "" : " small"}` }, h("span", null, d.noiDung)) : d.noiDung.trim() ? h("div", { class: "cm2-fbmsg" }, ...d.noiDung.split("\n").flatMap((line, i) => i === 0 ? [line] : [h("br"), line])) : h("div", { class: "cm2-fbmsg placeholder" }, "Nội dung bài sẽ hiện ở đây…"),
+          d.lienKet ? h("div", { class: "cm2-fblink" }, d.lienKet) : "",
+          d.anh.length ? h("div", { class: `cm2-fbgrid n${Math.min(d.anh.length, 4)}` }, ...shown.map((url, i) => h("div", { class: "cm2-fbcell" }, h("img", { src: imageUrl(url, this.host.base()), alt: "", loading: "lazy" }), extra > 0 && i === shown.length - 1 ? h("span", { class: "cm2-fbmore" }, `+${extra}`) : ""))) : "",
+          h("div", { class: "cm2-fbbar" }, h("span", null, "👍 Thích"), h("span", null, "💬 Bình luận"), h("span", null, "↗ Chia sẻ")),
+          commentText.trim() || d.anhBinhLuan.length ? h(
+            "div",
+            { class: "cm2-fbcomment" },
+            h("div", { class: "cm2-avatar small" }, initials2),
+            h("div", { class: "cm2-fbcomment-body" }, commentText.trim() ? h("span", null, `${commentText.slice(0, 200)}${commentText.length > 200 ? "…" : ""}`) : "", d.anhBinhLuan.length ? h("em", null, `+ ${d.anhBinhLuan.length} ảnh comment lần lượt sau bài`) : "")
+          ) : ""
+        ),
+        h("p", { class: "cm2-prevnote" }, `Xem trước mô phỏng — hiển thị thật do Facebook quyết định${presetIndex >= 0 ? "; nền màu chỉ hiện chữ to khi nội dung ≤ ~130 ký tự" : ""}.`)
+      ));
+    }
+    async uploadFiles(input2, into) {
+      this.readForm();
+      const files = [...input2.files ?? []].slice(0, into === "anh" ? 10 : 30);
+      for (const file of files) {
+        const dataUrl = await readFileAsDataUrl(file);
+        const r = await this.host.ctx.gateway.landing("dang-bai.tai-anh", { anh: dataUrl });
+        if (!r.ok) {
+          status(el("cm2-trang-thai"), r.viSao, "bad");
+          break;
+        }
+        if (r.than?.url) this.draft[into].push(r.than.url);
+      }
+      this.paintComposer();
+    }
+    async searchCards() {
+      const v = (id) => document.getElementById(id)?.value ?? "";
+      this.readForm();
+      this.cardBusy = "search";
+      const params = { q: v("facebookProductCardQuery"), brand: v("facebookProductCardBrand"), type: v("facebookProductCardType"), sport: v("facebookProductCardSport"), source: v("facebookProductCardSource"), sort: v("facebookProductCardSort") };
+      const r = await this.host.ctx.gateway.landing("dang-bai.the-sp.tim", params);
+      this.cardBusy = "";
+      if (r.ok) {
+        this.cards = r.than?.products ?? [];
+        this.cardFilters = r.than?.filters ?? {};
+      }
+      this.paintComposer();
+      if (!r.ok) status(el("cm2-trang-thai"), r.viSao, "bad");
+    }
+    async addCards(code, pictures) {
+      this.readForm();
+      this.cardBusy = code;
+      this.paintComposer();
+      let made = 0;
+      let error = "";
+      for (const picture of pictures) {
+        const r = await this.host.ctx.gateway.landing("dang-bai.the-sp.tao", { ma: code, anh: picture });
+        if (!r.ok || !r.than?.url) {
+          error = r.viSao;
+          break;
+        }
+        this.draft.anh.push(r.than.url);
+        if (!this.draft.maSP.includes(code)) this.draft.maSP.push(code);
+        made += 1;
+      }
+      if (pictures.length > 1 || pictures[0] !== "") this.gallerySelection[code] = [];
+      this.cardBusy = "";
+      this.paintComposer();
+      status(el("cm2-trang-thai"), error || `Đã sinh ${made} card ${code}.`, error ? "bad" : "good");
+    }
+    async addAllCards() {
+      for (const [code, pictures] of Object.entries(this.gallerySelection)) if (pictures.length) await this.addCards(code, [...pictures]);
+    }
+    async submit(mode) {
+      this.readForm();
+      const d = this.draft;
+      const body = {
+        mode,
+        trang: d.trang,
+        noiDung: d.noiDung,
+        lienKet: d.lienKet,
+        anh: d.anh,
+        anhBinhLuan: d.anhBinhLuan,
+        nenChu: d.nenChu,
+        lichDang: mode === "now" ? "" : d.lichDang,
+        binhLuan: { cheDo: d.cheDo, mauId: d.mauId, chu: d.chuBinhLuan },
+        nguon: { maSP: d.maSP, maKhoBai: d.maKhoBai }
+      };
+      const line = el("cm2-trang-thai");
+      status(line, mode === "schedule" ? "Đang lên lịch..." : mode === "now" ? "Đang đăng..." : "Đang lưu...");
+      const r = d.id === "" ? await this.host.ctx.gateway.landing("dang-bai.tao", body) : await this.host.ctx.gateway.landing("dang-bai.sua", { ma: d.id, ...body, mode: mode === "update" ? "" : mode });
+      if (!r.ok) {
+        status(line, r.viSao, "bad");
+        return;
+      }
+      const job = r.than?.job;
+      if (job) {
+        this.draft = { ...this.draft, id: job.id, trangThai: job.trangThai };
+      }
+      await this.load();
+      status(el("cm2-trang-thai"), str(r.than?.message) || "Đã lưu ✓", "good");
+    }
+    async sync() {
+      this.say("Đang đồng bộ với Meta...");
+      const r = await this.host.ctx.gateway.landing("dang-bai.dong-bo", {});
+      await this.load();
+      this.say(r.ok ? str(r.than?.message) : r.viSao, r.ok ? "good" : "bad");
+    }
+    armed = "";
+    async jobAction(job, id, done) {
+      if ((job === "dang-bai.xoa" || job === "dang-bai.huy") && this.armed !== `${job}:${id}`) {
+        this.armed = `${job}:${id}`;
+        this.say(job === "dang-bai.xoa" ? "Bấm Xóa lần nữa để xoá thật (bài đã đăng sẽ bị xoá trên Facebook)." : "Bấm Hủy lịch lần nữa để huỷ lịch trên Meta.", "bad");
+        return;
+      }
+      this.armed = "";
+      this.menuOpen = "";
+      const r = await this.host.ctx.gateway.landing(job, { ma: id });
+      await this.load();
+      this.say(r.ok ? str(r.than?.message) || done : r.viSao, r.ok ? "good" : "bad");
+    }
+  };
+
+  // ../omi/packages/omi-ui/src/views/content.ts
+  var SECTIONS = [
+    { id: "flow", label: "Soạn bài" },
+    { id: "posts", label: "Bài đã đăng" },
+    { id: "pool", label: "Kho mã" },
+    { id: "templates", label: "Comment mẫu" },
+    { id: "seed", label: "Comment phủ link" },
+    { id: "library", label: "Kho content" }
+  ];
+  var HEARTBEAT_MS = 10 * 60 * 1e3;
+  var ContentView = class extends View {
+    // NOT "noi-dung": that id belongs to the "Nội dung web" screen (chữ trên trang bán hàng).
+    id = "xuong-noi-dung";
+    label = "Content";
+    title = "Content — soạn, đăng, comment";
+    workspace = "common";
+    glyph = "ND";
+    section = "flow";
+    loadedSections = /* @__PURE__ */ new Set();
+    heartbeat = null;
+    host = {
+      ctx: this.ctx,
+      base: () => str(this.ctx.shell.license()?.diaChiLanding).replace(/\/+$/, ""),
+      show: (section) => this.show(section),
+      compose: (prefill) => {
+        this.show("posts");
+        this.posts.compose(prefill);
+      },
+      openLibraryItem: (id) => {
+        this.show("library");
+        this.library.focus(id);
+      },
+      pages: () => this.posts.pages()
+    };
+    flow = new FlowSection(this.host);
+    posts = new PostsSection(this.host);
+    pool = new PoolSection(this.host);
+    templates = new TemplatesSection(this.host, () => this.posts.templateList(), () => this.posts.load());
+    seed = new SeedSection(this.host);
+    library = new LibrarySection(this.host);
+    actions = {
+      "cm2-section": (button) => this.show(str(button.dataset["section"])),
+      ...this.flow.actions,
+      ...this.posts.actions,
+      ...this.pool.actions,
+      ...this.templates.actions,
+      ...this.seed.actions,
+      ...this.library.actions
+    };
+    build(root) {
+      root.append(
+        h(
+          "div",
+          { class: "cm2-section-tabs", role: "tablist", id: "nd-tabs" },
+          ...SECTIONS.map((s) => h("button", { class: `cm2-section-tab${s.id === this.section ? " on" : ""}`, type: "button", "data-action": "cm2-section", "data-section": s.id, id: `nd-tab-${s.id}` }, s.label))
+        ),
+        this.flow.build(),
+        this.posts.build(),
+        this.pool.build(),
+        this.templates.build(),
+        this.seed.build(),
+        this.library.build()
+      );
+      this.paintTabs();
+    }
+    load() {
+      this.loadedSections.clear();
+      void this.posts.load().then(() => this.flow.load());
+      this.loadedSections.add("posts").add("flow");
+      void this.beat();
+      if (this.heartbeat === null) this.heartbeat = setInterval(() => void this.beat(), HEARTBEAT_MS);
+    }
+    async beat() {
+      await this.ctx.gateway.landing("noi-dung.nhip");
+    }
+    show(section) {
+      if (!SECTIONS.some((s) => s.id === section)) return;
+      this.section = section;
+      this.paintTabs();
+      if (this.loadedSections.has(section)) return;
+      this.loadedSections.add(section);
+      if (section === "pool") void this.pool.load();
+      if (section === "templates") this.templates.paint();
+      if (section === "seed") void this.seed.load();
+      if (section === "library") void this.library.load();
+    }
+    paintTabs() {
+      for (const s of SECTIONS) {
+        document.getElementById(`nd-tab-${s.id}`)?.classList.toggle("on", s.id === this.section);
+        document.getElementById(`nd-sec-${s.id}`)?.classList.toggle("omi-an", s.id !== this.section);
+      }
     }
   };
 
@@ -4366,8 +7737,8 @@
               ),
               addressFields({
                 prefix: "pf",
-                search: (input) => this.gateway.landing("dia-chi.tim", { ...input }),
-                checkSplit: (input) => this.gateway.landing("dia-chi.doi-hai-cap", { ...input })
+                search: (input2) => this.gateway.landing("dia-chi.tim", { ...input2 }),
+                checkSplit: (input2) => this.gateway.landing("dia-chi.doi-hai-cap", { ...input2 })
               }),
               h(
                 "div",
@@ -4636,10 +8007,10 @@
     async loadAll() {
       const line = el("kh-trang-thai");
       status(line, "Đang tải…");
-      const q = el("kh-tu-khoa").value.trim();
+      const q2 = el("kh-tu-khoa").value.trim();
       const [profiles, fromOrders] = await Promise.all([
-        this.ctx.gateway.landing("khach.ho-so.danh-sach", { tuKhoa: q, gioiHan: 500 }),
-        this.ctx.gateway.landing("khach.danh-sach", { tuKhoa: q, gioiHan: 300 })
+        this.ctx.gateway.landing("khach.ho-so.danh-sach", { tuKhoa: q2, gioiHan: 500 }),
+        this.ctx.gateway.landing("khach.danh-sach", { tuKhoa: q2, gioiHan: 300 })
       ]);
       if (!profiles.ok) {
         status(line, profiles.viSao, "bad");
@@ -4794,8 +8165,853 @@
     }
   };
 
+  // ../omi/packages/omi-ui/src/views/fanpage/kit.ts
+  function paymentConfigFrom(content) {
+    const n = (v, fallback) => {
+      const x = Number(String(v ?? "").trim());
+      return String(v ?? "").trim() === "" || !Number.isFinite(x) ? fallback : x;
+    };
+    return {
+      bankCode: String(content["bankCode"] ?? "").trim(),
+      bankName: String(content["bankName"] ?? "").trim(),
+      bankAccountNumber: String(content["bankAccountNumber"] ?? "").trim(),
+      bankAccountName: String(content["bankAccountName"] ?? "").trim(),
+      depositPercent: Math.max(1, Math.min(100, n(content["momoDepositPercent"], 20))),
+      shippingFeeDefault: Math.max(0, n(content["shippingFeeDefault"], 3e4)),
+      transferPrefix: String(content["momoTransferPrefix"] ?? "").trim()
+    };
+  }
+  function invoiceMoney(order, config) {
+    const itemsTotal = (order.mon ?? []).reduce((t, m) => t + Number(m.donGia || 0) * Number(m.soLuong || 1), 0);
+    const orderShip = Number(order.phiShip || 0);
+    const discount = Number(order.tong) > 0 ? Math.max(0, itemsTotal + orderShip - Number(order.tong)) : Math.max(0, Number(order.chietKhau || 0));
+    const shipFee = orderShip > 0 ? Math.round(orderShip) : Math.round(config?.shippingFeeDefault ?? 3e4);
+    const grandTotal = Math.max(0, itemsTotal - discount + shipFee);
+    return { itemsTotal, discount, shipFee, grandTotal, paid: Math.max(0, Number(order.daTra || 0)) };
+  }
+  var VIETQR_SCHEME = "https:";
+  var VIETQR_HOST = "img.vietqr.io";
+  function ckAmount(order, config, choice) {
+    if (choice.mode === "custom") return Math.max(0, Math.round(choice.custom));
+    const total = invoiceMoney(order, config).grandTotal;
+    if (total <= 0) return 0;
+    const percent = Math.max(1, Math.min(100, choice.percent || config?.depositPercent || 20));
+    const rounded = Math.max(1e4, Math.round(total * percent / 100 / 1e4) * 1e4);
+    return Math.min(Math.ceil(total), rounded);
+  }
+  function ckReference(order) {
+    return String(order.maChuyenKhoan || order.id || "").replace(/[^A-Za-z0-9-]/g, "");
+  }
+  function ckQrUrl(order, config, amount) {
+    if (!config?.bankCode || !config.bankAccountNumber || amount <= 0) return "";
+    const params = new URLSearchParams({ amount: String(Math.round(amount)), addInfo: ckReference(order), accountName: config.bankAccountName });
+    return `${VIETQR_SCHEME}//${VIETQR_HOST}/image/${encodeURIComponent(config.bankCode)}-${encodeURIComponent(config.bankAccountNumber)}-compact2.png?${params.toString()}`;
+  }
+  function confirmText(order, config, amount, closing, lookup = "") {
+    const m = invoiceMoney(order, config);
+    const remain = Math.max(0, m.grandTotal - m.paid - amount);
+    const lines2 = [
+      `🧾 XÁC NHẬN ĐƠN HÀNG #${order.id}`,
+      ...(order.mon ?? []).map((x, i) => `${i + 1}. ${x.ten || x.ma}${x.size ? ` (Size ${x.size})` : ""} x${x.soLuong} = ${money(Number(x.donGia) * Number(x.soLuong))}`),
+      `Tổng tiền hàng: ${money(m.itemsTotal)}`,
+      m.discount > 0 ? `Giảm giá: -${money(m.discount)}` : "",
+      `Phí vận chuyển: ${money(m.shipFee)}`,
+      `TỔNG HÓA ĐƠN: ${money(m.grandTotal)}`,
+      m.paid > 0 ? `Đã thanh toán: ${money(m.paid)}` : "",
+      amount > 0 ? `Cần CK thanh toán: ${money(amount)}` : "",
+      `Còn lại khi nhận hàng: ${money(remain)}`,
+      m.paid <= 0 && amount <= 0 ? `Hình thức thanh toán: ${order.phuongThucTra === "bank_transfer" ? "Chuyển khoản" : "COD - thu khi nhận hàng"}` : "",
+      amount > 0 && config?.bankAccountNumber ? `Ngân hàng: ${config.bankName || config.bankCode} — STK ${config.bankAccountNumber} (${config.bankAccountName})` : "",
+      amount > 0 ? `Nội dung CK: ${ckReference(order)}` : "",
+      `Người nhận: ${order.khach} - ${order.dienThoai}`,
+      `Địa chỉ: ${order.diaChi}`,
+      lookup,
+      amount > 0 ? "Anh/chị chuyển khoản theo đúng nội dung để hệ thống tự đối soát, shop lên đơn ngay khi nhận được ạ. Cảm ơn anh/chị nhiều! 🙏" : closing
+    ];
+    return lines2.filter(Boolean).join("\n");
+  }
+  function imageConfirmText(order, config, amount) {
+    const m = invoiceMoney(order, config);
+    const remain = Math.max(0, m.grandTotal - m.paid - amount);
+    const items = (order.mon ?? []).map((x) => `${x.ten || x.ma}${x.size ? ` — size ${x.size}` : ""}${Number(x.soLuong) > 1 ? ` x${x.soLuong}` : ""}`).join(", ");
+    return [
+      "Dạ em đã nhận được đơn của mình ạ 🧾 Em gửi lại thông tin đơn kèm ảnh bên trên:",
+      `${items} — tổng ${money(m.grandTotal)} (đã gồm ship ${money(m.shipFee)})`,
+      amount > 0 ? `Mình chuyển khoản trước ${money(amount)} để em lên đơn ạ. ${remain > 0 ? `Phần còn lại ${money(remain)} mình thanh toán khi nhận hàng.` : "Mình CK đủ nên khi nhận hàng không cần trả thêm ạ."}` : "",
+      amount > 0 ? `Nội dung CK: ${ckReference(order)}.` : ""
+    ].filter(Boolean).join("\n");
+  }
+  function invoiceImage(order, config, amount) {
+    const m = invoiceMoney(order, config);
+    const rows = [
+      ...(order.mon ?? []).map((x) => [`${x.ten || x.ma}${x.size ? ` · size ${x.size}` : ""} x${x.soLuong}`, money(Number(x.donGia) * Number(x.soLuong)), false]),
+      ["Tổng tiền hàng", money(m.itemsTotal), false],
+      ...m.discount > 0 ? [["Giảm giá", `-${money(m.discount)}`, false]] : [],
+      ["Phí vận chuyển", money(m.shipFee), false],
+      ["TỔNG HÓA ĐƠN", money(m.grandTotal), true],
+      ...m.paid > 0 ? [["Đã thanh toán", money(m.paid), false]] : [],
+      ...amount > 0 ? [["Cần chuyển khoản", money(amount), true]] : [],
+      ["Còn lại khi nhận hàng", money(Math.max(0, m.grandTotal - m.paid - amount)), false]
+    ];
+    const width = 720;
+    const height = 150 + rows.length * 38 + 120;
+    const canvas = document.createElement("canvas");
+    canvas.width = width;
+    canvas.height = height;
+    const g = canvas.getContext("2d");
+    if (g === null) return "";
+    g.fillStyle = "#ffffff";
+    g.fillRect(0, 0, width, height);
+    g.fillStyle = "#0f766e";
+    g.fillRect(0, 0, width, 80);
+    g.fillStyle = "#ffffff";
+    g.font = "bold 28px sans-serif";
+    g.fillText(`HÓA ĐƠN #${order.id}`, 28, 52);
+    let y = 125;
+    for (const [label, value, strong] of rows) {
+      g.fillStyle = strong ? "#b91c1c" : "#111827";
+      g.font = `${strong ? "bold " : ""}20px sans-serif`;
+      g.fillText(label.length > 48 ? `${label.slice(0, 47)}…` : label, 28, y);
+      const w = g.measureText(value).width;
+      g.fillText(value, width - 28 - w, y);
+      y += 38;
+    }
+    g.fillStyle = "#374151";
+    g.font = "18px sans-serif";
+    g.fillText(`Người nhận: ${order.khach} - ${order.dienThoai}`, 28, y + 20);
+    g.fillText(`Địa chỉ: ${order.diaChi}`.slice(0, 70), 28, y + 50);
+    if (amount > 0) g.fillText(`Nội dung CK: ${ckReference(order)}`, 28, y + 80);
+    return canvas.toDataURL("image/png");
+  }
+  function phoneIn(text2) {
+    const m = /(?:\+?84|0)(?:[\s.-]?\d){9}/.exec(String(text2 ?? ""));
+    if (!m) return "";
+    const digits2 = m[0].replace(/[^\d]/g, "");
+    return digits2.startsWith("84") ? `0${digits2.slice(2)}` : digits2;
+  }
+  function looksLikeAddress(text2) {
+    const value = String(text2 ?? "");
+    return /(?:địa\s*chỉ|dia\s*chi|\bđc\b|\bdc\b|giao\s*hàng|nhận\s*hàng)/i.test(value) || phoneIn(value) !== "" && /\b(xóm|thôn|ấp|khu|đường|số nhà|phường|xã|thị trấn|quận|huyện|thị xã|thành phố|tp\.?|tỉnh)\b/i.test(value);
+  }
+  function fitFrom(sizeQuen, formChan) {
+    const text2 = String(formChan ?? "");
+    const length = /Dài\s*([\d.,]+)\s*cm/i.exec(text2)?.[1] ?? "";
+    const width = /Ngang\s*([\d.,]+)\s*cm/i.exec(text2)?.[1] ?? "";
+    const notes = text2.replace(/Dài\s*[\d.,]+\s*cm/i, "").replace(/Ngang\s*[\d.,]+\s*cm/i, "").replace(/^[\s·]+|[\s·]+$/g, "").replace(/\s*·\s*·\s*/g, " · ");
+    return { footLength: length, footWidth: width, sizeEU: String(sizeQuen ?? "").replace(/^EU\s*/i, ""), notes };
+  }
+  function fitToProfile(fit) {
+    const parts = [fit.footLength ? `Dài ${fit.footLength}cm` : "", fit.footWidth ? `Ngang ${fit.footWidth}cm` : "", fit.notes.trim()].filter(Boolean);
+    return { sizeQuen: fit.sizeEU.trim(), formChan: parts.join(" · ").slice(0, 190) };
+  }
+  function armed(button, askText) {
+    if (button.dataset["armed"] === "1") {
+      delete button.dataset["armed"];
+      if (button.dataset["label"] !== void 0) button.textContent = button.dataset["label"];
+      return true;
+    }
+    button.dataset["armed"] = "1";
+    button.dataset["label"] = button.textContent ?? "";
+    button.textContent = askText;
+    setTimeout(() => {
+      if (button.dataset["armed"] !== "1") return;
+      delete button.dataset["armed"];
+      button.textContent = button.dataset["label"] ?? "";
+    }, 6e3);
+    return false;
+  }
+  async function copyText(text2) {
+    try {
+      await navigator.clipboard.writeText(text2);
+      return true;
+    } catch {
+      return false;
+    }
+  }
+
+  // ../omi/packages/omi-ui/src/views/fanpage/page-connect.ts
+  var pendingSession = "";
+  function hasPendingLogin() {
+    return pendingSession !== "";
+  }
+  async function startMetaLogin(gateway, line) {
+    status(line, "Đang xin địa chỉ đăng nhập từ app Meta trung tâm…");
+    const r = await gateway.landing("hop-thu.ket-noi-facebook");
+    if (!r.ok || !r.than?.url || !r.than.maPhien) {
+      status(line, r.viSao || "Xeon chưa mở được đăng nhập Facebook.", "bad");
+      return false;
+    }
+    pendingSession = r.than.maPhien;
+    const opened = await gateway.openFacebook(r.than.url);
+    if (!opened.ok) {
+      status(line, `Không mở được trình duyệt: ${opened.viSao}`, "bad");
+      return false;
+    }
+    status(line, 'Đã mở Facebook trong trình duyệt. Cấp quyền cho các page rồi quay lại bấm "Hoàn tất kết nối".', "good");
+    return true;
+  }
+  async function finishMetaLogin(gateway, line) {
+    if (pendingSession === "") {
+      status(line, 'Bấm "Kết nối page" trước.', "bad");
+      return false;
+    }
+    status(line, "Đang lấy danh sách page vừa cấp quyền…");
+    const r = await gateway.landing("hop-thu.ket-noi-facebook.xong", { maPhien: pendingSession });
+    if (!r.ok) {
+      status(line, r.viSao, "bad");
+      return false;
+    }
+    pendingSession = "";
+    const outcomes = r.than?.xeon?.ketQua ?? [];
+    const refused = outcomes.filter((o) => !o.ok);
+    status(line, `Đã nối ${r.than?.soTrang ?? 0} page${refused.length ? ` · ${refused.length} page Xeon chưa nhận (${refused.map((o) => `${o.ma}: ${o.viSao ?? "?"}`).join(", ")})` : ""}${r.than?.xeon?.ok === false ? ` · Xeon: ${r.than.xeon.viSao ?? "chưa nhận"}` : ""}.`, refused.length === 0 && r.than?.xeon?.ok !== false);
+    return true;
+  }
+
+  // ../omi/packages/omi-ui/src/views/fanpage/ai-panel.ts
+  var ACTION_LABEL = { script_reply: "Có thể dùng kịch bản", ai_fallback_draft: "Nháp chờ duyệt", human_handoff: "Chuyển người thật", ask_clarification: "Hỏi khách thêm" };
+  var EDIT_REASONS = [["correct", "Đúng, chỉ chỉnh cách nói"], ["wrong_product", "AI hiểu sai sản phẩm"], ["wrong_context", "AI thiếu/sai ngữ cảnh"], ["wrong_stock", "Sai dữ liệu giá/tồn"], ["missing_question", "Thiếu câu hỏi xác nhận"], ["handoff", "Đáng lẽ chuyển người thật"]];
+  var MODE_LABEL = { auto: "Bot tự trả lời", suggest: "Bot chỉ gợi ý", off: "Bot đã tắt" };
+  var FanpageAiPanel = class {
+    constructor(ctx, host) {
+      this.ctx = ctx;
+      this.host = host;
+    }
+    ctx;
+    host;
+    ops = null;
+    draft = null;
+    thinkingOpen = false;
+    images = null;
+    external = { dangChot: null, ganDay: [] };
+    externalDraft = null;
+    signals = [];
+    botMode = "auto";
+    // ------------------------------------------------------------------ DOM
+    /** Desk `facebookConversationControlPanel` — sits under the chat header. */
+    controlBar() {
+      return h(
+        "div",
+        { class: "control-switch-panel conversation-control", id: "fp-ai-dieu-khien" },
+        h("div", { class: "conversation-control-actions", id: "fp-ai-nut" })
+      );
+    }
+    /** "AI suy nghĩ" pane — replaces the customer pane while open (Desk puts it in the same slot as the product picker). */
+    thinkingPane() {
+      return h("div", { class: "facebook-ai-thinking-pane", id: "fp-ai-nghi", hidden: true });
+    }
+    /** Desk `facebookExternalProductSlot` — above the reply box. */
+    externalSlot() {
+      return h("div", { id: "facebookExternalProductSlot" });
+    }
+    /** Size signals under "Chân dung size". */
+    signalBox() {
+      return h("div", { id: "fp-chan-tin-hieu" });
+    }
+    actions = {
+      "draft-facebook-ai-reply": () => this.requestDraft(),
+      "toggle-facebook-ai-thinking": () => this.toggleThinking(),
+      "save-facebook-ai-thinking-feedback": () => this.saveFeedback(),
+      "toggle-facebook-bot": () => this.toggleBot(),
+      "set-facebook-control": (b) => this.setControl(b),
+      "toggle-tool-human-mode": () => this.toggleHumanMode(),
+      "confirm-image-product": (b) => this.rememberImage(str(b.dataset["imageHash"]), str(b.dataset["productCode"]), str(b.dataset["productName"])),
+      "confirm-image-manual": (b) => {
+        const input2 = b.closest(".facebook-ai-image-row")?.querySelector(".facebook-ai-image-code-input");
+        const code = str(input2?.value).trim().toUpperCase();
+        if (code === "") {
+          this.say("Gõ mã sản phẩm đúng vào ô trước khi bấm Lưu mã.", "bad");
+          return;
+        }
+        return this.rememberImage(str(b.dataset["imageHash"]), code, "");
+      },
+      "forget-image-product": (b) => this.forgetImage(str(b.dataset["imageHash"])),
+      "use-image-candidate": (b) => {
+        const code = str(b.dataset["code"]);
+        const c = this.images?.ungVien.find((x) => x.ma === code);
+        this.host.fillReply(`Dạ em nhận diện mẫu gần nhất là ${c?.ten || code} (mã ${code})${c?.gia ? `, giá ${money(c.gia)}` : ""}. Bác cho em xin size để em kiểm tồn chính xác nhé.`);
+        this.say("Đã đưa ứng viên ảnh vào ô trả lời — kiểm lại rồi bấm Gửi.", "good");
+      },
+      "ask-customer-confirm-image": (b) => {
+        const code = str(b.dataset["code"]);
+        const c = this.images?.ungVien.find((x) => x.ma === code);
+        this.host.fillReply(`Dạ em thấy ảnh khá giống ${c?.ten || code}, nhưng ảnh chưa đủ rõ để chắc 100%. Bác xác nhận giúp em đúng mẫu này không, hoặc gửi thêm ảnh tem/mã trên lưỡi gà/hộp để em kiểm tra size chính xác nhé.`);
+        this.say("Đã soạn câu hỏi khách xác nhận mẫu — bấm Gửi nếu đúng.", "good");
+      },
+      "ext-product-open": () => this.openExternal({}),
+      "ext-product-from-image": (b) => this.openExternal({ anh: str(b.dataset["imageUrl"]) }),
+      "ext-product-from-hint": () => this.openExternal({ anh: this.lastPageImage() }),
+      "ext-product-dismiss-hint": () => {
+        this.hintDismissed = true;
+        this.paintExternal();
+      },
+      "ext-product-close": () => {
+        this.externalDraft = null;
+        this.paintExternal();
+      },
+      "ext-product-suggest": () => this.suggestExternal(),
+      "ext-product-submit": () => this.submitExternal(true),
+      "ext-product-submit-nosend": () => this.submitExternal(false),
+      "ext-product-pick-recent": (b) => {
+        const item = this.external.ganDay.find((x) => x.id === str(b.dataset["extId"]));
+        if (item) this.openExternal({ ten: item.ten, ma: "", size: item.size, gia: String(item.gia || ""), giaNhap: String(item.giaNhap || ""), anh: item.anh });
+      },
+      "ext-product-unchot": () => this.setExternalStatus("bo"),
+      "ext-product-resend": () => this.resendExternal(),
+      "ext-product-create-order": () => {
+        const item = this.external.dangChot;
+        if (item === null) {
+          this.say("Chưa có SP ngoài đang chốt.", "bad");
+          return;
+        }
+        this.host.orderExternal(item);
+      },
+      "confirm-facebook-fit-signal": (b) => this.confirmSignal(str(b.dataset["signalKey"])),
+      "dismiss-facebook-fit-signal": (b) => this.dismissSignal(str(b.dataset["signalKey"]))
+    };
+    hintDismissed = false;
+    say(text2, tone = "") {
+      status(el("fp-gui-trang-thai"), text2, tone);
+    }
+    // ------------------------------------------------------------------ thread changes
+    /** The view opened another conversation (or reloaded the same one). */
+    async threadOpened(switched, botMode) {
+      this.botMode = botMode || "auto";
+      if (switched) {
+        this.draft = null;
+        this.images = null;
+        this.externalDraft = null;
+        this.hintDismissed = false;
+        this.signals = [];
+      }
+      if (this.ops === null) await this.loadOps();
+      this.paintControls();
+      const thread = this.host.thread();
+      if (thread === null) return;
+      if (switched) {
+        await Promise.all([this.loadDraft(thread.ma), this.loadExternal(thread.ma), this.loadSignals(thread.ma)]);
+      }
+      if (this.thinkingOpen) this.paintThinking();
+      this.paintExternal();
+    }
+    async loadOps() {
+      const r = await this.ctx.gateway.landing("ai.van-hanh");
+      this.ops = r.ok && r.than?.vanHanh ? r.than.vanHanh : { cheDoTraLoi: "auto", nguoiTruc: false, trangTatBot: [] };
+    }
+    paintControls() {
+      const box = el("fp-ai-nut");
+      clear(box);
+      const thread = this.host.thread();
+      if (thread === null) return;
+      const pageOff = thread.trang !== "" && (this.ops?.trangTatBot ?? []).includes(thread.trang);
+      const shopControls = !pageOff;
+      const botOn = shopControls && this.botMode !== "off";
+      const human = this.ops?.nguoiTruc === true;
+      box.append(
+        h("button", { class: "tool-toggle-button", type: "button", "data-action": "draft-facebook-ai-reply" }, "Soạn bot"),
+        thread.trang === "" ? "" : h(
+          "button",
+          { class: `ai-toggle${shopControls ? " on" : ""}`, type: "button", "data-action": "set-facebook-control", "data-scope": "page", "data-page-id": thread.trang, "aria-pressed": shopControls ? "true" : "false", title: pageOff ? "Bot đang tắt cho cả trang này — bấm để bật lại" : "Bấm để tắt bot cho cả trang (người trực xử lý mọi hội thoại của trang)" },
+          h("span"),
+          pageOff ? "Trang: người" : "Trang: bot"
+        ),
+        h("button", { class: `ai-toggle${human && shopControls ? " on" : ""}`, type: "button", disabled: !shopControls, "data-action": "toggle-tool-human-mode", "aria-pressed": human ? "true" : "false" }, h("span"), "Người trực"),
+        h(
+          "button",
+          { class: `ai-toggle${botOn ? " on" : ""}`, type: "button", disabled: !shopControls, "data-action": "toggle-facebook-bot", "data-bot-paused": this.botMode === "off" ? "1" : "0", "aria-pressed": botOn ? "true" : "false", title: this.botMode === "off" ? "Bot đang tắt cho hội thoại này — bấm để bật lại" : "Bot đang bật — bấm để tắt khi người trực xử lý" },
+          h("span"),
+          this.botMode === "off" ? "Bot đã tắt" : MODE_LABEL[this.botMode] ?? "Bot tự trả lời"
+        ),
+        h("button", { class: `tool-toggle-button facebook-ai-thinking-launch${this.thinkingOpen ? " active" : ""}`, type: "button", "data-action": "toggle-facebook-ai-thinking", "aria-pressed": this.thinkingOpen ? "true" : "false", title: "Xem AI đang hiểu, tra cứu và xác nhận thông tin gì" }, "AI suy nghĩ")
+      );
+    }
+    // ------------------------------------------------------------------ draft + "AI nghĩ gì"
+    async loadDraft(id) {
+      const r = await this.ctx.gateway.landing("ai.goi-y.xem", { maHoiThoai: id });
+      if (this.host.thread()?.ma !== id) return;
+      this.draft = r.ok ? r.than?.goiY ?? null : null;
+    }
+    async requestDraft() {
+      const thread = this.host.thread();
+      if (thread === null) {
+        this.say("Chọn một hội thoại trước.", "bad");
+        return;
+      }
+      this.say("AI đang đọc hội thoại và soạn nháp (không gửi)…");
+      const r = await this.ctx.gateway.landing("ai.goi-y", { maHoiThoai: thread.ma });
+      if (!r.ok || !r.than?.goiY) {
+        this.say(r.viSao || "AI không soạn được.", "bad");
+        return;
+      }
+      if (this.host.thread()?.ma !== thread.ma) return;
+      this.draft = r.than.goiY;
+      if (this.draft.traLoi) this.host.fillReply(this.draft.traLoi);
+      this.say(this.draft.canNguoi ? `AI đề nghị chuyển người thật: ${this.draft.lyDo}` : "Đã soạn nháp vào ô trả lời — đọc, sửa rồi bấm Gửi.", this.draft.canNguoi ? "bad" : "good");
+      const photos = thread.tin.filter((m) => m.chieu === "den").flatMap((m) => m.anh ?? []).slice(-2);
+      if (photos.length > 0) await this.readImages(thread.ma, photos);
+      if (this.thinkingOpen) this.paintThinking();
+    }
+    toggleThinking() {
+      this.thinkingOpen = !this.thinkingOpen;
+      el("fp-ai-nghi").hidden = !this.thinkingOpen;
+      el("fp-khach-khung").hidden = this.thinkingOpen;
+      if (this.thinkingOpen) el("fp-tra-kho").hidden = true;
+      this.paintControls();
+      if (this.thinkingOpen) this.paintThinking();
+    }
+    paintThinking() {
+      const pane = el("fp-ai-nghi");
+      clear(pane);
+      const thread = this.host.thread();
+      pane.appendChild(h(
+        "div",
+        { class: "facebook-product-picker-head" },
+        h("div", null, h("div", { class: "product-title" }, "AI suy nghĩ"), h("div", { class: "subtle" }, "Xem dữ kiện AI hiểu và nguồn hệ thống đang xác nhận.")),
+        h("button", { class: "facebook-icon-button", type: "button", "data-action": "toggle-facebook-ai-thinking", title: "Đóng AI suy nghĩ", "aria-label": "Đóng AI suy nghĩ" }, "×")
+      ));
+      if (thread === null) {
+        pane.appendChild(h("div", { class: "facebook-ai-thinking-empty" }, h("strong", null, "Chưa chọn hội thoại"), h("p", null, "Chọn một khách để xem quá trình AI xử lý.")));
+        return;
+      }
+      const latest = [...thread.tin].reverse().find((m) => m.chieu === "den");
+      const draft = this.draft;
+      if (draft === null) {
+        pane.appendChild(h(
+          "div",
+          { class: "facebook-ai-thinking-empty" },
+          h("span", { class: "facebook-ai-thinking-orb" }, "AI"),
+          h("strong", null, "Chưa có lượt phân tích"),
+          h("p", null, "Bấm ", h("b", null, "Soạn bot"), " để AI đọc tin mới nhất, tra catalog và tạo bản nháp. Kết quả xác nhận sẽ hiện tại đây."),
+          latest?.chu ? h("blockquote", null, latest.chu) : null
+        ));
+        return;
+      }
+      const stale = latest !== void 0 && draft.luc !== "" && Date.parse(latest.luc) > Date.parse(draft.luc);
+      const facts = Object.entries(draft.duKien ?? {});
+      const tools = (draft.dauVet ?? []).filter((s) => s.loai === "cong-cu" || s.loai === "doc");
+      const problems = [...draft.canXacNhan ?? [], ...(draft.dauVet ?? []).filter((s) => s.loai === "loi" || s.loai === "chan").map((s) => `${s.ten}: ${s.chiTiet}`)];
+      const reason = h("select", { id: "facebookAIEditReason" }, ...EDIT_REASONS.map(([v, label]) => h("option", { value: v }, label)));
+      pane.append(
+        stale ? h("div", { class: "facebook-ai-thinking-stale omi-stale-note" }, h("strong", null, "⚠ Kết quả của tin trước."), " Khách đã nhắn thêm — bấm ", h("b", null, "Soạn bot"), " để AI phân tích tin mới nhất.") : "",
+        h(
+          "section",
+          { class: "facebook-ai-thinking-section" },
+          h("div", { class: "facebook-ai-thinking-section-head" }, h("span", null, "1"), h("strong", null, "AI đang hiểu"), h("em", null, `${draft.nguonTraLoi === "agent" ? "mô hình AI" : draft.nguonTraLoi === "may-luat" ? "máy luật" : "—"} · ${dayClock(draft.luc)}`)),
+          h("div", { class: "facebook-ai-thinking-message" }, draft.tinKhach || latest?.chu || "Tin nhắn không có nội dung chữ"),
+          h(
+            "div",
+            { class: "facebook-ai-fact-list editable" },
+            h("label", null, h("span", null, "Ý định"), h("input", { id: "facebookAIEditIntent", value: draft.y ?? "", placeholder: "ask_size, ask_price..." })),
+            ...facts.map(([k, v]) => h("label", null, h("span", null, k), h("input", { "data-ai-fact": k, value: v })))
+          )
+        ),
+        h(
+          "section",
+          { class: "facebook-ai-thinking-section" },
+          h("div", { class: "facebook-ai-thinking-section-head" }, h("span", null, "2"), h("strong", null, "Hệ thống đã tra"), h("em", null, `${tools.length} bước`)),
+          tools.length > 0 ? h("div", { class: "facebook-ai-product-checks" }, ...tools.map((s) => h("article", null, h("strong", null, s.ten), h("small", null, `bước ${s.buoc}`), h("div", null, s.chiTiet)))) : h("p", { class: "facebook-ai-thinking-note warning" }, "Chưa tra dữ liệu nào."),
+          this.imageRows()
+        ),
+        h(
+          "section",
+          { class: "facebook-ai-thinking-section" },
+          h("div", { class: "facebook-ai-thinking-section-head" }, h("span", null, "3"), h("strong", null, "Điểm cần xác nhận")),
+          problems.length > 0 ? h("div", { class: "facebook-ai-chip-list" }, ...problems.map((p) => h("span", null, p))) : h("p", { class: "facebook-ai-thinking-note success" }, "Không phát hiện dữ kiện bắt buộc còn thiếu.")
+        ),
+        h(
+          "section",
+          { class: "facebook-ai-thinking-section decision" },
+          h("div", { class: "facebook-ai-thinking-section-head" }, h("span", null, "4"), h("strong", null, "Đề xuất phản hồi"), h("em", null, ACTION_LABEL[draft.hanhDong] ?? (draft.hanhDong || "Chưa quyết định"))),
+          h("p", { class: "facebook-ai-reason" }, `${draft.lyDo}${draft.choPhepTuGui ? "" : " · chế độ gợi ý: người gửi"}`),
+          h("textarea", { class: "facebook-ai-draft-editor", id: "facebookAIEditReply", rows: "6", value: draft.traLoi }),
+          h("label", { class: "facebook-ai-feedback-reason" }, h("span", null, "Lý do chỉnh sửa"), reason),
+          h(
+            "div",
+            { class: "facebook-ai-thinking-actions" },
+            h("button", { class: "secondary-button compact-button", type: "button", "data-action": "draft-facebook-ai-reply" }, "Yêu cầu AI làm lại"),
+            h("button", { class: "primary-button compact-button", type: "button", "data-action": "save-facebook-ai-thinking-feedback" }, "Lưu sửa đổi & đưa vào Training"),
+            h("button", { class: "ghost-button compact-button", type: "button", "data-action": "toggle-facebook-ai-thinking" }, "Quay lại ô trả lời")
+          )
+        )
+      );
+    }
+    async saveFeedback() {
+      const thread = this.host.thread();
+      const draft = this.draft;
+      if (thread === null || draft === null) {
+        this.say("Chưa có nháp AI để sửa.", "bad");
+        return;
+      }
+      const edited = el("facebookAIEditReply").value.trim();
+      if (edited === "") {
+        this.say("Nhập câu trả lời đã sửa.", "bad");
+        return;
+      }
+      const duKienSua = {};
+      for (const input2 of el("fp-ai-nghi").querySelectorAll("[data-ai-fact]")) duKienSua[str(input2.dataset["aiFact"])] = input2.value.trim();
+      const r = await this.ctx.gateway.landing("ai.goi-y.phan-hoi", {
+        maHoiThoai: thread.ma,
+        traLoiAiGoc: draft.traLoi,
+        traLoiSua: edited,
+        cauKhach: draft.tinKhach,
+        intent: el("facebookAIEditIntent").value.trim(),
+        lyDoSua: el("facebookAIEditReason").value,
+        duKienAi: draft.duKien ?? {},
+        duKienSua
+      });
+      this.say(r.ok ? str(r.than?.message) || "Đã đưa vào hàng đợi huấn luyện." : r.viSao, r.ok ? "good" : "bad");
+      if (r.ok) this.host.fillReply(edited);
+    }
+    // ------------------------------------------------------------------ bot switches
+    async toggleBot() {
+      const thread = this.host.thread();
+      if (thread === null) return;
+      const next = this.botMode === "off" ? "auto" : "off";
+      const r = await this.ctx.gateway.landing("hop-thu.thong-tin", { ma: thread.ma, bot: next });
+      if (!r.ok) {
+        this.say(r.viSao, "bad");
+        return;
+      }
+      this.botMode = next;
+      this.paintControls();
+      this.say(next === "off" ? "Đã tắt bot cho hội thoại này — người trực xử lý." : "Đã bật lại bot cho hội thoại này.", "good");
+      await this.host.threadChanged();
+    }
+    async setControl(button) {
+      const thread = this.host.thread();
+      if (thread === null) return;
+      if (str(button.dataset["scope"]) === "page") {
+        const page = str(button.dataset["pageId"]) || thread.trang;
+        const off = !(this.ops?.trangTatBot ?? []).includes(page);
+        const r = await this.ctx.gateway.landing("ai.van-hanh.ghi", { trang: page, trangTatBot: off });
+        if (!r.ok) {
+          this.say(r.viSao, "bad");
+          return;
+        }
+        this.ops = r.than?.vanHanh ?? this.ops;
+        this.paintControls();
+        this.say(off ? "Đã tắt bot cho cả trang — mọi hội thoại của trang chỉ lưu, người trực trả lời." : "Đã bật lại bot cho trang.", "good");
+        return;
+      }
+      await this.toggleBot();
+    }
+    async toggleHumanMode() {
+      const next = !(this.ops?.nguoiTruc === true);
+      const r = await this.ctx.gateway.landing("ai.van-hanh.ghi", { nguoiTruc: next });
+      if (!r.ok) {
+        this.say(r.viSao, "bad");
+        return;
+      }
+      this.ops = r.than?.vanHanh ?? this.ops;
+      this.paintControls();
+      this.say(next ? "Người trực đang ưu tiên. AI chỉ gợi ý/tạo nháp." : "Đã tắt người trực. Bot tự trả lời lại ở hội thoại bật bot.", "good");
+    }
+    // ------------------------------------------------------------------ photos
+    async readImages(id, urls) {
+      const https = urls.filter((u) => /^https:\/\//i.test(u));
+      if (https.length === 0) return;
+      const r = await this.ctx.gateway.landing("ai.doc-anh", { maHoiThoai: id, anh: https });
+      if (this.host.thread()?.ma !== id) return;
+      this.images = r.ok ? r.than : null;
+    }
+    imageRows() {
+      const reading = this.images;
+      if (reading === null || reading.anh.length === 0) return null;
+      return h(
+        "div",
+        { class: "facebook-ai-image-confirm" },
+        h("p", { class: "facebook-ai-thinking-note" }, 'Khách gửi ảnh — bấm xác nhận đúng mã (hoặc gõ mã) để bot ghi nhớ; nhận sai thì bấm "Gỡ ghi nhớ":'),
+        reading.loiXeon ? h("p", { class: "facebook-ai-thinking-note warning" }, reading.loiXeon) : null,
+        ...reading.anh.map((img, i) => h(
+          "div",
+          { class: "facebook-ai-image-row" },
+          h("span", { class: "facebook-ai-image-thumb" }, h("img", { src: img.url, alt: `Ảnh ${i + 1}`, referrerpolicy: "no-referrer" })),
+          h("small", null, `Ảnh ${i + 1}${img.nho ? ` · đã nhớ là ${img.nho.ma} ${img.nho.ten}` : reading.doc ? ` · đọc được: ${[reading.doc["brand"], reading.doc["model"], reading.doc["code"]].filter(Boolean).join(" ")}` : " · chưa nhận diện chắc"}`),
+          ...img.bam ? reading.ungVien.slice(0, 3).map((p) => h("button", { class: "secondary-button compact-button", type: "button", "data-action": "confirm-image-product", "data-image-hash": img.bam, "data-product-code": p.ma, "data-product-name": p.ten }, `✔ Đúng là ${p.ma} — ${p.ten}`)) : [],
+          img.bam ? h(
+            "span",
+            { class: "facebook-ai-image-manual" },
+            h("input", { type: "text", class: "facebook-ai-image-code-input", placeholder: "Gõ mã đúng (vd JP9252)" }),
+            h("button", { class: "secondary-button compact-button", type: "button", "data-action": "confirm-image-manual", "data-image-hash": img.bam }, "Lưu mã"),
+            h("button", { class: "secondary-button compact-button", type: "button", "data-action": "forget-image-product", "data-image-hash": img.bam }, "Gỡ ghi nhớ")
+          ) : null
+        )),
+        reading.ungVien.length > 0 ? h("div", { class: "recommendation-list" }, ...reading.ungVien.slice(0, 3).map((p) => h(
+          "div",
+          { class: "split-actions" },
+          h("span", null, `${p.ma} · ${p.ten}${p.gia ? ` · ${money(p.gia)}` : ""}`),
+          h("button", { class: "primary-button compact-button", type: "button", "data-action": "use-image-candidate", "data-code": p.ma }, "Dùng sản phẩm này"),
+          h("button", { class: "secondary-button compact-button", type: "button", "data-action": "ask-customer-confirm-image", "data-code": p.ma }, "Hỏi khách xác nhận")
+        ))) : null
+      );
+    }
+    async rememberImage(hash, code, name) {
+      const r = await this.ctx.gateway.landing("ai.anh-nho.ghi", { bam: hash, ma: code, ten: name });
+      this.say(r.ok ? str(r.than?.message) || "Đã ghi nhớ ảnh." : r.viSao, r.ok ? "good" : "bad");
+      if (r.ok && this.images) {
+        for (const img of this.images.anh) if (img.bam === hash) img.nho = { ma: code, ten: name };
+        if (this.thinkingOpen) this.paintThinking();
+      }
+    }
+    async forgetImage(hash) {
+      const r = await this.ctx.gateway.landing("ai.anh-nho.quen", { bam: hash });
+      this.say(r.ok ? str(r.than?.message) || "Đã gỡ ghi nhớ." : r.viSao, r.ok ? "good" : "bad");
+      if (r.ok && this.images) {
+        for (const img of this.images.anh) if (img.bam === hash) img.nho = null;
+        if (this.thinkingOpen) this.paintThinking();
+      }
+    }
+    // ------------------------------------------------------------------ external products
+    async loadExternal(id) {
+      const r = await this.ctx.gateway.landing("ai.sp-ngoai", { maHoiThoai: id });
+      if (this.host.thread()?.ma !== id) return;
+      this.external = { dangChot: r.ok ? r.than?.dangChot ?? null : null, ganDay: r.ok ? r.than?.ganDay ?? [] : [] };
+    }
+    /** The last photo the PAGE sent — Desk offers to make it a card ("Ảnh vừa gửi khách"). */
+    lastPageImage() {
+      const thread = this.host.thread();
+      const mine = [...thread?.tin ?? []].reverse().find((m) => m.chieu === "di" && (m.anh ?? []).length > 0);
+      return mine?.anh?.[0] ?? "";
+    }
+    openExternal(seed) {
+      if (this.host.thread() === null) {
+        this.say("Chọn một hội thoại trước.", "bad");
+        return;
+      }
+      this.externalDraft = { ten: "", ma: "", size: "", gia: "", giaNhap: "", anh: "", loiNhan: "", ...seed };
+      this.paintExternal();
+    }
+    readExternalForm() {
+      const value = (id) => el(id).value.trim();
+      return { ...this.externalDraft ?? {}, ten: value("extProductName"), ma: value("extProductCode"), size: value("extProductSize"), gia: value("extProductPrice"), giaNhap: value("extProductCost"), loiNhan: value("extProductCardText") };
+    }
+    paintExternal() {
+      const slot = el("facebookExternalProductSlot");
+      clear(slot);
+      const thread = this.host.thread();
+      if (thread === null || thread.kenh !== "facebook") return;
+      const d = this.externalDraft;
+      if (d !== null) {
+        const img = d["anh"] ?? "";
+        slot.appendChild(h(
+          "div",
+          { class: "ext-product-form", id: "extProductForm" },
+          h(
+            "div",
+            { class: "ext-product-form-head" },
+            h("strong", null, "🧾 Thẻ SP ngoài hệ thống"),
+            h("span", { class: "subtle", id: "extProductNote" }, "Điền tên + giá bán rồi gửi."),
+            h("button", { class: "facebook-icon-button", type: "button", "data-action": "ext-product-close", title: "Đóng" }, "×")
+          ),
+          h(
+            "div",
+            { class: "ext-product-form-body" },
+            h("div", { class: `ext-product-image${img ? "" : " empty"}` }, img ? h("img", { src: img, alt: "", referrerpolicy: "no-referrer" }) : h("span", null, "Bấm 🧾 trên ảnh trong chat")),
+            h(
+              "div",
+              { class: "ext-product-fields" },
+              h("div", { class: "field" }, h("label", { for: "extProductName" }, "Tên sản phẩm *"), h("input", { id: "extProductName", value: d["ten"] ?? "", placeholder: "adidas Adizero Boston 12 xanh" })),
+              h(
+                "div",
+                { class: "ext-product-grid" },
+                h("div", { class: "field" }, h("label", { for: "extProductCode" }, "Mã SP"), h("input", { id: "extProductCode", value: d["ma"] ?? "", placeholder: "trống = tự sinh" })),
+                h("div", { class: "field" }, h("label", { for: "extProductSize" }, "Size"), h("input", { id: "extProductSize", value: d["size"] ?? "", placeholder: "41 1/3" })),
+                h("div", { class: "field" }, h("label", { for: "extProductPrice" }, "Giá bán *"), h("input", { id: "extProductPrice", inputmode: "numeric", value: d["gia"] ?? "", placeholder: "1490000" })),
+                h("div", { class: "field" }, h("label", { for: "extProductCost" }, "Giá nhập"), h("input", { id: "extProductCost", inputmode: "numeric", value: d["giaNhap"] ?? "", placeholder: "nội bộ" }))
+              ),
+              h("div", { class: "field" }, h("label", { for: "extProductCardText" }, "Lời nhắn gửi kèm ảnh"), h("textarea", { id: "extProductCardText", rows: "3", value: d["loiNhan"] ?? "" }))
+            )
+          ),
+          this.external.ganDay.length > 0 ? h(
+            "div",
+            { class: "ext-product-recent" },
+            h("span", { class: "subtle" }, "Gần đây:"),
+            ...this.external.ganDay.slice(0, 8).map((x) => h("button", { type: "button", class: "ext-product-chip", "data-action": "ext-product-pick-recent", "data-ext-id": x.id, title: x.ma }, `${x.ten || x.ma}${x.gia ? ` · ${money(x.gia)}` : ""}`))
+          ) : null,
+          h(
+            "div",
+            { class: "ext-product-form-actions" },
+            h("button", { class: "primary-button compact-button", type: "button", "data-action": "ext-product-submit" }, "Gửi thẻ + chốt"),
+            h("button", { class: "secondary-button compact-button", type: "button", "data-action": "ext-product-submit-nosend" }, "Chỉ chốt, không gửi"),
+            h("button", { class: "ghost-button compact-button", type: "button", "data-action": "ext-product-suggest", disabled: !img }, "AI gợi ý lại")
+          )
+        ));
+        return;
+      }
+      const active = this.external.dangChot;
+      if (active !== null) {
+        slot.appendChild(h(
+          "div",
+          { class: "ext-product-bar active" },
+          active.anh ? h("img", { src: active.anh, alt: "", referrerpolicy: "no-referrer" }) : null,
+          h(
+            "div",
+            { class: "ext-product-bar-info" },
+            h("strong", null, `🧾 SP ngoài đã chốt: ${active.ten || active.ma}`),
+            h("span", null, `${active.ma}${active.size ? ` · size ${active.size}` : ""}${active.gia ? ` · ${money(active.gia)}` : ""} · ${active.guiLuc ? "đã gửi thẻ" : "chưa gửi được thẻ"} · bot chỉ bám mẫu này`)
+          ),
+          h(
+            "div",
+            { class: "ext-product-bar-actions" },
+            h("button", { class: "primary-button compact-button", type: "button", "data-action": "ext-product-create-order" }, "Tạo đơn"),
+            h("button", { class: "secondary-button compact-button", type: "button", "data-action": "ext-product-resend" }, "Gửi lại thẻ"),
+            h("button", { class: "ghost-button compact-button", type: "button", "data-action": "ext-product-open", title: "Chốt món khác thay món này" }, "Món khác"),
+            h("button", { class: "ghost-button compact-button danger", type: "button", "data-action": "ext-product-unchot" }, "Bỏ chốt")
+          )
+        ));
+        return;
+      }
+      const hint = this.hintDismissed ? "" : this.lastPageImage();
+      if (hint) {
+        slot.appendChild(h(
+          "div",
+          { class: "ext-product-bar hint" },
+          h("img", { src: hint, alt: "", referrerpolicy: "no-referrer" }),
+          h("div", { class: "ext-product-bar-info" }, h("strong", null, "Ảnh vừa gửi khách"), h("span", null, "Là hàng ngoài hệ thống? Làm thẻ để bot bám đúng món.")),
+          h(
+            "div",
+            { class: "ext-product-bar-actions" },
+            h("button", { class: "primary-button compact-button", type: "button", "data-action": "ext-product-from-hint" }, "🧾 Làm thẻ SP ngoài"),
+            h("button", { class: "facebook-icon-button", type: "button", "data-action": "ext-product-dismiss-hint", title: "Bỏ qua" }, "×")
+          )
+        ));
+        return;
+      }
+      slot.appendChild(h(
+        "div",
+        { class: "ext-product-launch" },
+        h("button", { class: "link-button", type: "button", "data-action": "ext-product-open", title: "Sản phẩm không có trong kho web: gửi thẻ + chốt để bot bám đúng món" }, "＋ Thẻ SP ngoài")
+      ));
+    }
+    async suggestExternal() {
+      const thread = this.host.thread();
+      if (thread === null || this.externalDraft === null) return;
+      this.externalDraft = this.readExternalForm();
+      el("extProductNote").textContent = "AI đang đọc ảnh để gợi ý tên…";
+      const r = await this.ctx.gateway.landing("ai.sp-ngoai.goi-y", { maHoiThoai: thread.ma, anh: this.externalDraft["anh"] ? [this.externalDraft["anh"]] : [], goiY: this.externalDraft["ten"] ?? "" });
+      if (!r.ok || !r.than?.goiY) {
+        this.say(r.viSao || "AI chưa đọc được ảnh.", "bad");
+        this.paintExternal();
+        return;
+      }
+      const g = r.than.goiY;
+      this.externalDraft = { ...this.externalDraft, ten: g.ten || this.externalDraft["ten"] || "", ma: g.ma || this.externalDraft["ma"] || "", gia: g.gia ? String(g.gia) : this.externalDraft["gia"] ?? "" };
+      this.paintExternal();
+      this.say("AI đã gợi ý tên — soát lại rồi gõ giá.", "good");
+    }
+    async submitExternal(send) {
+      const thread = this.host.thread();
+      if (thread === null || this.externalDraft === null) return;
+      const form = this.readExternalForm();
+      const anh2 = form["anh"] ?? "";
+      const r = await this.ctx.gateway.landing("ai.sp-ngoai.chot", {
+        maHoiThoai: thread.ma,
+        ten: form["ten"],
+        ma: form["ma"],
+        size: form["size"],
+        gia: Number(String(form["gia"]).replace(/[^\d]/g, "")) || 0,
+        giaNhap: Number(String(form["giaNhap"]).replace(/[^\d]/g, "")) || 0,
+        ...anh2 ? { anh: anh2 } : {},
+        loiNhan: form["loiNhan"],
+        gui: send
+      });
+      if (!r.ok) {
+        this.externalDraft = form;
+        this.say(r.viSao, "bad");
+        return;
+      }
+      this.externalDraft = null;
+      await this.loadExternal(thread.ma);
+      this.paintExternal();
+      this.say(str(r.than?.message) || "Đã chốt SP ngoài.", "good");
+      if (send) await this.host.threadChanged();
+    }
+    async resendExternal() {
+      const item = this.external.dangChot;
+      const thread = this.host.thread();
+      if (item === null || thread === null) return;
+      const r = await this.ctx.gateway.landing("ai.sp-ngoai.gui-lai", { ma: item.id });
+      this.say(r.ok ? str(r.than?.message) || "Đã gửi lại thẻ." : r.viSao, r.ok ? "good" : "bad");
+      if (r.ok) {
+        await this.loadExternal(thread.ma);
+        this.paintExternal();
+        await this.host.threadChanged();
+      }
+    }
+    async setExternalStatus(state) {
+      const item = this.external.dangChot;
+      const thread = this.host.thread();
+      if (item === null || thread === null) return;
+      const r = await this.ctx.gateway.landing("ai.sp-ngoai.trang-thai", { ma: item.id, trangThai: state });
+      if (!r.ok) {
+        this.say(r.viSao, "bad");
+        return;
+      }
+      await this.loadExternal(thread.ma);
+      this.paintExternal();
+      this.say("Đã bỏ chốt — bot tư vấn lại bình thường.", "good");
+    }
+    // ------------------------------------------------------------------ size signals
+    async loadSignals(id) {
+      const r = await this.ctx.gateway.landing("ai.tin-hieu-size", { maHoiThoai: id });
+      if (this.host.thread()?.ma !== id) return;
+      this.signals = r.ok ? r.than?.tinHieu ?? [] : [];
+      this.paintSignals();
+    }
+    paintSignals() {
+      const box = el("fp-chan-tin-hieu");
+      clear(box);
+      if (this.signals.length === 0) return;
+      box.appendChild(h(
+        "div",
+        { class: "facebook-fit-signals" },
+        h("span", { class: "subtle" }, "Phát hiện trong hội thoại — bấm ✓ để lưu vào hồ sơ:"),
+        ...this.signals.map((s) => h(
+          "div",
+          { class: "facebook-fit-signal-row" },
+          h(
+            "div",
+            null,
+            h("strong", null, `${s.label}: ${s.value}${s.unit ?? ""}${s.brand && s.type === "sizeEU" ? ` (${s.brand})` : ""}`),
+            h("small", { class: "subtle" }, `“${s.quote}”`)
+          ),
+          h(
+            "span",
+            { class: "split-actions" },
+            h("button", { class: "primary-button compact-button", type: "button", "data-action": "confirm-facebook-fit-signal", "data-signal-key": s.khoa }, "✓"),
+            h("button", { class: "ghost-button compact-button", type: "button", "data-action": "dismiss-facebook-fit-signal", "data-signal-key": s.khoa }, "✗")
+          )
+        ))
+      ));
+    }
+    async confirmSignal(key) {
+      const signal = this.signals.find((s) => s.khoa === key);
+      const thread = this.host.thread();
+      if (!signal || thread === null) {
+        this.say("Không tìm thấy tín hiệu này nữa (hội thoại đã đổi).", "bad");
+        return;
+      }
+      if (!await this.host.applyFitSignal(signal)) return;
+      await this.ctx.gateway.landing("ai.tin-hieu-size.bo", { maHoiThoai: thread.ma, khoa: key });
+      this.signals = this.signals.filter((s) => s.khoa !== key);
+      this.paintSignals();
+    }
+    async dismissSignal(key) {
+      const thread = this.host.thread();
+      if (thread === null) return;
+      const r = await this.ctx.gateway.landing("ai.tin-hieu-size.bo", { maHoiThoai: thread.ma, khoa: key });
+      if (!r.ok) {
+        this.say(r.viSao, "bad");
+        return;
+      }
+      this.signals = this.signals.filter((s) => s.khoa !== key);
+      this.paintSignals();
+    }
+  };
+
   // ../omi/packages/omi-ui/src/views/fanpage.ts
   var REFRESH_MS = 15e3;
+  var PAGE_SIZE = 200;
   var COMMENT_CHANNEL = "facebook-binh-luan";
   var CHANNEL_LABEL3 = {
     facebook: "Messenger",
@@ -4813,205 +9029,606 @@
     openThread = null;
     filter = "tat-ca";
     channel = "";
+    /** Cursor of the next page of threads; empty = no more. */
+    cursor = "";
     /** Conversation ids the bot handed to a human — marked in the list so they get answered first. */
     needHuman = /* @__PURE__ */ new Set();
     timer = null;
-    build(root) {
-      root.append(
-        h(
-          "div",
-          { class: "toolbar" },
-          h("button", { class: "secondary-button", id: "nut-fanpage-tai", type: "button", onclick: () => void this.loadAll() }, "Tải lại"),
-          h("label", { class: "check" }, h("input", { type: "checkbox", id: "fp-tu-tai", checked: true }), ` Tự tải mới (${REFRESH_MS / 1e3} giây)`),
-          h("span", { class: "status-line", id: "fanpage-trang-thai" }, "Bấm để tải.")
-        ),
-        h(
-          "div",
-          { class: "facebook-desk" },
-          h(
-            "aside",
-            { class: "facebook-conversation-pane" },
-            // Chọn fanpage — chép `facebookPageSelector` (Desk `app.js`). Không chọn trang nào = mọi trang.
-            h(
-              "details",
-              { class: "facebook-page-select", id: "fp-chon-trang" },
-              h(
-                "summary",
-                null,
-                h("span", { class: "facebook-page-stack" }, h("span", null, "FB")),
-                h("strong", { id: "fp-trang-nhan" }, "Chọn fanpage"),
-                h("span", { class: "facebook-caret" }, "⌄")
-              ),
-              h(
-                "div",
-                { class: "facebook-page-menu" },
-                h(
-                  "div",
-                  { class: "facebook-page-menu-actions" },
-                  h("button", { class: "secondary-button compact-button", type: "button", "data-action": "select-all-facebook-pages" }, "Chọn tất cả"),
-                  h("button", { class: "secondary-button compact-button", type: "button", "data-action": "clear-facebook-page-selection" }, "Bỏ chọn"),
-                  h("button", { class: "secondary-button compact-button", type: "button", "data-action": "refresh-facebook-pages" }, "Tải lại trang"),
-                  h("button", { class: "primary-button compact-button", type: "button", "data-action": "load-facebook-selected-conversations" }, "Tải hội thoại")
-                ),
-                h("div", { class: "facebook-page-options", id: "fp-trang-ds" })
-              )
-            ),
-            h(
-              "div",
-              { class: "facebook-tabs" },
-              this.filterButton("tat-ca", "Tất cả"),
-              this.filterButton("chua-doc", "Chưa đọc"),
-              this.filterButton("can-nguoi", "Cần người")
-            ),
-            h(
-              "div",
-              { class: "facebook-tabs" },
-              this.channelButton("", "Mọi kênh"),
-              this.channelButton("facebook", "Messenger"),
-              this.channelButton(COMMENT_CHANNEL, "Bình luận"),
-              this.channelButton("zalo", "Zalo"),
-              this.channelButton("fb-ca-nhan", "FB cá nhân")
-            ),
-            h(
-              "div",
-              { class: "facebook-search-row" },
-              h("input", { id: "fp-tim", type: "text", placeholder: "Tìm người hoặc nội dung", onkeydown: (e) => {
-                if (e.key === "Enter") void this.loadThreads();
-              } }),
-              h("button", { class: "secondary-button compact-button", id: "nut-fanpage-tim", type: "button", onclick: () => void this.loadThreads() }, "Tìm")
-            ),
-            h(
-              "div",
-              { class: "facebook-inbox-summary" },
-              h("span", { id: "fp-dem" }, "0 hội thoại"),
-              h("span", { id: "fp-dem-chua-doc" }, "")
-            ),
-            h("div", { class: "facebook-thread-list", id: "fp-danh-sach" })
-          ),
-          h(
-            "main",
-            { class: "facebook-chat-pane" },
-            h(
-              "div",
-              { class: "facebook-chat-header" },
-              h("div", null, h("h3", { id: "fp-ten" }, "Chưa chọn hội thoại"), h("p", { id: "fp-nguon" }, "Bấm một hội thoại bên trái để đọc.")),
-              h("button", { class: "secondary-button compact-button", id: "nut-fanpage-xong", type: "button", onclick: () => void this.markHandled() }, "Đã xử lý")
-            ),
-            h("div", { class: "chat-window", id: "fp-khung-chat" }),
-            h(
-              "div",
-              { class: "facebook-composer" },
-              h("textarea", { id: "fp-tra-loi", rows: "2", placeholder: "Trả lời khách… (Ctrl+Enter để gửi)", onkeydown: (e) => {
-                const k = e;
-                if (k.key === "Enter" && (k.ctrlKey || k.metaKey)) void this.send();
-              } }),
-              // Ảnh gửi kèm (`facebookReplyAttachmentTemplate`): hoá đơn, QR, ảnh thật của đôi giày.
-              h(
-                "div",
-                { class: "facebook-reply-attachment", id: "fp-anh-kem", hidden: true },
-                h("img", { id: "fp-anh-xem", alt: "" }),
-                h("span", { id: "fp-anh-ten" }),
-                h("button", { class: "ghost-button compact-button", type: "button", "data-action": "clear-facebook-reply-image" }, "Bỏ ảnh")
-              ),
-              h("input", { id: "fp-anh-tep", type: "file", accept: "image/png,image/jpeg,image/webp,image/gif", hidden: true, onchange: () => void this.pickImage() }),
-              h(
-                "div",
-                { class: "toolbar" },
-                h("button", { class: "primary-button", id: "nut-fanpage-gui", type: "button", onclick: () => void this.send() }, "Gửi"),
-                h("button", { class: "secondary-button compact-button", type: "button", "data-action": "send-facebook-order-image" }, "Gửi ảnh"),
-                h("span", { class: "status-line", id: "fp-gui-trang-thai" })
-              )
-            )
-          ),
-          h(
-            "aside",
-            { class: "facebook-customer-pane" },
-            h(
-              "section",
-              { class: "panel" },
-              h("div", { class: "panel-header" }, h("div", null, h("h3", null, "Khách này"))),
-              h(
-                "div",
-                { class: "kv" },
-                h("div", { class: "kv-row" }, h("span", null, "Tên hiện"), h("b", { id: "fp-kh-ten" }, "—")),
-                h("div", { class: "kv-row" }, h("span", null, "Kênh"), h("b", { id: "fp-kh-kenh" }, "—")),
-                h("div", { class: "kv-row" }, h("span", null, "Mã người"), h("b", { id: "fp-kh-ma" }, "—")),
-                h("div", { class: "kv-row" }, h("span", null, "Hoạt động"), h("b", { id: "fp-kh-luc" }, "—"))
-              )
-            ),
-            h(
-              "section",
-              { class: "panel" },
-              h("div", { class: "panel-header" }, h(
-                "div",
-                null,
-                h("h3", null, "Đơn của khách"),
-                h("p", null, "Messenger không cho biết số điện thoại. Hỏi khách rồi điền vào đây để nối với đơn.")
-              )),
-              h(
-                "div",
-                { class: "panel-body" },
-                h(
-                  "div",
-                  { class: "toolbar" },
-                  h("input", { id: "fp-kh-dien-thoai", type: "text", placeholder: "Số điện thoại khách", onkeydown: (e) => {
-                    if (e.key === "Enter") void this.loadCustomerOrders();
-                  } }),
-                  h("button", { class: "secondary-button compact-button", id: "nut-fanpage-don", type: "button", onclick: () => void this.loadCustomerOrders() }, "Xem đơn"),
-                  h("button", { class: "ghost-button compact-button", type: "button", "data-action": "copy-facebook-customer-phone" }, "Copy SĐT")
-                ),
-                h(
-                  "div",
-                  { class: "toolbar" },
-                  h("input", { id: "fp-kh-dia-chi", type: "text", placeholder: "Địa chỉ khách nhắn trong chat" }),
-                  // Lưu lên hội thoại TRÊN MÁY CHỦ: máy khác mở cuộc này cũng thấy số và địa chỉ.
-                  h("button", { class: "secondary-button compact-button", type: "button", "data-action": "apply-facebook-message-contact" }, "Lưu SĐT/địa chỉ")
-                ),
-                h("div", { id: "fp-don-cua-khach" }),
-                h(
-                  "div",
-                  { class: "toolbar" },
-                  h("button", { class: "primary-button compact-button", id: "nut-fanpage-chot-don", type: "button", onclick: () => this.composeOrder() }, "Chốt đơn cho khách này")
-                ),
-                h("p", { class: "status-line", id: "fp-don-trang-thai" }, "—")
-              )
-            ),
-            h(
-              "section",
-              { class: "panel" },
-              h("div", { class: "panel-header" }, h(
-                "div",
-                null,
-                h("h3", null, "Gợi ý sản phẩm"),
-                h("p", null, "Bấm một món để chèn mã, size còn và giá vào ô trả lời — số liệu lấy từ kho, không gõ tay.")
-              )),
-              h(
-                "div",
-                { class: "panel-body" },
-                h(
-                  "div",
-                  { class: "toolbar" },
-                  h("input", { id: "fp-tim-hang", type: "text", placeholder: "Mã hoặc tên hàng", onkeydown: (e) => {
-                    if (e.key === "Enter") void this.searchProducts();
-                  } }),
-                  h("button", { class: "secondary-button compact-button", id: "nut-fanpage-tim-hang", type: "button", onclick: () => void this.searchProducts() }, "Tìm")
-                ),
-                h("div", { id: "fp-hang-goi-y" }),
-                h("p", { class: "status-line", id: "fp-hang-trang-thai" }, "—")
-              )
-            )
-          )
-        )
-      );
-      this.startAutoRefresh();
-    }
     /** Trang Facebook shop đã nối (không token). */
     pages = [];
     /** Trang đang chọn — rỗng = mọi trang. */
     chosenPages = /* @__PURE__ */ new Set();
     /** Ảnh đang chờ gửi kèm (data URL, đọc từ tệp người bán chọn). */
     image = null;
+    /** Đ6: the customer behind the open thread. */
+    profile = null;
+    profileAddresses = [];
+    phoneOrders = [];
+    linkedOrders = [];
+    fitEditorOpen = false;
+    /** Older messages pulled from the long-term archive, shown above the thread. */
+    archived = [];
+    archiveMore = true;
+    payment = null;
+    confirmationClosing = "";
+    confirmOrder = null;
+    ck = { mode: "percent", percent: 20 };
+    quickReplies = [];
+    editingReply = null;
+    products = [];
+    pickedProduct = null;
+    /** Đ7 — Soạn bot, AI suy nghĩ, bot switches, photos, external products, size signals. */
+    ai = new FanpageAiPanel(this.ctx, {
+      thread: () => this.openThread,
+      fillReply: (text2) => {
+        const box = el("fp-tra-loi");
+        box.value = text2;
+        box.focus();
+      },
+      applyFitSignal: (signal) => this.applyFitSignal(signal),
+      orderExternal: (item) => {
+        this.composeOrder();
+        status(el("fp-gui-trang-thai"), `Đang soạn đơn — thêm dòng SP ngoài ${item.ma} ${item.ten}${item.size ? ` size ${item.size}` : ""} giá ${money(item.gia)} vào đơn.`, "good");
+      },
+      threadChanged: async () => {
+        if (this.openThread) await this.openConversation(this.openThread.ma, { quiet: true, markRead: false });
+      }
+    });
+    build(root) {
+      const pagePicker = h(
+        "details",
+        { class: "facebook-page-select", id: "fp-chon-trang" },
+        h(
+          "summary",
+          null,
+          h("span", { class: "facebook-page-stack" }, h("span", null, "FB")),
+          h("strong", { id: "fp-trang-nhan" }, "Chọn fanpage"),
+          h("span", { class: "facebook-caret" }, "⌄")
+        ),
+        h(
+          "div",
+          { class: "facebook-page-menu" },
+          h(
+            "div",
+            { class: "facebook-page-menu-actions" },
+            h("button", { class: "secondary-button compact-button", type: "button", "data-action": "select-all-facebook-pages" }, "Chọn tất cả"),
+            h("button", { class: "secondary-button compact-button", type: "button", "data-action": "clear-facebook-page-selection" }, "Bỏ chọn"),
+            h("button", { class: "secondary-button compact-button", type: "button", "data-action": "refresh-facebook-pages" }, "Tải lại trang"),
+            h("button", { class: "primary-button compact-button", type: "button", "data-action": "load-facebook-selected-conversations" }, "Tải hội thoại")
+          ),
+          h("div", { class: "facebook-page-options", id: "fp-trang-ds" })
+        )
+      );
+      const conversationPane = h(
+        "aside",
+        { class: "facebook-conversation-pane" },
+        pagePicker,
+        h(
+          "div",
+          { class: "facebook-tabs" },
+          this.filterButton("tat-ca", "Tất cả"),
+          this.filterButton("chua-doc", "Chưa đọc"),
+          this.filterButton("can-nguoi", "Cần người")
+        ),
+        h(
+          "div",
+          { class: "facebook-tabs" },
+          this.channelButton("", "Mọi kênh"),
+          this.channelButton("facebook", "Messenger"),
+          this.channelButton(COMMENT_CHANNEL, "Bình luận"),
+          this.channelButton("zalo", "Zalo"),
+          this.channelButton("fb-ca-nhan", "FB cá nhân")
+        ),
+        h(
+          "div",
+          { class: "facebook-search-row" },
+          h("input", { id: "fp-tim", type: "text", placeholder: "Tìm người hoặc nội dung", onkeydown: (e) => {
+            if (e.key === "Enter") void this.loadThreads();
+          } }),
+          h("button", { class: "secondary-button compact-button", id: "nut-fanpage-tim", type: "button", onclick: () => void this.loadThreads() }, "Tìm")
+        ),
+        h(
+          "div",
+          { class: "facebook-inbox-summary" },
+          h("span", { id: "fp-dem" }, "0 hội thoại"),
+          h("span", { id: "fp-dem-chua-doc" }, "")
+        ),
+        h("div", { class: "facebook-thread-list", id: "fp-danh-sach" }),
+        h("button", { class: "secondary-button compact-button facebook-thread-more", id: "fp-hien-them", type: "button", "data-action": "expand-facebook-thread-list", hidden: true }, "Hiện thêm tương tác cũ hơn")
+      );
+      const chatPane = h(
+        "main",
+        { class: "facebook-chat-pane" },
+        h(
+          "div",
+          { class: "facebook-chat-header" },
+          h("div", null, h("h3", { id: "fp-ten" }, "Chưa chọn hội thoại"), h("p", { id: "fp-nguon" }, "Bấm một hội thoại bên trái để đọc.")),
+          h(
+            "div",
+            { class: "facebook-chat-actions" },
+            h("button", { class: "facebook-icon-button", type: "button", "data-action": "subscribe-facebook-page", title: "Bật webhook cho page của hội thoại" }, "✉"),
+            h("button", { class: "facebook-icon-button", type: "button", "data-action": "toggle-facebook-product-picker", title: "Tra kho" }, "🛒"),
+            h("button", { class: "secondary-button compact-button", id: "nut-fanpage-xong", type: "button", onclick: () => void this.markHandled() }, "Đã xử lý")
+          )
+        ),
+        // Bình luận: bài gốc + nhắn riêng (Desk `facebookCommentDetail`).
+        h(
+          "div",
+          { class: "facebook-comment-detail", id: "fp-binh-luan", hidden: true },
+          h("div", { id: "fp-bai-goc" }),
+          h(
+            "div",
+            { class: "facebook-comment-actions" },
+            h("button", { class: "secondary-button compact-button", type: "button", "data-action": "private-reply-facebook-comment" }, "✉ Nhắn tin"),
+            h("button", { class: "ghost-button compact-button", type: "button", "data-action": "open-facebook-post" }, "Mở trên Facebook")
+          )
+        ),
+        this.ai.controlBar(),
+        h("div", { class: "chat-window", id: "fp-khung-chat" }),
+        h(
+          "div",
+          { class: "facebook-composer" },
+          this.ai.externalSlot(),
+          h(
+            "div",
+            { class: "facebook-quick-reply-slot", id: "fp-mau-khung", hidden: true },
+            h(
+              "div",
+              { class: "facebook-quick-reply-popup" },
+              h(
+                "div",
+                { class: "facebook-quick-reply-head" },
+                h("strong", null, "Câu trả lời mẫu"),
+                h("span", { class: "subtle" }, "Bấm để dùng"),
+                h("button", { type: "button", class: "facebook-icon-button", "data-action": "new-facebook-quick-reply", title: "Thêm mẫu mới" }, "+")
+              ),
+              h("div", { class: "facebook-quick-reply-list", id: "fp-mau-ds" })
+            ),
+            h(
+              "div",
+              { class: "facebook-quick-reply-editor", id: "fp-mau-sua", hidden: true },
+              h("div", { class: "product-title", id: "fp-mau-sua-tieu-de" }, "Thêm câu trả lời mẫu"),
+              h("label", { class: "facebook-quick-reply-field" }, h("span", null, "Từ viết tắt (không cần gõ #)"), h("input", { id: "facebookQuickReplyShortcut", placeholder: "vd: stk, đo chân, hàng order" })),
+              h("label", { class: "facebook-quick-reply-field" }, h("span", null, "Nội dung tin nhắn"), h("textarea", { id: "facebookQuickReplyContent", rows: "4" })),
+              h("label", { class: "facebook-quick-reply-field" }, h("span", null, "Ảnh gửi kèm (đường dẫn, không bắt buộc)"), h("input", { id: "facebookQuickReplyImage", placeholder: "/api/fanpage-media/… hoặc đường dẫn ảnh https" })),
+              h(
+                "div",
+                { class: "facebook-quick-reply-editor-actions" },
+                h("button", { type: "button", class: "secondary-button compact-button", "data-action": "close-facebook-quick-reply-editor" }, "Hủy"),
+                h("button", { type: "button", class: "primary-button compact-button", "data-action": "save-facebook-quick-reply" }, "Lưu mẫu")
+              )
+            )
+          ),
+          h("textarea", { id: "fp-tra-loi", rows: "2", placeholder: "Trả lời khách… (Ctrl+Enter để gửi, gõ # để chọn mẫu)", onkeydown: (e) => {
+            const k = e;
+            if (k.key === "Enter" && (k.ctrlKey || k.metaKey)) void this.send();
+          }, oninput: () => this.watchHash() }),
+          // Ảnh gửi kèm (`facebookReplyAttachmentTemplate`): hoá đơn, QR, ảnh thật của đôi giày.
+          h(
+            "div",
+            { class: "facebook-reply-attachment", id: "fp-anh-kem", hidden: true },
+            h("img", { id: "fp-anh-xem", alt: "" }),
+            h("span", { id: "fp-anh-ten" }),
+            h("button", { class: "ghost-button compact-button", type: "button", "data-action": "clear-facebook-reply-image" }, "Bỏ ảnh")
+          ),
+          h("input", { id: "fp-anh-tep", type: "file", accept: "image/png,image/jpeg,image/webp,image/gif", hidden: true, onchange: () => void this.pickImage() }),
+          h(
+            "div",
+            { class: "toolbar" },
+            h("button", { class: "primary-button", id: "nut-fanpage-gui", type: "button", onclick: () => void this.send() }, "Gửi"),
+            h("button", { class: "secondary-button compact-button", type: "button", "data-action": "send-facebook-order-image" }, "Gửi ảnh"),
+            h("button", { class: "secondary-button compact-button", type: "button", "data-action": "open-facebook-quick-replies" }, "# Mẫu"),
+            h("span", { class: "status-line", id: "fp-gui-trang-thai" })
+          )
+        )
+      );
+      root.append(
+        h(
+          "div",
+          { class: "toolbar" },
+          h("button", { class: "secondary-button", id: "nut-fanpage-tai", type: "button", onclick: () => void this.loadAll() }, "Tải lại"),
+          h("label", { class: "check" }, h("input", { type: "checkbox", id: "fp-tu-tai", checked: true }), ` Tự tải mới (${REFRESH_MS / 1e3} giây)`),
+          h("button", { class: "facebook-icon-button active", type: "button", "data-action": "connect-facebook-oauth", title: "Kết nối page qua app Meta trung tâm" }, "f"),
+          h("button", { class: "secondary-button compact-button", type: "button", id: "fp-hoan-tat-ket-noi", "data-action": "finish-facebook-oauth", hidden: true }, "Hoàn tất kết nối"),
+          h("span", { class: "status-line", id: "fanpage-trang-thai" }, "Bấm để tải.")
+        ),
+        h("div", { class: "facebook-desk" }, conversationPane, chatPane, this.buildCustomerPane()),
+        this.buildMediaViewer(),
+        this.buildCommentMessageModal(),
+        this.buildOrderConfirmModal()
+      );
+      this.startAutoRefresh();
+    }
+    // ------------------------------------------------------------------ right pane
+    buildCustomerPane() {
+      const section = (id, count, title, open, ...children) => h("details", { class: "facebook-side-section", id, open }, h("summary", null, title, count), ...children);
+      const card = h(
+        "div",
+        { class: "facebook-customer-card" },
+        h(
+          "div",
+          { class: "facebook-customer-head" },
+          h("span", { class: "facebook-avatar", id: "fp-kh-chu-cai" }, "KH"),
+          h(
+            "div",
+            null,
+            h("h3", { id: "fp-kh-ten" }, "—"),
+            h("button", { class: "link-button", type: "button", "data-action": "open-facebook-customer-profile" }, "Xem chi tiết")
+          )
+        ),
+        h(
+          "div",
+          { class: "facebook-customer-tags" },
+          h("span", { id: "fp-kh-lien-ket" }, "Chưa liên kết hồ sơ"),
+          h("span", { id: "fp-kh-kenh" }, "—")
+        ),
+        h(
+          "div",
+          { class: "kv" },
+          h("div", { class: "kv-row" }, h("span", null, "Mã người"), h("b", { id: "fp-kh-ma" }, "—")),
+          h("div", { class: "kv-row" }, h("span", null, "Hoạt động"), h("b", { id: "fp-kh-luc" }, "—"))
+        ),
+        h(
+          "div",
+          { class: "facebook-customer-phone" },
+          h("span", null, "☎"),
+          h("strong", { id: "fp-kh-so" }, "Chưa có số điện thoại"),
+          h("button", { class: "ghost-button compact-button", type: "button", "data-action": "copy-facebook-customer-phone" }, "Copy")
+        ),
+        h(
+          "div",
+          { class: "facebook-customer-actions" },
+          h("button", { class: "primary-button compact-button", id: "nut-fanpage-chot-don", type: "button", onclick: () => this.composeOrder() }, "Tạo đơn landing"),
+          h("button", { class: "secondary-button compact-button", type: "button", "data-action": "edit-facebook-customer-profile-inline" }, "Sửa thông tin")
+        )
+      );
+      const orderLink = section(
+        "fp-lien-ket-don",
+        h("span", { id: "fp-lien-ket-don-dem" }, "+"),
+        "Liên kết đơn hàng",
+        false,
+        h("div", { class: "facebook-order-link-head" }, h("small", null, "Gắn đơn vào hội thoại; đơn cùng SĐT được gợi ý bên dưới.")),
+        h(
+          "div",
+          { class: "facebook-order-link-form" },
+          h("input", { id: "facebookOrderLinkId", placeholder: "Nhập mã đơn, ví dụ MAN-... hoặc LAND-..." }),
+          h("button", { class: "secondary-button compact-button", type: "button", "data-action": "link-facebook-order" }, "Gắn đơn")
+        ),
+        h("div", { id: "fp-don-gan" })
+      );
+      const orders = section(
+        "fp-lich-su",
+        h("span", { id: "fp-lich-su-dem" }, "+"),
+        "Lịch sử mua hàng (F1)",
+        true,
+        h(
+          "div",
+          { class: "toolbar" },
+          h("input", { id: "fp-kh-dien-thoai", type: "text", placeholder: "Số điện thoại khách", onkeydown: (e) => {
+            if (e.key === "Enter") void this.loadCustomerOrders();
+          } }),
+          h("button", { class: "secondary-button compact-button", id: "nut-fanpage-don", type: "button", onclick: () => void this.loadCustomerOrders() }, "Xem đơn")
+        ),
+        h(
+          "div",
+          { class: "toolbar" },
+          h("input", { id: "fp-kh-dia-chi", type: "text", placeholder: "Địa chỉ khách nhắn trong chat" }),
+          // Lưu lên hội thoại TRÊN MÁY CHỦ: máy khác mở cuộc này cũng thấy số và địa chỉ.
+          h("button", { class: "secondary-button compact-button", type: "button", "data-action": "apply-facebook-message-contact" }, "Lưu SĐT/địa chỉ")
+        ),
+        h("div", { id: "fp-don-cua-khach" }),
+        h("p", { class: "status-line", id: "fp-don-trang-thai" }, "—")
+      );
+      const addresses = section(
+        "fp-dia-chi",
+        h("span", { id: "fp-dia-chi-dem" }, "+"),
+        "Địa chỉ (F2)",
+        false,
+        h(
+          "div",
+          { class: "facebook-address-title" },
+          h("span", { class: "subtle" }, "Địa chỉ đã lưu"),
+          h("button", { class: "secondary-button compact-button", type: "button", "data-action": "create-new-facebook-address" }, "Tạo địa chỉ mới")
+        ),
+        h("div", { id: "fp-dia-chi-ds" }),
+        h(
+          "div",
+          { class: "facebook-form-actions" },
+          h("button", { class: "primary-button compact-button", type: "button", "data-action": "save-facebook-customer-info" }, "Lưu SĐT + địa chỉ vào hồ sơ")
+        )
+      );
+      const fit = section(
+        "fp-chan",
+        h("span", { id: "fp-chan-dem" }, "+"),
+        "📏 Chân dung size",
+        false,
+        h("div", { id: "fp-chan-tom-tat" }),
+        this.ai.signalBox(),
+        h(
+          "div",
+          { id: "fp-chan-sua", hidden: true },
+          h(
+            "div",
+            { class: "facebook-form-grid" },
+            h("input", { id: "facebookFitFootLength", placeholder: "Chân dài (cm)", "aria-label": "Chân dài (cm)" }),
+            h("input", { id: "facebookFitFootWidth", placeholder: "Bề ngang (cm)", "aria-label": "Bề ngang (cm)" })
+          ),
+          h(
+            "div",
+            { class: "facebook-form-grid" },
+            h("input", { id: "facebookFitSizeEU", placeholder: "Size EU quen đi", "aria-label": "Size EU quen đi" }),
+            h("input", { id: "facebookFitNotes", placeholder: "Ghi chú fit (chân bè, vòm cao...)", "aria-label": "Ghi chú fit" })
+          ),
+          h(
+            "div",
+            { class: "facebook-form-actions" },
+            h("button", { class: "secondary-button compact-button", type: "button", "data-action": "close-facebook-fit-editor" }, "Hủy"),
+            h("button", { class: "primary-button compact-button", type: "button", "data-action": "save-facebook-fit-info" }, "Lưu")
+          )
+        ),
+        h(
+          "div",
+          { class: "facebook-form-actions", id: "fp-chan-mo" },
+          h("button", { class: "secondary-button compact-button", type: "button", "data-action": "open-facebook-fit-editor" }, "Nhập tay")
+        )
+      );
+      const note = section(
+        "fp-ghi-chu",
+        h("span", null, "+"),
+        "Ghi chú (F6)",
+        false,
+        h(
+          "div",
+          { class: "field" },
+          h("label", { for: "facebookCustomerNote" }, "Ghi chú nội bộ"),
+          h("textarea", { id: "facebookCustomerNote", rows: "4", placeholder: "Nhu cầu, size hay hỏi, lưu ý giao hàng..." })
+        ),
+        h(
+          "div",
+          { class: "facebook-form-actions" },
+          h("button", { class: "primary-button compact-button", type: "button", "data-action": "save-facebook-customer-note" }, "Lưu ghi chú")
+        )
+      );
+      const draft = h(
+        "section",
+        { class: "checkout-card", id: "fp-the-dat-hang", hidden: true },
+        h(
+          "div",
+          { class: "checkout-card-header" },
+          h("img", { class: "product-thumb", id: "fp-the-anh", alt: "" }),
+          h(
+            "div",
+            null,
+            h("h4", null, "Thẻ đặt hàng"),
+            h("div", { class: "product-title", id: "fp-the-ten" }),
+            h("div", { class: "subtle", id: "fp-the-gia" })
+          )
+        ),
+        h(
+          "div",
+          { class: "checkout-form-grid" },
+          h("div", { class: "field" }, h("label", { for: "orderDraftSize" }, "Size"), h("input", { id: "orderDraftSize" })),
+          h("div", { class: "field" }, h("label", { for: "orderDraftQuantity" }, "Số lượng"), h("input", { id: "orderDraftQuantity", value: "1" })),
+          h("div", { class: "field" }, h("label", { for: "orderDraftCustomerName" }, "Tên người nhận"), h("input", { id: "orderDraftCustomerName" })),
+          h("div", { class: "field" }, h("label", { for: "orderDraftPhone" }, "Số điện thoại"), h("input", { id: "orderDraftPhone" })),
+          h("div", { class: "field full" }, h("label", { for: "orderDraftAddress" }, "Địa chỉ nhận hàng"), h("input", { id: "orderDraftAddress" })),
+          h("div", { class: "field full" }, h("label", { for: "orderDraftNote" }, "Ghi chú"), h("textarea", { id: "orderDraftNote", placeholder: "Màu, giờ nhận hàng, lưu ý giao hàng..." }))
+        ),
+        h(
+          "div",
+          { class: "split-actions" },
+          h("button", { class: "secondary-button", type: "button", "data-action": "save-order-draft" }, "Lưu thẻ"),
+          h("button", { class: "primary-button", type: "button", "data-action": "submit-order-draft" }, "Tạo đơn nháp"),
+          h("button", { class: "ghost-button", type: "button", "data-action": "discard-order-draft" }, "Bỏ thẻ")
+        ),
+        h("p", { class: "status-line", id: "fp-the-trang-thai" }, "Khách đã có lịch sử mua thì SĐT và địa chỉ điền sẵn.")
+      );
+      const suggest = h(
+        "section",
+        { class: "panel" },
+        h("div", { class: "panel-header" }, h(
+          "div",
+          null,
+          h("h3", null, "Gợi ý sản phẩm"),
+          h("p", null, "Bấm một món để chèn mã, size còn và giá vào ô trả lời — số liệu lấy từ kho, không gõ tay.")
+        )),
+        h(
+          "div",
+          { class: "panel-body" },
+          h(
+            "div",
+            { class: "toolbar" },
+            h("input", { id: "fp-tim-hang", type: "text", placeholder: "Mã hoặc tên hàng", onkeydown: (e) => {
+              if (e.key === "Enter") void this.searchProducts();
+            } }),
+            h("button", { class: "secondary-button compact-button", id: "nut-fanpage-tim-hang", type: "button", onclick: () => void this.searchProducts() }, "Tìm")
+          ),
+          h("div", { id: "fp-hang-goi-y" }),
+          h("p", { class: "status-line", id: "fp-hang-trang-thai" }, "—")
+        )
+      );
+      const picker = h(
+        "div",
+        { class: "facebook-product-pane", id: "fp-tra-kho", hidden: true },
+        h(
+          "div",
+          { class: "facebook-product-picker-head" },
+          h("div", null, h("div", { class: "product-title" }, "Tra kho"), h("div", { class: "subtle" }, "Hàng landing và các nguồn hàng của shop.")),
+          h("button", { class: "facebook-icon-button", type: "button", "data-action": "toggle-facebook-product-picker", title: "Đóng tra kho" }, "×")
+        ),
+        h(
+          "div",
+          { class: "facebook-tabs facebook-inv-tabs" },
+          h("button", { type: "button", class: "active", "data-action": "set-facebook-inv-tab", "data-tab": "landing" }, "Kho Landing"),
+          h("button", { type: "button", "data-action": "set-facebook-inv-tab", "data-tab": "other" }, "Kho khác")
+        ),
+        h(
+          "div",
+          { class: "facebook-inv-filter-row", id: "fp-kho-landing" },
+          h("input", { id: "facebookInvLandingQuery", placeholder: "Mã / tên sản phẩm" }),
+          h("input", { id: "facebookInvLandingSize", class: "facebook-inv-size", placeholder: "Size" }),
+          h("button", { class: "secondary-button compact-button", type: "button", "data-action": "search-facebook-inv-landing" }, "Tra kho")
+        ),
+        h(
+          "div",
+          { class: "facebook-inv-filter-row", id: "fp-kho-khac", hidden: true },
+          h("input", { id: "facebookInvOtherQuery", placeholder: "Mã / tên sản phẩm" }),
+          h("input", { id: "facebookInvOtherSize", class: "facebook-inv-size", placeholder: "Size" }),
+          h("select", { id: "facebookInvOtherSource" }, h("option", { value: "ready" }, "Kho hàng sẵn"), h("option", { value: "campaign" }, "Hàng đối tác")),
+          h("button", { class: "secondary-button compact-button", type: "button", "data-action": "search-facebook-inv-other" }, "Tra kho")
+        ),
+        h("div", { class: "subtle facebook-inv-status", id: "fp-kho-trang-thai" }, "Bấm Tra kho để tải dữ liệu."),
+        h("div", { class: "facebook-product-card-list", id: "fp-kho-the" }),
+        h("div", { class: "facebook-product-detail", id: "fp-kho-chi-tiet" })
+      );
+      return h(
+        "aside",
+        { class: "facebook-customer-pane" },
+        picker,
+        this.ai.thinkingPane(),
+        h(
+          "div",
+          { id: "fp-khach-khung", class: "omi-stack" },
+          card,
+          h("div", { id: "fp-goi-y-lien-ket" }),
+          orderLink,
+          orders,
+          draft,
+          addresses,
+          fit,
+          note,
+          suggest
+        )
+      );
+    }
+    buildMediaViewer() {
+      return h(
+        "div",
+        { class: "facebook-media-viewer", id: "fp-xem-anh", role: "dialog", hidden: true },
+        h("button", { class: "facebook-media-viewer-backdrop", type: "button", "data-action": "close-facebook-media-viewer", "aria-label": "Đóng trình xem" }),
+        h(
+          "section",
+          { class: "facebook-media-viewer-panel" },
+          h(
+            "div",
+            { class: "facebook-media-viewer-header" },
+            h("strong", { id: "fp-xem-anh-ten" }, "Ảnh đính kèm"),
+            h("button", { class: "facebook-media-viewer-close", type: "button", "data-action": "close-facebook-media-viewer", "aria-label": "Đóng" }, "×")
+          ),
+          h("div", { class: "facebook-media-viewer-stage" }, h("img", { id: "fp-xem-anh-img", alt: "Ảnh đính kèm" }))
+        )
+      );
+    }
+    buildCommentMessageModal() {
+      return h(
+        "div",
+        { class: "management-modal facebook-comment-message-modal", id: "fp-nhan-rieng", hidden: true },
+        h("div", { class: "management-modal-backdrop", "data-action": "close-facebook-comment-message" }),
+        h(
+          "section",
+          { class: "management-modal-panel" },
+          h(
+            "div",
+            { class: "panel-header" },
+            h(
+              "div",
+              null,
+              h("h3", null, "Gửi tin nhắn tới ", h("span", { class: "facebook-comment-message-name", id: "fp-nhan-rieng-ten" }, "khách")),
+              h("p", null, "Tin nhắn riêng vào inbox khách từ bình luận này (Meta cho 1 tin/bình luận, trong 7 ngày).")
+            ),
+            h("button", { class: "ghost-button", type: "button", "data-action": "close-facebook-comment-message" }, "✕")
+          ),
+          h(
+            "div",
+            { class: "management-modal-body" },
+            h("div", { class: "facebook-comment-message-quote", id: "fp-nhan-rieng-trich" }),
+            h(
+              "div",
+              { class: "field" },
+              h("textarea", { id: "facebookCommentMessageText", maxlength: "2000", rows: "6", placeholder: "Gửi tin nhắn với tư cách page" })
+            ),
+            h(
+              "label",
+              { class: "facebook-comment-message-also" },
+              h("input", { type: "checkbox", id: "facebookCommentMessageAlsoReply", checked: true }),
+              h("span", null, "Đồng thời trả lời bình luận với nội dung")
+            ),
+            h(
+              "div",
+              { class: "field" },
+              h("textarea", { id: "facebookCommentMessageReplyText", maxlength: "2000", rows: "2", value: "Page đã nhắn tin cho bạn. Vui lòng check inbox nhé!" })
+            ),
+            h(
+              "div",
+              { class: "facebook-comment-message-actions" },
+              h("span", { class: "status-line", id: "fp-nhan-rieng-trang-thai" }),
+              h("button", { class: "ghost-button", type: "button", "data-action": "close-facebook-comment-message" }, "Hủy"),
+              h("button", { class: "primary-button", type: "button", "data-action": "send-facebook-comment-message" }, "Gửi")
+            )
+          )
+        )
+      );
+    }
+    buildOrderConfirmModal() {
+      return h(
+        "div",
+        { class: "management-modal facebook-order-confirm-modal", id: "fp-hoa-don", hidden: true },
+        h("div", { class: "management-modal-backdrop", "data-action": "close-facebook-order-confirm" }),
+        h(
+          "section",
+          { class: "management-modal-panel" },
+          h(
+            "div",
+            { class: "panel-header" },
+            h("div", null, h("h3", { id: "fp-hoa-don-tieu-de" }, "Gửi hóa đơn"), h("p", null, "Xem trước rồi gửi vào Messenger để khách xác nhận đơn.")),
+            h("button", { class: "ghost-button", type: "button", "data-action": "close-facebook-order-confirm" }, "Đóng")
+          ),
+          h(
+            "div",
+            { class: "management-modal-body" },
+            h("div", { class: "order-confirm-items", id: "fp-hoa-don-mon" }),
+            h("div", { class: "order-confirm-meta", id: "fp-hoa-don-giao" }),
+            h("div", { class: "order-confirm-totals", id: "fp-hoa-don-tong" }),
+            h(
+              "div",
+              { class: "field order-confirm-ck" },
+              h("label", null, "💳 Chuyển khoản (QR cùng STK + nội dung CK với trang thanh toán)"),
+              h(
+                "div",
+                { class: "omi-ck-row" },
+                ...[20, 50, 100].map((p) => h("button", { class: "ghost-button compact-button", type: "button", "data-action": "set-facebook-ck-percent", "data-percent": String(p) }, `${p}%`)),
+                h("input", { id: "facebookCkPercentInput", inputmode: "numeric", placeholder: "% khác", class: "omi-ck-percent", oninput: () => this.ckFromInputs("percent") }),
+                h("input", { id: "facebookCkCustomInput", inputmode: "numeric", placeholder: "Số tiền tự điền", class: "omi-ck-custom", oninput: () => this.ckFromInputs("custom") })
+              ),
+              h("p", { class: "subtle omi-tight" }, "Số tiền CK: ", h("b", { id: "facebookCkAmountLabel" }, "0đ"), " · Nội dung CK: ", h("code", { id: "fp-ck-noi-dung" })),
+              h("img", { id: "facebookCkQr", class: "omi-ck-qr", alt: "QR chuyển khoản", hidden: true }),
+              h("p", { class: "subtle", id: "fp-ck-thieu-stk", hidden: true }, "Chưa cấu hình STK ngân hàng trên landing (Nội dung web) — không sinh được QR.")
+            ),
+            h(
+              "div",
+              { class: "field" },
+              h("label", { for: "facebookOrderConfirmText" }, "Nội dung gửi khách (sửa được trước khi gửi; đổi lựa chọn CK sẽ soạn lại)"),
+              h("textarea", { id: "facebookOrderConfirmText", rows: "10" })
+            ),
+            h(
+              "div",
+              { class: "split-actions" },
+              h("button", { class: "primary-button", type: "button", "data-action": "send-facebook-order-confirm" }, "📄 Gửi hóa đơn (chữ)"),
+              h("button", { class: "secondary-button", type: "button", "data-action": "send-facebook-order-image", id: "fp-hoa-don-anh" }, "🖼 Gửi đơn dạng ảnh"),
+              h("button", { class: "secondary-button", type: "button", "data-action": "send-facebook-order-ck-qr" }, "💳 Gửi mã CK"),
+              h("button", { class: "secondary-button", type: "button", "data-action": "copy-facebook-order-link", id: "fp-hoa-don-link" }, "Chèn link tra cứu"),
+              h("button", { class: "ghost-button", type: "button", "data-action": "close-facebook-order-confirm" }, "Hủy")
+            ),
+            h("p", { class: "status-line", id: "fp-hoa-don-trang-thai" })
+          )
+        )
+      );
+    }
+    // ------------------------------------------------------------------ dispatcher
     actions = {
+      // Đ7 — AI (the panel owns these; see fanpage/ai-panel.ts).
+      ...this.ai.actions,
+      "ext-product-from-image": (b) => this.ai.actions["ext-product-from-image"]?.(b),
       "refresh-facebook-pages": () => this.loadPages(),
       "select-all-facebook-pages": () => {
         this.chosenPages = new Set(this.pages.map((p) => p.ma));
@@ -5027,11 +9644,109 @@
       },
       "apply-facebook-message-contact": () => this.saveContact(),
       "copy-facebook-customer-phone": () => this.copyPhone(),
-      "send-facebook-order-image": () => {
-        el("fp-anh-tep").click();
+      "send-facebook-order-image": (b) => b.id === "fp-hoa-don-anh" ? this.sendInvoiceImage() : el("fp-anh-tep").click(),
+      "clear-facebook-reply-image": () => this.clearImage(),
+      // Đ6 — pages through the central Meta app.
+      "connect-facebook-oauth": async () => {
+        if (await startMetaLogin(this.ctx.gateway, el("fanpage-trang-thai"))) el("fp-hoan-tat-ket-noi").hidden = false;
       },
-      "clear-facebook-reply-image": () => this.clearImage()
+      "finish-facebook-oauth": async () => {
+        if (await finishMetaLogin(this.ctx.gateway, el("fanpage-trang-thai"))) {
+          el("fp-hoan-tat-ket-noi").hidden = !hasPendingLogin();
+          await this.loadPages();
+        }
+      },
+      "subscribe-facebook-page": () => this.subscribePage(),
+      "expand-facebook-thread-list": () => this.loadThreads({ more: true }),
+      // Đ6 — media, comments, archive.
+      "open-facebook-media-viewer": (b) => this.openMedia(str(b.dataset["mediaUrl"]), str(b.dataset["mediaName"])),
+      "close-facebook-media-viewer": () => {
+        el("fp-xem-anh").hidden = true;
+      },
+      "private-reply-facebook-comment": () => this.openCommentMessage(),
+      "close-facebook-comment-message": () => {
+        el("fp-nhan-rieng").hidden = true;
+      },
+      "send-facebook-comment-message": () => this.sendCommentMessage(),
+      "open-facebook-post": () => this.openPost(),
+      "load-older-facebook-messages": () => this.loadOlder(),
+      // Đ6 — customer panel.
+      "open-facebook-customer-profile": () => this.openProfile(),
+      "edit-facebook-customer-profile-inline": () => this.openProfile(),
+      "sync-facebook-customer-link": (b) => this.linkProfile(str(b.dataset["profileId"])),
+      "link-facebook-order": (b) => this.linkOrder(str(b.dataset["orderId"]) || el("facebookOrderLinkId").value.trim()),
+      "unlink-facebook-order": async (b) => {
+        await this.patchThread({ boGanDon: str(b.dataset["orderId"]) }, `Đã bỏ gắn đơn ${str(b.dataset["orderId"])}.`);
+      },
+      "reject-facebook-order-suggestion": async (b) => {
+        await this.patchThread({ boGoiYDon: str(b.dataset["orderId"]) }, `Đã bỏ gợi ý đơn ${str(b.dataset["orderId"])} khỏi hội thoại này.`);
+      },
+      "copy-facebook-order-link": (b) => this.orderLink(b, false),
+      "ensure-facebook-order-link": (b) => this.orderLink(b, false),
+      "quick-update-facebook-order-paid": (b) => this.quickPaid(str(b.dataset["orderId"])),
+      "copy-facebook-tracking-code": (b) => this.copyLine(str(b.dataset["copyText"]), "Đã copy mã vận đơn."),
+      "copy-facebook-tracking-url": (b) => this.copyTrackingUrl(str(b.dataset["trackingCode"])),
+      "open-facebook-order-confirm": (b) => this.openConfirm(str(b.dataset["orderId"])),
+      "edit-managed-order": (b) => {
+        this.ctx.shell.open("don", { moDon: str(b.dataset["orderId"]) });
+      },
+      "close-facebook-order-confirm": () => {
+        el("fp-hoa-don").hidden = true;
+      },
+      "set-facebook-ck-percent": (b) => {
+        this.ck = { mode: "percent", percent: Number(b.dataset["percent"]) || 20 };
+        el("facebookCkPercentInput").value = str(b.dataset["percent"]);
+        el("facebookCkCustomInput").value = "";
+        this.paintCk();
+      },
+      "send-facebook-order-confirm": () => this.sendConfirm(),
+      "send-facebook-order-ck-qr": () => this.sendCkQr(),
+      "copy-facebook-saved-address": (b) => this.copySavedAddress(Number(b.dataset["addressIndex"])),
+      "apply-facebook-saved-address": (b) => this.applySavedAddress(Number(b.dataset["addressIndex"])),
+      "edit-facebook-saved-address": () => this.openProfile(),
+      "create-new-facebook-address": () => this.openProfile(),
+      "delete-facebook-saved-address": (b) => this.deleteSavedAddress(b),
+      "copy-facebook-address-suggestion": (b) => this.copyLine(str(b.dataset["copyText"]), "Đã copy gợi ý địa chỉ."),
+      "save-facebook-customer-info": () => this.saveCustomerInfo(),
+      "save-facebook-customer-note": () => this.saveNote(),
+      "open-facebook-fit-editor": () => {
+        this.fitEditorOpen = true;
+        this.paintFit();
+      },
+      "close-facebook-fit-editor": () => {
+        this.fitEditorOpen = false;
+        this.paintFit();
+      },
+      "save-facebook-fit-info": () => this.saveFit(),
+      // Đ6 — stock picker, order card.
+      "toggle-facebook-product-picker": () => this.togglePicker(),
+      "set-facebook-inv-tab": (b) => this.setInvTab(str(b.dataset["tab"])),
+      "search-facebook-inv-landing": () => this.searchInventory("landing"),
+      "search-facebook-inv-other": () => this.searchInventory("other"),
+      "pick-facebook-inv-product": (b) => this.pickInventory(str(b.dataset["code"])),
+      "insert-facebook-product-reply": (b) => {
+        const p = this.productByCode(str(b.dataset["code"]));
+        if (p) this.suggestProduct(p);
+      },
+      "send-product-photo": (b) => this.sendProductPhoto(str(b.dataset["code"])),
+      "add-product-to-cart": (b) => this.addToCart(str(b.dataset["code"])),
+      "save-order-draft": () => this.saveDraft(),
+      "submit-order-draft": () => this.submitDraft(),
+      "discard-order-draft": async () => {
+        await this.patchThread({ theDatHang: null }, "Đã bỏ thẻ đặt hàng.");
+      },
+      // Đ6 — quick replies.
+      "open-facebook-quick-replies": () => this.openQuickReplies(),
+      "use-facebook-quick-reply": (b) => this.useQuickReply(str(b.dataset["replyId"])),
+      "new-facebook-quick-reply": () => this.editQuickReply(null),
+      "edit-facebook-quick-reply": (b) => this.editQuickReply(this.quickReplies.find((q2) => q2.ma === str(b.dataset["replyId"])) ?? null),
+      "delete-facebook-quick-reply": (b) => this.deleteQuickReply(b),
+      "close-facebook-quick-reply-editor": () => {
+        el("fp-mau-sua").hidden = true;
+      },
+      "save-facebook-quick-reply": () => this.saveQuickReply()
     };
+    // ------------------------------------------------------------------ pages
     async loadPages() {
       const r = await this.ctx.gateway.landing("hop-thu.trang");
       if (!r.ok) {
@@ -5046,7 +9761,7 @@
       const box = el("fp-trang-ds");
       clear(box);
       for (const p of this.pages) {
-        const input = h("input", {
+        const input2 = h("input", {
           type: "checkbox",
           "data-facebook-merge-page-id": p.ma,
           checked: this.chosenPages.has(p.ma),
@@ -5056,14 +9771,26 @@
             this.paintPageLabel();
           }
         });
-        box.appendChild(h("label", { class: "facebook-page-option" }, input, h("span", null, h("strong", null, p.ten || p.ma), h("small", null, `${p.ma}${p.coToken ? "" : " · chưa có token"}`))));
+        box.appendChild(h("label", { class: "facebook-page-option" }, input2, h("span", null, h("strong", null, p.ten || p.ma), h("small", null, `${p.ma}${p.coToken ? "" : " · chưa có token"}`))));
       }
-      if (this.pages.length === 0) box.appendChild(h("p", { class: "subtle" }, "Chưa nối fanpage nào — nối ở màn Kết nối."));
+      if (this.pages.length === 0) box.appendChild(h("p", { class: "subtle" }, 'Chưa nối fanpage nào — bấm "f" để kết nối qua app Meta trung tâm, hoặc nhập token ở màn Kết nối.'));
       this.paintPageLabel();
     }
     paintPageLabel() {
       el("fp-trang-nhan").textContent = this.chosenPages.size === 0 ? "Mọi fanpage" : `Đã chọn ${this.chosenPages.size} trang`;
     }
+    async subscribePage() {
+      const line = el("fanpage-trang-thai");
+      const page = this.openThread?.trang || [...this.chosenPages][0] || this.pages[0]?.ma || "";
+      if (page === "") {
+        status(line, "Chọn một hội thoại hoặc một page trước.", "bad");
+        return;
+      }
+      status(line, `Đang bật webhook cho ${page}…`);
+      const r = await this.ctx.gateway.landing("hop-thu.trang.dang-ky", { ma: page });
+      status(line, r.ok ? str(r.than?.message) || "Đã bật webhook." : r.viSao, r.ok ? "good" : "bad");
+    }
+    // ------------------------------------------------------------------ contact (Đ1)
     async saveContact() {
       const line = el("fp-don-trang-thai");
       const thread = this.openThread;
@@ -5082,6 +9809,9 @@
         status(line, r.viSao, "bad");
         return;
       }
+      if (dienThoai) thread.dienThoai = dienThoai;
+      if (diaChi2) thread.diaChi = diaChi2;
+      el("fp-kh-so").textContent = dienThoai || "Chưa có số điện thoại";
       status(line, "Đã lưu vào hội thoại.", "good");
     }
     async copyPhone() {
@@ -5091,17 +9821,20 @@
         status(line, "Chưa có số điện thoại.", "bad");
         return;
       }
-      try {
-        await navigator.clipboard.writeText(phone);
-        status(line, "Đã copy số điện thoại.", "good");
-      } catch {
-        status(line, "Máy không cho chép vào bộ nhớ tạm.", "bad");
+      status(line, await copyText(phone) ? "Đã copy số điện thoại." : "Máy không cho chép vào bộ nhớ tạm.", phone !== "");
+    }
+    async copyLine(text2, done) {
+      const line = el("fp-don-trang-thai");
+      if (text2 === "") {
+        status(line, "Không có gì để copy.", "bad");
+        return;
       }
+      status(line, await copyText(text2) ? done : "Máy không cho chép vào bộ nhớ tạm.", "good");
     }
     async pickImage() {
-      const input = el("fp-anh-tep");
-      const file = input.files?.[0];
-      input.value = "";
+      const input2 = el("fp-anh-tep");
+      const file = input2.files?.[0];
+      input2.value = "";
       const line = el("fp-gui-trang-thai");
       if (!file) return;
       if (file.size > 8 * 1024 * 1024) {
@@ -5126,6 +9859,7 @@
     }
     clearImage() {
       this.image = null;
+      this.pendingTemplateImage = "";
       el("fp-anh-xem").removeAttribute("src");
       el("fp-anh-kem").hidden = true;
     }
@@ -5161,6 +9895,11 @@
       void this.loadPages();
       void this.loadAll();
     }
+    /** Another screen asked for one conversation (Zalo "Xem hội thoại", Hộp thư). */
+    receive(params) {
+      const id = str(params["maHoiThoai"]);
+      if (id !== "") void this.openConversation(id);
+    }
     /**
      * Reload on a timer while this screen is the one on top.
      *
@@ -5187,23 +9926,32 @@
       if (!r.ok) return;
       this.needHuman = new Set((r.than?.muc ?? []).map((m) => m.maHoiThoai));
     }
-    async loadThreads({ quiet = false } = {}) {
+    async loadThreads({ quiet = false, more = false } = {}) {
       const line = el("fanpage-trang-thai");
+      if (more && this.cursor === "") return;
       if (!quiet) status(line, "Đang tải…");
       const r = await this.ctx.gateway.landing("hop-thu.hoi-thoai", {
         kenh: this.channel,
         loc: this.filter === "chua-doc" ? "chua-doc" : "tat-ca",
         q: el("fp-tim").value.trim(),
         trang: [...this.chosenPages].join(","),
-        gioiHan: 200
+        gioiHan: PAGE_SIZE,
+        ...more ? { truoc: this.cursor } : {}
       });
       if (!r.ok) {
         status(line, r.viSao, "bad");
         return;
       }
       const all = r.than?.hoiThoai ?? [];
-      this.threads = this.filter === "can-nguoi" ? all.filter((t) => this.needHuman.has(t.ma)) : all;
+      const page = this.filter === "can-nguoi" ? all.filter((t) => this.needHuman.has(t.ma)) : all;
+      if (more) this.threads = [...this.threads, ...page.filter((t) => !this.threads.some((x) => x.ma === t.ma))];
+      else if (!quiet || this.threads.length <= PAGE_SIZE) {
+        this.threads = page;
+        this.cursor = str(r.than?.conTruoc);
+      } else this.threads = [...page, ...this.threads.slice(page.length).filter((t) => !page.some((x) => x.ma === t.ma))];
+      if (more) this.cursor = str(r.than?.conTruoc);
       this.paintThreads();
+      el("fp-hien-them").hidden = this.cursor === "";
       el("fp-dem").textContent = `${this.threads.length} hội thoại`;
       el("fp-dem-chua-doc").textContent = `${r.than?.soChuaDoc ?? 0} chưa đọc`;
       status(line, `${this.threads.length} hội thoại · ${this.needHuman.size} cần người.`, "good");
@@ -5213,22 +9961,31 @@
       clear(list);
       for (const t of this.threads) {
         const name = str(t.tenNguoi) || str(t.nguoi);
+        const orderCount = (t.donGan ?? []).length;
         const item = h(
           "button",
           { class: "facebook-thread-item", type: "button", "data-chon": t.ma === this.openThread?.ma ? "1" : "0", onclick: () => void this.openConversation(t.ma) },
           h(
             "span",
             { class: "who" },
+            t.kenh === COMMENT_CHANNEL ? h("span", { class: "facebook-interaction-badge comment" }, "Bình luận") : null,
             h("span", null, name),
             this.needHuman.has(t.ma) ? badge("cần người", "amber") : null,
             t.soChuaDoc > 0 ? h("span", { class: "chua-doc" }, String(t.soChuaDoc)) : null,
             h("time", null, clock(t.hoatDongLuc))
           ),
-          h("span", { class: "last" }, `${t.chieuCuoi === "di" ? "Mình: " : ""}${str(t.tinCuoi) || "(chưa có nội dung)"}`)
+          h("span", { class: "last" }, `${t.chieuCuoi === "di" ? "Mình: " : ""}${str(t.tinCuoi) || "(chưa có nội dung)"}`),
+          h(
+            "span",
+            { class: "facebook-conversation-meta" },
+            t.dienThoai ? h("span", { class: "facebook-conversation-signal" }, `☎ ${t.dienThoai}`) : null,
+            t.maKhach ? h("span", { class: "facebook-conversation-signal linked" }, "Hồ sơ") : null,
+            orderCount > 0 ? h("span", { class: "facebook-conversation-signal order" }, `${orderCount} đơn`) : null
+          )
         );
         list.appendChild(item);
       }
-      if (this.threads.length === 0) list.appendChild(h("p", { class: "status-line", style: "padding:14px" }, "Chưa có hội thoại nào ở bộ lọc này."));
+      if (this.threads.length === 0) list.appendChild(h("div", { class: "facebook-empty-list" }, "Chưa có hội thoại nào ở bộ lọc này."));
     }
     async openConversation(id, { quiet = false, markRead = true } = {}) {
       const line = el("fanpage-trang-thai");
@@ -5242,14 +9999,62 @@
       if (switched) {
         el("fp-kh-dien-thoai").value = str(this.openThread.dienThoai);
         el("fp-kh-dia-chi").value = str(this.openThread.diaChi);
+        el("facebookCustomerNote").value = str(this.openThread.ghiChu);
+        this.archived = [];
+        this.archiveMore = true;
+        this.profile = null;
+        this.profileAddresses = [];
+        this.phoneOrders = [];
+        this.linkedOrders = [];
+        this.fitEditorOpen = false;
+        clear(el("fp-don-cua-khach"));
       }
       this.paintThread();
       this.paintCustomer();
       this.paintThreads();
+      this.paintDraft();
+      void this.ai.threadOpened(switched, str(this.openThread.bot));
+      if (switched) {
+        void this.loadCommentPost();
+        void this.loadCustomerContext();
+      }
       if (markRead) {
         await this.ctx.gateway.landing("hop-thu.hoi-thoai.da-doc", { ma: id });
         void this.loadThreads({ quiet: true });
       }
+    }
+    bubble(m, fromArchive = false) {
+      const mine = m.chieu === "di";
+      const who = mine ? m.boi === "bo-nao" ? "bot" : m.boi === "khach" || m.boi === "" ? "mình" : m.boi : "khách";
+      const note = mine && m.trangThai === "cho-gui" ? " · đang chờ máy trực gửi" : mine && m.trangThai === "hong" ? " · GỬI HỎNG" : str(m.baiViet) === "" ? "" : ` · dưới bài ${str(m.baiViet)}`;
+      const images = m.anh ?? [];
+      const text2 = m.chu === "" && images.length === 0 && m.soAnh > 0 ? `(${m.soAnh} ảnh)` : m.chu;
+      const phone = mine ? "" : phoneIn(m.chu);
+      const address = !mine && looksLikeAddress(m.chu);
+      return h(
+        "div",
+        { class: `message ${mine ? "ai" : "customer"}` },
+        text2 === "" ? null : h("div", { class: "facebook-message-text" }, text2),
+        phone !== "" || address ? h(
+          "div",
+          { class: "facebook-message-hints" },
+          phone ? h("span", null, `SĐT: ${phone}`) : null,
+          address ? h("span", null, "Đã nhận ra địa chỉ") : null,
+          h("button", { type: "button", class: "facebook-message-contact-button", "data-action": "copy-facebook-address-suggestion", "data-copy-text": m.chu }, "Copy"),
+          h("button", { type: "button", class: "facebook-message-contact-button", "data-fill-contact": "1", onclick: () => this.fillContactFrom(m.chu) }, "Đưa vào thông tin khách")
+        ) : null,
+        images.length === 0 ? null : h(
+          "div",
+          { class: "facebook-attachment-list" },
+          ...images.map((url, i) => h(
+            "button",
+            { class: "facebook-attachment image", type: "button", "data-action": "open-facebook-media-viewer", "data-media-url": url, "data-media-name": `Ảnh ${i + 1}`, title: "Xem ảnh" },
+            h("img", { src: url, alt: `Ảnh ${i + 1}`, loading: "lazy", referrerpolicy: "no-referrer" })
+          )),
+          .../^https:\/\//i.test(images[0] ?? "") ? [h("button", { class: "facebook-attachment-ext", type: "button", "data-action": "ext-product-from-image", "data-image-url": images[0] ?? "", title: "Làm thẻ SP ngoài từ ảnh này" }, "🧾 SP ngoài")] : []
+        ),
+        h("span", { class: "khi" }, `${who} · ${dayClock(m.luc)}${note}${fromArchive ? " · kho lưu trữ" : ""}`)
+      );
     }
     paintThread() {
       const box = el("fp-khung-chat");
@@ -5257,29 +10062,782 @@
       clear(box);
       const thread = this.openThread;
       if (thread === null) return;
-      for (const m of thread.tin ?? []) {
-        const mine = m.chieu === "di";
-        const who = mine ? m.boi === "bo-nao" ? "bot" : "mình" : "khách";
-        const note = mine && m.trangThai === "cho-gui" ? " · đang chờ máy trực gửi" : mine && m.trangThai === "hong" ? " · GỬI HỎNG" : str(m.baiViet) === "" ? "" : ` · dưới bài ${str(m.baiViet)}`;
-        box.appendChild(h(
-          "div",
-          { class: `message ${mine ? "ai" : "customer"}` },
-          m.chu === "" && m.soAnh > 0 ? `(${m.soAnh} ảnh)` : m.chu,
-          h("span", { class: "khi" }, `${who} · ${dayClock(m.luc)}${note}`)
-        ));
+      if (thread.kenh === "facebook" && this.archiveMore) {
+        box.appendChild(h("button", { class: "ghost-button compact-button facebook-load-older", type: "button", "data-action": "load-older-facebook-messages" }, "Tải tin cũ hơn (kho lưu trữ)"));
       }
-      if ((thread.tin ?? []).length === 0) box.appendChild(h("div", { class: "message system" }, "Chưa có tin nào trong hội thoại này."));
+      const live = new Set((thread.tin ?? []).map((m) => m.maTin));
+      for (const m of this.archived) if (!live.has(m.maTin)) box.appendChild(this.bubble(m, true));
+      for (const m of thread.tin ?? []) box.appendChild(this.bubble(m));
+      if ((thread.tin ?? []).length === 0 && this.archived.length === 0) box.appendChild(h("div", { class: "message system" }, "Chưa có tin nào trong hội thoại này."));
       if (wasAtBottom) box.scrollTop = box.scrollHeight;
     }
+    fillContactFrom(text2) {
+      const phone = phoneIn(text2);
+      if (phone) el("fp-kh-dien-thoai").value = phone;
+      if (looksLikeAddress(text2)) el("fp-kh-dia-chi").value = text2.replace(phone, "").replace(/\s+/g, " ").trim();
+      status(el("fp-don-trang-thai"), "Đã đưa vào ô SĐT/địa chỉ. Kiểm tra rồi bấm Lưu SĐT/địa chỉ.", "good");
+    }
+    async loadOlder() {
+      const thread = this.openThread;
+      if (thread === null) return;
+      const line = el("fanpage-trang-thai");
+      const oldest = this.archived[0]?.luc ?? thread.tin?.[0]?.luc ?? "";
+      const r = await this.ctx.gateway.landing("hop-thu.luu-tru.tin", { maHoiThoai: thread.ma, ...oldest ? { truoc: oldest } : {}, gioiHan: 50 });
+      if (!r.ok) {
+        status(line, r.viSao, "bad");
+        return;
+      }
+      const older = (r.than?.tin ?? []).map((m) => ({ ...m, soAnh: (m.anh ?? []).length, boi: m.chieu === "di" ? "page" : "khach", trangThai: "" }));
+      this.archived = [...older, ...this.archived];
+      this.archiveMore = r.than?.conNua === true;
+      this.paintThread();
+      status(line, older.length === 0 ? 'Kho lưu trữ không còn tin cũ hơn — chạy "Tải lịch sử" ở màn Hộp thư nếu chưa tải.' : `Đã tải thêm ${older.length} tin cũ.`, older.length > 0);
+    }
+    openMedia(url, name) {
+      if (url === "") return;
+      el("fp-xem-anh-img").src = url;
+      el("fp-xem-anh-ten").textContent = name || "Ảnh đính kèm";
+      el("fp-xem-anh").hidden = false;
+    }
+    // ------------------------------------------------------------------ comments
+    post = null;
+    async loadCommentPost() {
+      const thread = this.openThread;
+      const box = el("fp-bai-goc");
+      el("fp-binh-luan").hidden = thread?.kenh !== COMMENT_CHANNEL;
+      clear(box);
+      this.post = null;
+      if (thread?.kenh !== COMMENT_CHANNEL) return;
+      box.appendChild(h("div", { class: "facebook-comment-post" }, h("div", { class: "facebook-comment-post-head" }, h("span", { class: "facebook-comment-post-thumb placeholder" }, "…"), h("div", { class: "facebook-comment-post-body" }, h("p", null, "Đang tải thông tin bài viết…")))));
+      const r = await this.ctx.gateway.landing("hop-thu.bai-viet", { maHoiThoai: thread.ma });
+      if (this.openThread?.ma !== thread.ma) return;
+      clear(box);
+      if (!r.ok || !r.than?.bai) {
+        box.appendChild(h("div", { class: "facebook-comment-post" }, h("div", { class: "facebook-comment-post-head" }, h("span", { class: "facebook-comment-post-thumb placeholder" }, "⚠"), h("div", { class: "facebook-comment-post-body" }, h("p", null, `Không đọc được bài viết: ${r.viSao}`)))));
+        return;
+      }
+      const bai = r.than.bai;
+      this.post = bai;
+      const gallery = bai.anhCon.filter((x) => x.anh);
+      box.appendChild(h(
+        "div",
+        { class: "facebook-comment-post" },
+        h(
+          "div",
+          { class: "facebook-comment-post-head" },
+          bai.anh ? h("button", { class: "facebook-comment-post-thumb", type: "button", "data-action": "open-facebook-media-viewer", "data-media-url": bai.anh, "data-media-name": "Ảnh bài viết" }, h("img", { src: bai.anh, alt: "Ảnh bài viết", loading: "lazy" })) : h("span", { class: "facebook-comment-post-thumb placeholder" }, "📝"),
+          h(
+            "div",
+            { class: "facebook-comment-post-body" },
+            h("span", null, `Bài đăng lúc ${dayClock(bai.dangLuc)}`),
+            h("p", null, bai.noiDung || "Bài viết chỉ có ảnh.")
+          )
+        ),
+        gallery.length > 1 ? h("div", { class: "facebook-comment-post-gallery" }, ...gallery.slice(0, 12).map((x) => h("img", { src: x.anh, alt: "", loading: "lazy", title: x.tieuDe }))) : null
+      ));
+    }
+    async openPost() {
+      const line = el("fp-gui-trang-thai");
+      if (!this.post?.lienKet) {
+        status(line, "Chưa có đường dẫn bài viết.", "bad");
+        return;
+      }
+      const r = await this.ctx.gateway.openFacebook(this.post.lienKet);
+      status(line, r.ok ? "Đã mở bài viết trong trình duyệt." : r.viSao, r.ok);
+    }
+    openCommentMessage() {
+      const thread = this.openThread;
+      const line = el("fp-gui-trang-thai");
+      if (thread?.kenh !== COMMENT_CHANNEL) {
+        status(line, "Chưa chọn đúng bình luận để nhắn tin.", "bad");
+        return;
+      }
+      const last = [...thread.tin ?? []].reverse().find((m) => m.chieu === "den");
+      el("fp-nhan-rieng-ten").textContent = str(thread.tenNguoi) || str(thread.nguoi);
+      const quote = el("fp-nhan-rieng-trich");
+      clear(quote);
+      quote.append(h("span", null, "Đã bình luận:"), ` ${last?.chu || "(không có chữ)"}`, h("small", null, `Bởi ${str(thread.tenNguoi) || "khách"} · ${dayClock(last?.luc)}`));
+      el("facebookCommentMessageText").value = "";
+      status(el("fp-nhan-rieng-trang-thai"), "");
+      el("fp-nhan-rieng").hidden = false;
+      el("facebookCommentMessageText").focus();
+    }
+    async sendCommentMessage() {
+      const thread = this.openThread;
+      const line = el("fp-nhan-rieng-trang-thai");
+      if (thread?.kenh !== COMMENT_CHANNEL) {
+        status(line, "Chưa chọn đúng bình luận.", "bad");
+        return;
+      }
+      const text2 = el("facebookCommentMessageText").value.trim();
+      if (text2 === "") {
+        status(line, "Hãy nhập nội dung tin nhắn.", "bad");
+        return;
+      }
+      const also = el("facebookCommentMessageAlsoReply").checked;
+      const reply = el("facebookCommentMessageReplyText").value.trim();
+      if (also && reply === "") {
+        status(line, "Nội dung trả lời bình luận đang trống — bỏ tích hoặc nhập nội dung.", "bad");
+        return;
+      }
+      const last = [...thread.tin ?? []].reverse().find((m) => m.chieu === "den" && m.maTin !== "");
+      status(line, "Đang gửi…");
+      const r = await this.ctx.gateway.landing("hop-thu.tra-loi-rieng", {
+        maHoiThoai: thread.ma,
+        chu: text2,
+        ...last ? { maBinhLuan: last.maTin } : {},
+        ...also ? { traLoiCongKhai: reply } : {}
+      });
+      if (!r.ok) {
+        status(line, r.viSao, "bad");
+        return;
+      }
+      el("fp-nhan-rieng").hidden = true;
+      status(el("fp-gui-trang-thai"), str(r.than?.message) || "Đã gửi tin nhắn riêng cho khách.", "good");
+      await this.openConversation(thread.ma, { quiet: true, markRead: false });
+      void this.loadThreads({ quiet: true });
+    }
+    // ------------------------------------------------------------------ customer panel
     paintCustomer() {
       const thread = this.openThread;
-      el("fp-ten").textContent = thread === null ? "Chưa chọn hội thoại" : str(thread.tenNguoi) || str(thread.nguoi);
+      const name = thread === null ? "—" : str(thread.tenNguoi) || str(thread.nguoi);
+      el("fp-ten").textContent = thread === null ? "Chưa chọn hội thoại" : name;
       el("fp-nguon").textContent = thread === null ? "Bấm một hội thoại bên trái để đọc." : `${CHANNEL_LABEL3[thread.kenh] ?? thread.kenh}${thread.kenh === COMMENT_CHANNEL ? " (trả lời công khai dưới bài)" : ""}${thread.trang ? ` · trang ${thread.trang}` : ""} · ${thread.soTin ?? (thread.tin ?? []).length} tin`;
-      el("fp-kh-ten").textContent = thread === null ? "—" : str(thread.tenNguoi) || "—";
+      el("fp-kh-ten").textContent = thread === null ? "—" : str(this.profile?.ten) || str(thread.tenNguoi) || "—";
+      el("fp-kh-chu-cai").textContent = initials(name);
       el("fp-kh-kenh").textContent = thread === null ? "—" : CHANNEL_LABEL3[thread.kenh] ?? thread.kenh;
       el("fp-kh-ma").textContent = thread === null ? "—" : str(thread.nguoi);
       el("fp-kh-luc").textContent = thread === null ? "—" : dayClock(thread.hoatDongLuc);
+      const link = el("fp-kh-lien-ket");
+      link.textContent = this.profile ? "Đã liên kết hồ sơ" : thread?.maKhach ? "Có hồ sơ" : "Chưa liên kết hồ sơ";
+      link.classList.toggle("linked", this.profile !== null || Boolean(thread?.maKhach));
+      el("fp-kh-so").textContent = str(this.profile?.dienThoai) || str(thread?.dienThoai) || "Chưa có số điện thoại";
     }
+    /** Profile (linked, or found by phone), orders by phone and the linked orders. */
+    async loadCustomerContext() {
+      const thread = this.openThread;
+      if (thread === null) return;
+      const phone = str(thread.dienThoai);
+      let suggestion = null;
+      if (thread.maKhach) {
+        const r = await this.ctx.gateway.landing("khach.ho-so.doc", { ma: thread.maKhach });
+        if (this.openThread?.ma !== thread.ma) return;
+        this.profile = r.ok ? r.than?.khach ?? null : null;
+        this.profileAddresses = r.ok ? r.than?.diaChi ?? [] : [];
+      } else if (phone) {
+        const r = await this.ctx.gateway.landing("khach.ho-so.theo-so", { dienThoai: phone });
+        if (this.openThread?.ma !== thread.ma) return;
+        suggestion = r.ok ? r.than?.khach ?? null : null;
+      }
+      const orderPhone = str(this.profile?.dienThoai) || phone;
+      if (orderPhone) {
+        el("fp-kh-dien-thoai").value = el("fp-kh-dien-thoai").value || orderPhone;
+        await this.loadCustomerOrders({ quiet: true });
+      }
+      await this.loadLinkedOrders();
+      if (this.openThread?.ma !== thread.ma) return;
+      this.paintCustomer();
+      this.paintSuggestion(suggestion);
+      this.paintAddresses();
+      this.paintFit();
+      this.paintOrderLinks();
+    }
+    paintSuggestion(profile) {
+      const box = el("fp-goi-y-lien-ket");
+      clear(box);
+      if (profile === null || this.openThread?.maKhach) return;
+      const orders = this.phoneOrders;
+      box.appendChild(h(
+        "section",
+        { class: "facebook-link-suggestion" },
+        h(
+          "div",
+          null,
+          h("strong", null, "Có thể là khách đã có sẵn"),
+          h("p", null, `${profile.ten} · ${profile.dienThoai}`),
+          h("small", null, orders.length > 0 ? `Đã có ${orders.length} đơn cùng SĐT, gần nhất ${orders[0]?.id ?? ""} · ${money(orders[0]?.tong)}` : "Tìm thấy hồ sơ khách cùng SĐT trong danh sách khách.")
+        ),
+        h("button", { class: "primary-button compact-button", type: "button", "data-action": "sync-facebook-customer-link", "data-profile-id": profile.ma }, "Đồng bộ")
+      ));
+    }
+    async linkProfile(profileId) {
+      if (profileId === "") return;
+      await this.patchThread({ maKhach: profileId }, "Đã đồng bộ hội thoại với hồ sơ khách.");
+      await this.loadCustomerContext();
+    }
+    async patchThread(patch, done) {
+      const thread = this.openThread;
+      const line = el("fp-don-trang-thai");
+      if (thread === null) {
+        status(line, "Chọn một hội thoại trước.", "bad");
+        return false;
+      }
+      const r = await this.ctx.gateway.landing("hop-thu.thong-tin", { ma: thread.ma, ...patch });
+      if (!r.ok) {
+        status(line, r.viSao, "bad");
+        return false;
+      }
+      if (r.than?.hoiThoai) Object.assign(thread, r.than.hoiThoai);
+      if (patch["theDatHang"] === null) delete thread.theDatHang;
+      status(line, done, "good");
+      this.paintOrderLinks();
+      this.paintDraft();
+      this.paintCustomer();
+      return true;
+    }
+    async openProfile() {
+      const thread = this.openThread;
+      const line = el("fp-don-trang-thai");
+      if (thread === null) {
+        status(line, "Chưa chọn hội thoại.", "bad");
+        return;
+      }
+      const editor = customerEditor(this.ctx.gateway);
+      const onSaved = (profile) => {
+        if (this.openThread?.ma !== thread.ma) return;
+        this.profile = profile;
+        if (thread.maKhach !== profile.ma) void this.patchThread({ maKhach: profile.ma }, `Đã gắn hồ sơ ${profile.ten} vào hội thoại.`).then(() => this.loadCustomerContext());
+        else void this.loadCustomerContext();
+      };
+      await editor.open(this.profile?.ma ?? thread.maKhach ?? "", {
+        prefill: { ten: str(thread.tenNguoi) || str(thread.nguoi), dienThoai: el("fp-kh-dien-thoai").value.trim() },
+        onSaved
+      });
+    }
+    paintAddresses() {
+      const box = el("fp-dia-chi-ds");
+      clear(box);
+      const rows = this.addressRows();
+      el("fp-dia-chi-dem").textContent = rows.length ? String(rows.length) : "+";
+      if (rows.length === 0) {
+        box.appendChild(h("p", { class: "subtle" }, "Chưa có địa chỉ đã lưu. Xin thông tin giao hàng hoặc bấm Tạo địa chỉ mới."));
+        return;
+      }
+      box.appendChild(h(
+        "div",
+        { class: "facebook-customer-address-list" },
+        ...rows.map((row, index) => h(
+          "div",
+          { class: "facebook-customer-address-row" },
+          h(
+            "span",
+            null,
+            row.nguoiNhan ? h("small", null, `${row.nguoiNhan}${row.dienThoai ? ` · ${row.dienThoai}` : ""}`) : null,
+            h("strong", null, row.text),
+            h("small", null, row.nguon)
+          ),
+          h(
+            "div",
+            { class: "facebook-customer-address-actions" },
+            h("button", { type: "button", class: "ghost-button compact-button", "data-action": "copy-facebook-saved-address", "data-address-index": String(index) }, "Copy"),
+            h("button", { type: "button", class: "secondary-button compact-button", "data-action": "apply-facebook-saved-address", "data-address-index": String(index) }, "Dùng"),
+            h("button", { type: "button", class: "ghost-button compact-button", "data-action": "edit-facebook-saved-address", "data-address-index": String(index) }, "Sửa"),
+            row.ma ? h("button", { type: "button", class: "ghost-button compact-button", "data-action": "delete-facebook-saved-address", "data-address-index": String(index), title: "Xóa địa chỉ không còn dùng" }, "Xóa") : null
+          )
+        ))
+      ));
+    }
+    /** Profile addresses first; without a profile, what the thread noted. */
+    addressRows() {
+      const rows = this.profileAddresses.map((a) => ({ ma: a.ma, text: addressLine(a), nguoiNhan: a.nguoiNhan, dienThoai: a.dienThoai, nguon: a.macDinh ? "Hồ sơ · mặc định" : "Hồ sơ" }));
+      const noted = str(this.openThread?.diaChi);
+      if (noted && !rows.some((r) => r.text === noted)) rows.push({ ma: "", text: noted, nguoiNhan: "", dienThoai: str(this.openThread?.dienThoai), nguon: "Hội thoại" });
+      return rows;
+    }
+    async copySavedAddress(index) {
+      const row = this.addressRows()[index];
+      if (!row) return;
+      await this.copyLine([row.dienThoai, row.text].filter(Boolean).join("\n"), "Đã copy địa chỉ khách hàng.");
+    }
+    async applySavedAddress(index) {
+      const row = this.addressRows()[index];
+      if (!row) return;
+      el("fp-kh-dia-chi").value = row.text;
+      if (row.dienThoai) el("fp-kh-dien-thoai").value = row.dienThoai;
+      if (!el("fp-the-dat-hang").hidden) {
+        el("orderDraftAddress").value = row.text;
+        if (row.dienThoai) el("orderDraftPhone").value = row.dienThoai;
+      }
+      await this.saveContact();
+      status(el("fp-don-trang-thai"), "Đã áp địa chỉ đã lưu.", "good");
+    }
+    async deleteSavedAddress(button) {
+      const row = this.addressRows()[Number(button.dataset["addressIndex"])];
+      const line = el("fp-don-trang-thai");
+      if (!row?.ma || this.profile === null) {
+        status(line, "Địa chỉ này không nằm trong sổ địa chỉ của hồ sơ.", "bad");
+        return;
+      }
+      if (!armed(button, "Bấm lần nữa để xoá")) return;
+      const r = await this.ctx.gateway.landing("khach.ho-so.dia-chi.xoa", { maKhach: this.profile.ma, ma: row.ma });
+      if (!r.ok) {
+        status(line, r.viSao, "bad");
+        return;
+      }
+      this.profileAddresses = r.than?.diaChi ?? this.profileAddresses.filter((a) => a.ma !== row.ma);
+      this.paintAddresses();
+      status(line, "Đã xóa địa chỉ khỏi sổ địa chỉ của khách.", "good");
+    }
+    /** Desk "Lưu" of the address box: the thread keeps the contact; the profile book gets the address. */
+    async saveCustomerInfo() {
+      const thread = this.openThread;
+      const line = el("fp-don-trang-thai");
+      if (thread === null) {
+        status(line, "Chọn một hội thoại trước.", "bad");
+        return;
+      }
+      const phone = el("fp-kh-dien-thoai").value.trim();
+      const address = el("fp-kh-dia-chi").value.trim();
+      if (phone === "" && address === "") {
+        status(line, "Nhập số điện thoại hoặc địa chỉ.", "bad");
+        return;
+      }
+      await this.saveContact();
+      if (this.profile === null) {
+        if (phone === "") {
+          status(line, "Đã lưu vào hội thoại. Có SĐT thì mới tạo được hồ sơ khách.", "good");
+          return;
+        }
+        const r = await this.ctx.gateway.landing("khach.ho-so.ghi", {
+          ten: str(thread.tenNguoi) || str(thread.nguoi),
+          dienThoai: phone,
+          nguon: "fanpage",
+          ...address ? { diaChiMoi: { chiTiet: address, dienThoai: phone, nguoiNhan: str(thread.tenNguoi) } } : {}
+        });
+        if (!r.ok || !r.than?.khach) {
+          status(line, r.viSao || "Không tạo được hồ sơ.", "bad");
+          return;
+        }
+        await this.patchThread({ maKhach: r.than.khach.ma }, `Đã lưu vào hồ sơ ${r.than.khach.ten}.`);
+      } else if (address && !this.profileAddresses.some((a) => addressLine(a) === address)) {
+        const r = await this.ctx.gateway.landing("khach.ho-so.dia-chi.ghi", { maKhach: this.profile.ma, chiTiet: address, dienThoai: phone, nguoiNhan: this.profile.ten });
+        if (!r.ok) {
+          status(line, r.viSao, "bad");
+          return;
+        }
+        status(line, `Đã thêm địa chỉ vào hồ sơ ${this.profile.ten}.`, "good");
+      }
+      await this.loadCustomerContext();
+    }
+    async saveNote() {
+      const note = el("facebookCustomerNote").value.trim();
+      const ok = await this.patchThread({ ghiChu: note }, "Đã lưu ghi chú nội bộ cho khách.");
+      if (ok && this.profile !== null) {
+        await this.ctx.gateway.landing("khach.ho-so.ghi", { ma: this.profile.ma, ten: this.profile.ten, ghiChu: note });
+      }
+    }
+    paintFit() {
+      const fit = fitFrom(str(this.profile?.sizeQuen), str(this.profile?.formChan));
+      const summary = el("fp-chan-tom-tat");
+      clear(summary);
+      const has = Boolean(fit.footLength || fit.footWidth || fit.sizeEU || fit.notes);
+      el("fp-chan-dem").textContent = String([fit.footLength, fit.footWidth, fit.sizeEU].filter(Boolean).length || "+");
+      if (has) {
+        summary.append(
+          h(
+            "div",
+            { class: "facebook-fit-summary" },
+            fit.footLength ? h("span", { class: "facebook-conversation-signal" }, `📐 ${fit.footLength}cm${fit.footWidth ? ` × ${fit.footWidth}cm` : ""}`) : null,
+            fit.sizeEU ? h("span", { class: "facebook-conversation-signal" }, `EU ${fit.sizeEU}`) : null
+          ),
+          fit.notes ? h("p", { class: "subtle" }, `📝 ${fit.notes}`) : ""
+        );
+      } else {
+        summary.append(h("p", { class: "subtle" }, this.profile ? "Chưa có số đo/size. Nhập tay." : "Gắn hồ sơ khách trước (Lưu SĐT + địa chỉ vào hồ sơ, hoặc Đồng bộ)."));
+      }
+      el("fp-chan-sua").hidden = !this.fitEditorOpen;
+      el("fp-chan-mo").hidden = this.fitEditorOpen;
+      if (this.fitEditorOpen) {
+        el("facebookFitFootLength").value = fit.footLength;
+        el("facebookFitFootWidth").value = fit.footWidth;
+        el("facebookFitSizeEU").value = fit.sizeEU;
+        el("facebookFitNotes").value = fit.notes;
+      }
+    }
+    async saveFit() {
+      const line = el("fp-don-trang-thai");
+      if (this.profile === null) {
+        status(line, "Gắn hồ sơ khách trước rồi mới lưu chân dung size.", "bad");
+        return;
+      }
+      const value = (id) => el(id).value.trim();
+      const profileFields = fitToProfile({ footLength: value("facebookFitFootLength"), footWidth: value("facebookFitFootWidth"), sizeEU: value("facebookFitSizeEU"), notes: value("facebookFitNotes") });
+      const r = await this.ctx.gateway.landing("khach.ho-so.ghi", { ma: this.profile.ma, ten: this.profile.ten, ...profileFields });
+      if (!r.ok || !r.than?.khach) {
+        status(line, r.viSao || "Không lưu được.", "bad");
+        return;
+      }
+      this.profile = r.than.khach;
+      this.fitEditorOpen = false;
+      this.paintFit();
+      status(line, "Đã lưu chân dung size của khách.", "good");
+    }
+    // ------------------------------------------------------------------ orders of the customer
+    async loadCustomerOrders({ quiet = false } = {}) {
+      const line = el("fp-don-trang-thai");
+      const phone = el("fp-kh-dien-thoai").value.trim();
+      if (phone === "") {
+        if (!quiet) status(line, "Điền số điện thoại khách trước.", "bad");
+        return;
+      }
+      if (!quiet) status(line, "Đang tìm đơn…");
+      const r = await this.ctx.gateway.landing("don.danh-sach", { dienThoai: phone, gioiHan: 20 });
+      if (!r.ok) {
+        status(line, r.viSao, "bad");
+        return;
+      }
+      this.phoneOrders = r.than ?? [];
+      this.paintOrders();
+      this.paintOrderLinks();
+      if (!quiet) status(line, this.phoneOrders.length === 0 ? "Chưa có đơn nào cho số này." : `${this.phoneOrders.length} đơn.`, this.phoneOrders.length === 0 ? "bad" : "good");
+    }
+    async loadLinkedOrders() {
+      const ids = (this.openThread?.donGan ?? []).filter((id) => !this.phoneOrders.some((o) => o.id === id));
+      const found = [];
+      for (const id of ids.slice(0, 10)) {
+        const r = await this.ctx.gateway.landing("don.mo", { maDon: id });
+        if (r.ok && r.than) found.push(r.than);
+      }
+      this.linkedOrders = found;
+    }
+    orderById(id) {
+      return [...this.phoneOrders, ...this.linkedOrders].find((o) => o.id === id);
+    }
+    paintOrders() {
+      const box = el("fp-don-cua-khach");
+      clear(box);
+      const orders = this.phoneOrders;
+      el("fp-lich-su-dem").textContent = orders.length ? String(orders.length) : "+";
+      if (orders.length === 0) {
+        box.appendChild(h("p", { class: "subtle" }, "Chưa thấy đơn nào khớp với khách này. Có thể tạo đơn landing từ hội thoại."));
+        return;
+      }
+      const list = h("div", { class: "facebook-customer-order-list" });
+      orders.forEach((d, index) => {
+        const paidInput = h("input", { "data-facebook-order-paid-input": d.id, value: d.daTra ? String(d.daTra) : "", inputmode: "numeric", placeholder: "Khách đã trả" });
+        list.appendChild(h(
+          "details",
+          { class: "facebook-customer-order-row", "data-facebook-order-row": d.id, open: index === 0 },
+          h(
+            "summary",
+            { class: "facebook-order-card-head" },
+            // Hàng tóm tắt là một nút: bấm mở đơn ở màn Đơn hàng (giữ hành vi cũ của màn này).
+            h(
+              "span",
+              { class: "facebook-thread-item", role: "button", onclick: (e) => {
+                e.preventDefault();
+                this.ctx.shell.open("don", { dienThoai: d.dienThoai });
+              } },
+              h("span", { class: "who" }, h("span", null, d.id), h("time", null, d.trangThai)),
+              h("span", { class: "last" }, `${d.khach} · còn phải trả ${Number(d.conPhaiTra).toLocaleString("vi-VN")}đ`)
+            ),
+            h("span", { class: "facebook-order-head-right" }, h("b", null, money(d.tong)))
+          ),
+          h(
+            "div",
+            { class: "facebook-order-row-body" },
+            h("div", { class: "facebook-order-money-row" }, h("b", null, money(d.tong)), h("small", null, `Đã trả ${money(d.daTra)} · Còn ${money(d.conPhaiTra)}`)),
+            d.maVanDon ? h(
+              "div",
+              { class: "facebook-order-shipping" },
+              h("button", { class: "ghost-button compact-button", type: "button", "data-action": "copy-facebook-tracking-code", "data-copy-text": d.maVanDon }, d.maVanDon),
+              h("button", { class: "secondary-button compact-button", type: "button", "data-action": "copy-facebook-tracking-url", "data-tracking-code": d.maVanDon }, "Copy tracking")
+            ) : null,
+            h(
+              "div",
+              { class: "facebook-customer-order-actions" },
+              h(
+                "div",
+                { class: "field-inline facebook-quick-paid" },
+                paidInput,
+                h("button", { class: "secondary-button compact-button", type: "button", "data-action": "quick-update-facebook-order-paid", "data-order-id": d.id }, "Lưu tiền")
+              ),
+              h("button", { class: "secondary-button compact-button", type: "button", "data-action": "copy-facebook-order-link", "data-order-id": d.id }, "Copy link theo dõi"),
+              h("button", { class: "primary-button compact-button", type: "button", "data-action": "open-facebook-order-confirm", "data-order-id": d.id }, "Gửi hóa đơn"),
+              h("button", { class: "secondary-button compact-button", type: "button", "data-action": "edit-managed-order", "data-order-id": d.id }, "Sửa đơn")
+            )
+          )
+        ));
+      });
+      box.appendChild(list);
+    }
+    paintOrderLinks() {
+      const thread = this.openThread;
+      const box = el("fp-don-gan");
+      clear(box);
+      if (thread === null) return;
+      const linked = thread.donGan ?? [];
+      el("fp-lien-ket-don-dem").textContent = linked.length ? String(linked.length) : "+";
+      if (linked.length === 0) box.appendChild(h("p", { class: "subtle" }, "Chưa gắn đơn nào vào hội thoại này."));
+      else {
+        box.appendChild(h("div", { class: "facebook-order-link-list" }, ...linked.map((id) => {
+          const order = this.orderById(id);
+          return h(
+            "div",
+            { class: "facebook-order-link-row" },
+            h("span", null, h("b", null, id), h("small", null, order ? `${order.khach} · ${money(order.tong)} · ${order.trangThai}` : "Đơn đã gắn")),
+            h(
+              "div",
+              null,
+              h("button", { class: "secondary-button compact-button", type: "button", "data-action": "copy-facebook-order-link", "data-order-id": id }, "Copy link"),
+              h("button", { class: "ghost-button compact-button", type: "button", "data-action": "unlink-facebook-order", "data-order-id": id }, "Bỏ gắn")
+            )
+          );
+        })));
+      }
+      const rejected = new Set(thread.donBoGoiY ?? []);
+      const suggested = this.phoneOrders.filter((o) => !linked.includes(o.id) && !rejected.has(o.id));
+      if (suggested.length > 0) {
+        box.appendChild(h(
+          "div",
+          { class: "facebook-order-link-list" },
+          h("small", { class: "subtle" }, "Đơn cùng số điện thoại — bấm Gắn để liên kết:"),
+          ...suggested.map((o) => h(
+            "div",
+            { class: "facebook-order-link-row" },
+            h("span", null, h("b", null, o.id), h("small", null, `${o.khach} · ${money(o.tong)}`)),
+            h(
+              "div",
+              null,
+              h("button", { class: "secondary-button compact-button", type: "button", "data-action": "link-facebook-order", "data-order-id": o.id }, "Gắn"),
+              h("button", { class: "ghost-button compact-button", type: "button", "data-action": "reject-facebook-order-suggestion", "data-order-id": o.id }, "Không phải")
+            )
+          ))
+        ));
+      }
+    }
+    async linkOrder(orderId) {
+      const line = el("fp-don-trang-thai");
+      if (orderId === "") {
+        status(line, "Nhập mã đơn cần gắn.", "bad");
+        return;
+      }
+      const r = await this.ctx.gateway.landing("don.mo", { maDon: orderId });
+      if (!r.ok || !r.than) {
+        status(line, r.viSao || "Không tìm thấy mã đơn.", "bad");
+        return;
+      }
+      const order = r.than;
+      if (!this.orderById(order.id)) this.linkedOrders.push(order);
+      const patch = { ganDon: order.id };
+      if (order.maKhach && !this.openThread?.maKhach) patch["maKhach"] = order.maKhach;
+      if (await this.patchThread(patch, `Đã gắn ${order.id} với hội thoại.`)) {
+        el("facebookOrderLinkId").value = "";
+        if (patch["maKhach"]) await this.loadCustomerContext();
+      }
+    }
+    async quickPaid(orderId) {
+      const line = el("fp-don-trang-thai");
+      const order = this.orderById(orderId);
+      const input2 = this.root.querySelector(`[data-facebook-order-paid-input="${CSS.escape(orderId)}"]`);
+      if (!order || input2 === null) {
+        status(line, "Không tìm thấy đơn hàng để cập nhật.", "bad");
+        return;
+      }
+      const want = digits(input2.value);
+      const extra = want - Number(order.daTra || 0);
+      if (extra <= 0) {
+        status(line, extra === 0 ? "Số tiền không đổi." : "Giảm số đã trả là hoàn tiền — làm ở màn Đơn hàng (cần lý do).", "bad");
+        return;
+      }
+      const r = await this.ctx.gateway.landing("don.ghi-tien", { maDon: orderId, soTien: extra, ghiChu: "Ghi từ Fanpage" });
+      if (!r.ok) {
+        status(line, r.viSao, "bad");
+        return;
+      }
+      status(line, `Đã cập nhật khách đã trả cho đơn ${orderId}.`, "good");
+      await this.loadCustomerOrders({ quiet: true });
+    }
+    /** "Copy link theo dõi": a NEW lookup code (the landing keeps only a hash of the old one). */
+    async orderLink(button, _ensure) {
+      const inModal = button.id === "fp-hoa-don-link";
+      const orderId = inModal ? str(this.confirmOrder?.id) : str(button.dataset["orderId"]);
+      const line = inModal ? el("fp-hoa-don-trang-thai") : el("fp-don-trang-thai");
+      if (orderId === "") {
+        status(line, "Không tìm thấy đơn hàng.", "bad");
+        return;
+      }
+      const r = await this.ctx.gateway.landing("don.ma-tra-cuu", { maDon: orderId });
+      if (!r.ok) {
+        status(line, r.viSao, "bad");
+        return;
+      }
+      const text2 = `Theo dõi đơn: ${str(r.than?.duongTraCuu)}
+Mã bí mật: ${str(r.than?.maBiMat)}`;
+      if (inModal) {
+        const box = el("facebookOrderConfirmText");
+        box.value = `${box.value.trim()}
+${text2}`;
+        status(line, "Đã chèn link tra cứu MỚI vào hóa đơn (mã cũ hết hiệu lực).", "good");
+        return;
+      }
+      status(line, await copyText(text2) ? `Đã copy link và mã tra cứu MỚI của ${orderId} (mã cũ hết hiệu lực).` : `Mã tra cứu mới: ${str(r.than?.maBiMat)} — máy không cho chép vào bộ nhớ tạm.`, "good");
+    }
+    async copyTrackingUrl(code) {
+      const line = el("fp-don-trang-thai");
+      const r = await this.ctx.gateway.landing("van-don.tra", { maPhieu: code });
+      const url = r.ok ? str(r.than?.duongTra) : "";
+      if (url === "") {
+        status(line, r.ok ? "Hãng chưa trả link tracking cho vận đơn này." : r.viSao, "bad");
+        return;
+      }
+      await this.copyLine(url, "Đã copy link tracking.");
+    }
+    // ------------------------------------------------------------------ invoice / CK
+    async ensurePayment() {
+      if (this.payment !== null) return;
+      const [content, inbox] = await Promise.all([
+        this.ctx.gateway.landing("noi-dung.doc"),
+        this.ctx.gateway.landing("hop-thu.cau-hinh.doc")
+      ]);
+      this.payment = paymentConfigFrom(content.ok ? content.than ?? {} : {});
+      this.confirmationClosing = str(inbox.than?.cauHinh?.mauXacNhan);
+    }
+    async openConfirm(orderId) {
+      const line = el("fp-don-trang-thai");
+      const r = await this.ctx.gateway.landing("don.mo", { maDon: orderId });
+      if (!r.ok || !r.than) {
+        status(line, r.viSao || "Không tìm thấy đơn hàng.", "bad");
+        return;
+      }
+      await this.ensurePayment();
+      const order = r.than;
+      this.confirmOrder = order;
+      this.ck = { mode: "percent", percent: this.payment?.depositPercent ?? 20 };
+      el("fp-hoa-don-tieu-de").textContent = `Gửi hóa đơn #${order.id}`;
+      const items = el("fp-hoa-don-mon");
+      clear(items);
+      for (const m of order.mon ?? []) {
+        items.appendChild(h(
+          "div",
+          { class: "order-confirm-item" },
+          h("div", null, h("strong", null, m.ten || m.ma), h("small", null, [m.ma, m.size ? `Size ${m.size}` : "", `SL ${m.soLuong}`].filter(Boolean).join(" · "))),
+          h("b", null, money(Number(m.donGia) * Number(m.soLuong)))
+        ));
+      }
+      const meta = el("fp-hoa-don-giao");
+      clear(meta);
+      meta.append(
+        h("div", null, h("small", null, "Đặt hàng lúc"), h("span", null, dayClock(order.taoLuc))),
+        h("div", null, h("small", null, "Giao hàng đến"), h("span", null, `${order.khach} · ${order.dienThoai}`), h("br"), h("span", null, order.diaChi))
+      );
+      el("facebookCkPercentInput").value = String(this.ck.mode === "percent" ? this.ck.percent : "");
+      el("facebookCkCustomInput").value = "";
+      status(el("fp-hoa-don-trang-thai"), "");
+      this.paintCk();
+      el("fp-hoa-don").hidden = false;
+    }
+    ckFromInputs(which) {
+      if (which === "percent") {
+        el("facebookCkCustomInput").value = "";
+        this.ck = { mode: "percent", percent: digits(el("facebookCkPercentInput").value) || (this.payment?.depositPercent ?? 20) };
+      } else {
+        el("facebookCkPercentInput").value = "";
+        this.ck = { mode: "custom", custom: digits(el("facebookCkCustomInput").value) };
+      }
+      this.paintCk();
+    }
+    /** Amount, totals, QR and the text, redrawn together (Desk `updateFacebookOrderCkDom`). */
+    paintCk() {
+      const order = this.confirmOrder;
+      if (order === null) return;
+      const amount = ckAmount(order, this.payment, this.ck);
+      const m = invoiceMoney(order, this.payment);
+      const totals = el("fp-hoa-don-tong");
+      clear(totals);
+      const row = (label, value, cls = "") => h("div", cls === "" ? null : { class: cls }, h("span", null, label), h("span", null, value));
+      totals.append(
+        row("Tổng tiền hàng", money(m.itemsTotal)),
+        m.discount > 0 ? row("Giảm giá", `-${money(m.discount)}`) : "",
+        row(`Phí vận chuyển${Number(order.phiShip || 0) > 0 ? "" : " (mặc định)"}`, money(m.shipFee)),
+        row("TỔNG HÓA ĐƠN", money(m.grandTotal), "order-confirm-grand"),
+        row("Đã thanh toán", money(m.paid)),
+        h("div", null, h("span", null, "Cần CK thanh toán"), h("span", { id: "facebookCkTotalsCk", class: "omi-ck-amount" }, money(amount))),
+        h("div", null, h("span", null, "Còn lại khi nhận hàng"), h("span", { id: "facebookCkTotalsRemain" }, money(Math.max(0, m.grandTotal - m.paid - amount))))
+      );
+      el("facebookCkAmountLabel").textContent = money(amount);
+      el("fp-ck-noi-dung").textContent = ckReference(order);
+      for (const b of this.root.querySelectorAll('[data-action="set-facebook-ck-percent"]')) {
+        b.classList.toggle("active", this.ck.mode === "percent" && Number(b.dataset["percent"]) === this.ck.percent);
+      }
+      const qr = ckQrUrl(order, this.payment, amount);
+      const img = el("facebookCkQr");
+      if (qr) img.src = qr;
+      else img.removeAttribute("src");
+      img.hidden = qr === "";
+      el("fp-ck-thieu-stk").hidden = Boolean(this.payment?.bankAccountNumber);
+      el("facebookOrderConfirmText").value = confirmText(order, this.payment, amount, this.confirmationClosing);
+    }
+    /** The Messenger thread to send the invoice to — only a Messenger conversation has a PSID. */
+    messengerTarget(line) {
+      const thread = this.openThread;
+      if (thread === null || thread.kenh !== "facebook") {
+        status(line, "Chưa chọn hội thoại Messenger để gửi.", "bad");
+        return null;
+      }
+      return thread;
+    }
+    async sendReply(thread, payload) {
+      const r = await this.ctx.gateway.landing("hop-thu.tra-loi", { kenh: thread.kenh, nguoi: thread.nguoi, chu: payload.chu ?? "", ...payload.anhUrl ? { anhUrl: payload.anhUrl } : {} });
+      if (!r.ok) status(el("fp-hoa-don-trang-thai"), r.viSao, "bad");
+      return r.ok;
+    }
+    async sendConfirm() {
+      const line = el("fp-hoa-don-trang-thai");
+      const thread = this.messengerTarget(line);
+      if (thread === null || this.confirmOrder === null) return;
+      const text2 = el("facebookOrderConfirmText").value.trim();
+      if (text2 === "") {
+        status(line, "Nội dung hóa đơn đang trống.", "bad");
+        return;
+      }
+      status(line, "Đang gửi…");
+      if (!await this.sendReply(thread, { chu: text2 })) return;
+      el("fp-hoa-don").hidden = true;
+      status(el("fp-gui-trang-thai"), `Đã gửi hóa đơn ${this.confirmOrder.id} cho khách xác nhận.`, "good");
+      await this.openConversation(thread.ma, { quiet: true, markRead: false });
+    }
+    async sendCkQr() {
+      const line = el("fp-hoa-don-trang-thai");
+      const thread = this.messengerTarget(line);
+      const order = this.confirmOrder;
+      if (thread === null || order === null) return;
+      const amount = ckAmount(order, this.payment, this.ck);
+      const qr = ckQrUrl(order, this.payment, amount);
+      if (qr === "") {
+        status(line, "Chưa có mã QR (kiểm tra số tiền CK và STK ngân hàng trên landing).", "bad");
+        return;
+      }
+      status(line, "Đang gửi mã CK…");
+      if (!await this.sendReply(thread, { anhUrl: qr })) return;
+      el("fp-hoa-don").hidden = true;
+      status(el("fp-gui-trang-thai"), `Đã gửi mã CK ${money(amount)} cho khách.`, "good");
+      await this.openConversation(thread.ma, { quiet: true, markRead: false });
+    }
+    async sendInvoiceImage() {
+      const line = el("fp-hoa-don-trang-thai");
+      const thread = this.messengerTarget(line);
+      const order = this.confirmOrder;
+      if (thread === null || order === null) return;
+      const amount = ckAmount(order, this.payment, this.ck);
+      status(line, "Đang dựng ảnh đơn hàng…");
+      const dataUrl = invoiceImage(order, this.payment, amount);
+      if (dataUrl === "") {
+        status(line, "Máy không vẽ được ảnh.", "bad");
+        return;
+      }
+      const up = await this.ctx.gateway.landing("hop-thu.anh.tai-len", { anh: dataUrl });
+      if (!up.ok || !up.than?.url) {
+        status(line, up.viSao || "Không tải được ảnh lên.", "bad");
+        return;
+      }
+      if (!await this.sendReply(thread, { anhUrl: up.than.url })) return;
+      const sentText = await this.sendReply(thread, { chu: imageConfirmText(order, this.payment, amount) });
+      el("fp-hoa-don").hidden = true;
+      status(el("fp-gui-trang-thai"), sentText ? `Đã gửi ảnh đơn hàng ${order.id} kèm câu xác nhận cho khách.` : `Đã gửi ảnh đơn hàng ${order.id} nhưng câu xác nhận gửi lỗi — gửi lại phần chữ.`, sentText);
+      await this.openConversation(thread.ma, { quiet: true, markRead: false });
+    }
+    // ------------------------------------------------------------------ send
     async send() {
       const line = el("fp-gui-trang-thai");
       const thread = this.openThread;
@@ -5289,15 +10847,15 @@
       }
       const box = el("fp-tra-loi");
       const text2 = box.value.trim();
-      if (text2 === "" && this.image === null) {
+      if (text2 === "" && this.image === null && this.pendingTemplateImage === "") {
         status(line, "Chưa có gì để gửi.", "bad");
         return;
       }
-      if (this.image !== null && thread.kenh !== "facebook") {
+      if ((this.image !== null || this.pendingTemplateImage !== "") && thread.kenh !== "facebook") {
         status(line, "Ảnh chỉ gửi được qua Messenger ở bản này.", "bad");
         return;
       }
-      let imageUrl = "";
+      let imageUrl2 = this.pendingTemplateImage;
       if (this.image !== null) {
         status(line, "Đang tải ảnh lên…");
         const up = await this.ctx.gateway.landing("hop-thu.anh.tai-len", { anh: this.image.dataUrl });
@@ -5305,7 +10863,7 @@
           status(line, up.viSao || "Không tải được ảnh lên.", "bad");
           return;
         }
-        imageUrl = up.than.url;
+        imageUrl2 = up.than.url;
       }
       const lastIncoming = [...thread.tin ?? []].reverse().find((m) => m.chieu === "den");
       if (thread.kenh === COMMENT_CHANNEL && (lastIncoming === void 0 || lastIncoming.maTin === "")) {
@@ -5317,7 +10875,7 @@
         kenh: thread.kenh,
         nguoi: thread.nguoi,
         chu: text2,
-        ...imageUrl === "" ? {} : { anhUrl: imageUrl },
+        ...imageUrl2 === "" ? {} : { anhUrl: imageUrl2 },
         ...thread.kenh === COMMENT_CHANNEL ? { traLoiTin: lastIncoming?.maTin ?? "" } : {}
       });
       if (!r.ok) {
@@ -5347,32 +10905,118 @@
       this.paintThreads();
       status(line, "Đã đánh dấu xử lý xong.", "good");
     }
-    async loadCustomerOrders() {
-      const line = el("fp-don-trang-thai");
-      const phone = el("fp-kh-dien-thoai").value.trim();
-      if (phone === "") {
-        status(line, "Điền số điện thoại khách trước.", "bad");
+    // ------------------------------------------------------------------ quick replies
+    async openQuickReplies() {
+      const slot = el("fp-mau-khung");
+      if (!slot.hidden && el("fp-mau-sua").hidden) {
+        slot.hidden = true;
         return;
       }
-      status(line, "Đang tìm đơn…");
-      const r = await this.ctx.gateway.landing("don.danh-sach", { dienThoai: phone, gioiHan: 20 });
+      slot.hidden = false;
+      el("fp-mau-sua").hidden = true;
+      const r = await this.ctx.gateway.landing("hop-thu.mau.danh-sach");
+      if (!r.ok) {
+        status(el("fp-gui-trang-thai"), r.viSao, "bad");
+        return;
+      }
+      this.quickReplies = r.than?.mau ?? [];
+      this.paintQuickReplies();
+    }
+    /** Typing `#` at the start of a word opens the picker filtered by what follows (Desk behaviour). */
+    watchHash() {
+      const value = el("fp-tra-loi").value;
+      const m = /(?:^|\s)#([^\s#]*)$/.exec(value);
+      if (m === null) return;
+      if (el("fp-mau-khung").hidden) void this.openQuickReplies().then(() => this.paintQuickReplies(m[1] ?? ""));
+      else this.paintQuickReplies(m[1] ?? "");
+    }
+    paintQuickReplies(query = "") {
+      const list = el("fp-mau-ds");
+      clear(list);
+      const q2 = query.toLowerCase();
+      const items = this.quickReplies.filter((x) => q2 === "" || `#${x.tat} ${x.chu}`.toLowerCase().includes(q2)).slice(0, 30);
+      for (const item of items) {
+        list.appendChild(h(
+          "div",
+          { class: "facebook-quick-reply-item", "data-reply": item.ma },
+          h(
+            "button",
+            { type: "button", class: "facebook-quick-reply-use", "data-action": "use-facebook-quick-reply", "data-reply-id": item.ma },
+            h("span", { class: "facebook-quick-reply-tag" }, `#${item.tat}`),
+            h("span", { class: "facebook-quick-reply-text" }, item.chu.slice(0, 130))
+          ),
+          item.anhUrl ? h("img", { class: "facebook-quick-reply-thumb", src: item.anhUrl, alt: "" }) : null,
+          h(
+            "span",
+            { class: "facebook-quick-reply-item-actions" },
+            h("button", { type: "button", "data-action": "edit-facebook-quick-reply", "data-reply-id": item.ma, title: "Sửa mẫu" }, "✎"),
+            h("button", { type: "button", "data-action": "delete-facebook-quick-reply", "data-reply-id": item.ma, title: "Xóa mẫu (bấm hai lần)" }, "×")
+          )
+        ));
+      }
+      if (items.length === 0) list.appendChild(h("div", { class: "subtle facebook-quick-reply-empty" }, "Chưa có mẫu phù hợp. Bấm + để thêm mẫu mới."));
+    }
+    async useQuickReply(id) {
+      const item = this.quickReplies.find((x) => x.ma === id);
+      if (!item) return;
+      const box = el("fp-tra-loi");
+      box.value = box.value.replace(/(?:^|\s)#[^\s#]*$/, "").trim();
+      box.value = box.value === "" ? item.chu : `${box.value}
+${item.chu}`;
+      el("fp-mau-khung").hidden = true;
+      const line = el("fp-gui-trang-thai");
+      if (item.anhUrl) {
+        this.image = null;
+        el("fp-anh-xem").src = item.anhUrl;
+        el("fp-anh-ten").textContent = `Ảnh mẫu #${item.tat}`;
+        el("fp-anh-kem").hidden = false;
+        this.pendingTemplateImage = item.anhUrl;
+      }
+      box.focus();
+      status(line, `Đã chèn mẫu #${item.tat}. Đọc lại rồi bấm Gửi.`, "good");
+    }
+    /** An image of a template (already on the landing / https): sent as its address, not re-uploaded. */
+    pendingTemplateImage = "";
+    editQuickReply(item) {
+      this.editingReply = item;
+      el("fp-mau-khung").hidden = false;
+      el("fp-mau-sua").hidden = false;
+      el("fp-mau-sua-tieu-de").textContent = item ? "Sửa câu trả lời mẫu" : "Thêm câu trả lời mẫu";
+      el("facebookQuickReplyShortcut").value = item?.tat ?? "";
+      el("facebookQuickReplyContent").value = item?.chu ?? el("fp-tra-loi").value.trim();
+      el("facebookQuickReplyImage").value = item?.anhUrl ?? "";
+    }
+    async saveQuickReply() {
+      const line = el("fp-gui-trang-thai");
+      const r = await this.ctx.gateway.landing("hop-thu.mau.ghi", {
+        ...this.editingReply ? { ma: this.editingReply.ma } : {},
+        tat: el("facebookQuickReplyShortcut").value.trim(),
+        chu: el("facebookQuickReplyContent").value.trim(),
+        anhUrl: el("facebookQuickReplyImage").value.trim()
+      });
       if (!r.ok) {
         status(line, r.viSao, "bad");
         return;
       }
-      const rows = r.than ?? [];
-      const box = el("fp-don-cua-khach");
-      clear(box);
-      for (const d of rows) {
-        const row = h(
-          "button",
-          { class: "facebook-thread-item", type: "button", onclick: () => this.ctx.shell.open("don", { dienThoai: phone }) },
-          h("span", { class: "who" }, h("span", null, d.id), h("time", null, d.trangThai)),
-          h("span", { class: "last" }, `${d.khach} · còn phải trả ${Number(d.conPhaiTra).toLocaleString("vi-VN")}đ`)
-        );
-        box.appendChild(row);
+      el("fp-mau-sua").hidden = true;
+      status(line, "Đã lưu mẫu trả lời.", "good");
+      const list = await this.ctx.gateway.landing("hop-thu.mau.danh-sach");
+      this.quickReplies = list.than?.mau ?? this.quickReplies;
+      this.paintQuickReplies();
+    }
+    async deleteQuickReply(button) {
+      if (!armed(button, "?")) return;
+      const r = await this.ctx.gateway.landing("hop-thu.mau.xoa", { ma: str(button.dataset["replyId"]) });
+      if (!r.ok) {
+        status(el("fp-gui-trang-thai"), r.viSao, "bad");
+        return;
       }
-      status(line, rows.length === 0 ? "Chưa có đơn nào cho số này." : `${rows.length} đơn.`, rows.length === 0 ? "bad" : "good");
+      this.quickReplies = this.quickReplies.filter((x) => x.ma !== str(button.dataset["replyId"]));
+      this.paintQuickReplies();
+    }
+    // ------------------------------------------------------------------ products
+    productByCode(code) {
+      return [...this.products, ...this.pickedProduct ? [this.pickedProduct] : []].find((p) => p.ma === code);
     }
     /**
      * Products to suggest in the chat.
@@ -5390,15 +11034,25 @@
         return;
       }
       const items = r.than ?? [];
+      this.products = items;
       const box = el("fp-hang-goi-y");
       clear(box);
       for (const m of items) {
         const inStock = (m.size ?? []).filter((s) => Number(s.ton) > 0);
         const row = h(
-          "button",
-          { class: "facebook-thread-item", type: "button", onclick: () => this.suggestProduct(m) },
+          "div",
+          { class: "facebook-thread-item", role: "button", onclick: (e) => {
+            if (e.target.closest("[data-action]")) return;
+            this.suggestProduct(m);
+          } },
           h("span", { class: "who" }, h("span", null, `${m.ma} · ${m.ten}`), h("time", null, money(m.gia))),
-          h("span", { class: "last" }, inStock.length === 0 ? "hết size" : `còn size ${inStock.map((s) => s.size).join(", ")}`)
+          h("span", { class: "last" }, inStock.length === 0 ? "hết size" : `còn size ${inStock.map((s) => s.size).join(", ")}`),
+          h(
+            "span",
+            { class: "chat-product-actions" },
+            h("button", { class: "secondary-button compact-button", type: "button", "data-action": "send-product-photo", "data-code": m.ma }, "Gửi ảnh"),
+            h("button", { class: "primary-button compact-button", type: "button", "data-action": "add-product-to-cart", "data-code": m.ma }, "Thêm vào giỏ")
+          )
         );
         box.appendChild(row);
       }
@@ -5415,16 +11069,259 @@ ${sentence}`;
       box.focus();
       status(el("fp-hang-trang-thai"), `Đã chèn ${product.ma}. Đọc lại rồi bấm Gửi.`, "good");
     }
+    /** Desk `send-product-photo`: the product's own picture into Messenger, with sizes in stock. */
+    async sendProductPhoto(code) {
+      const line = el("fp-gui-trang-thai");
+      const product = this.productByCode(code);
+      const thread = this.openThread;
+      if (!product) return;
+      if (thread === null || thread.kenh !== "facebook") {
+        status(line, "Ảnh chỉ gửi được vào hội thoại Messenger.", "bad");
+        return;
+      }
+      const image = str(product.anh);
+      if (image === "") {
+        status(line, `${product.ma} chưa có ảnh — thêm ảnh ở màn Hàng hoá.`, "bad");
+        return;
+      }
+      const inStock = (product.size ?? []).filter((s) => Number(s.ton) > 0).map((s) => s.size);
+      status(line, "Đang gửi ảnh…");
+      const url = /^https?:\/\//i.test(image) || image.startsWith("/api/fanpage-media/") || image.startsWith("/api/hang-kho/anh/") ? image : "";
+      if (url === "") {
+        status(line, "Ảnh của món này chưa có địa chỉ công khai để Meta tải — tải ảnh về landing ở màn Hàng hoá.", "bad");
+        return;
+      }
+      const r = await this.ctx.gateway.landing("hop-thu.tra-loi", { kenh: "facebook", nguoi: thread.nguoi, chu: `Em gửi ảnh mẫu ${product.ten} để mình xem trước ạ. Size hiện còn: ${inStock.join(", ") || "đang hết"}.`, anhUrl: url });
+      if (!r.ok) {
+        status(line, r.viSao, "bad");
+        return;
+      }
+      status(line, `Đã gửi ảnh ${product.ma} cho khách.`, "good");
+      await this.openConversation(thread.ma, { quiet: true, markRead: false });
+    }
+    /** Desk `add-product-to-cart`: the order CARD of this conversation, prefilled from what is known. */
+    async addToCart(code) {
+      const product = this.productByCode(code);
+      const thread = this.openThread;
+      if (!product || thread === null) {
+        status(el("fp-don-trang-thai"), "Chọn một hội thoại trước.", "bad");
+        return;
+      }
+      const size2 = (product.size ?? []).find((s) => Number(s.ton) > 0)?.size ?? "";
+      const address = this.profileAddresses.find((a) => a.macDinh) ?? this.profileAddresses[0];
+      await this.patchThread({ theDatHang: {
+        ma: product.ma,
+        ten: product.ten,
+        size: size2,
+        soLuong: 1,
+        gia: product.gia,
+        anh: /^https?:\/\//i.test(str(product.anh)) ? str(product.anh) : "",
+        tenNguoiNhan: str(this.profile?.ten) || str(thread.tenNguoi),
+        dienThoai: str(this.profile?.dienThoai) || str(thread.dienThoai) || el("fp-kh-dien-thoai").value.trim(),
+        diaChi: address ? addressLine(address) : str(thread.diaChi),
+        ghiChu: ""
+      } }, `Đã tạo thẻ đặt hàng cho ${product.ten}.`);
+    }
+    paintDraft() {
+      const card = this.openThread?.theDatHang;
+      const box = el("fp-the-dat-hang");
+      box.hidden = !card;
+      if (!card) return;
+      const img = el("fp-the-anh");
+      if (card.anh) img.src = card.anh;
+      else img.removeAttribute("src");
+      el("fp-the-ten").textContent = card.ten || card.ma;
+      el("fp-the-gia").textContent = `${card.ma} · ${money(card.gia)}${card.maDon ? ` · đã thành đơn ${card.maDon}` : ""}`;
+      el("orderDraftSize").value = card.size;
+      el("orderDraftQuantity").value = String(card.soLuong || 1);
+      el("orderDraftCustomerName").value = card.tenNguoiNhan;
+      el("orderDraftPhone").value = card.dienThoai;
+      el("orderDraftAddress").value = card.diaChi;
+      el("orderDraftNote").value = card.ghiChu;
+    }
+    draftFromForm() {
+      const card = this.openThread?.theDatHang;
+      if (!card) return null;
+      const value = (id) => el(id).value.trim();
+      return {
+        ma: card.ma,
+        ten: card.ten,
+        gia: card.gia,
+        anh: card.anh,
+        maDon: card.maDon,
+        size: value("orderDraftSize"),
+        soLuong: digits(value("orderDraftQuantity")) || 1,
+        tenNguoiNhan: value("orderDraftCustomerName"),
+        dienThoai: value("orderDraftPhone"),
+        diaChi: value("orderDraftAddress"),
+        ghiChu: value("orderDraftNote")
+      };
+    }
+    async saveDraft() {
+      const draft = this.draftFromForm();
+      const line = el("fp-the-trang-thai");
+      if (draft === null) {
+        status(line, "Chưa có sản phẩm trong giỏ đặt hàng.", "bad");
+        return;
+      }
+      if (await this.patchThread({ theDatHang: draft }, "Đã lưu thông tin thẻ đặt hàng.")) status(line, "Đã lưu thẻ.", "good");
+    }
+    /** Desk `submit-order-draft`: a draft order from the card — through the same order job as Orders. */
+    async submitDraft() {
+      const draft = this.draftFromForm();
+      const thread = this.openThread;
+      const line = el("fp-the-trang-thai");
+      if (draft === null || thread === null) {
+        status(line, "Chưa có sản phẩm trong giỏ đặt hàng.", "bad");
+        return;
+      }
+      const missing = [draft["dienThoai"] ? "" : "SĐT", draft["diaChi"] ? "" : "địa chỉ"].filter(Boolean);
+      if (missing.length > 0) {
+        status(line, `Cần ${missing.join(", ")} trước khi tạo đơn.`, "bad");
+        return;
+      }
+      if (str(draft["maDon"]) !== "") {
+        status(line, `Thẻ này đã thành đơn ${str(draft["maDon"])}.`, "bad");
+        return;
+      }
+      status(line, "Đang tạo đơn…");
+      const r = await this.ctx.gateway.landing("don.tao-thu-cong", {
+        khach: str(draft["tenNguoiNhan"]) || str(thread.tenNguoi) || str(thread.nguoi),
+        dienThoai: str(draft["dienThoai"]),
+        diaChi: str(draft["diaChi"]),
+        ghiChu: str(draft["ghiChu"]),
+        nhan: "fanpage",
+        ...thread.maKhach ? { maKhach: thread.maKhach } : {},
+        mon: [{ ma: str(draft["ma"]), ten: str(draft["ten"]), size: str(draft["size"]), soLuong: Number(draft["soLuong"]) || 1, donGia: Number(draft["gia"]) || 0 }]
+      });
+      if (!r.ok || !r.than?.maDon) {
+        status(line, r.viSao || "Không tạo được đơn.", "bad");
+        return;
+      }
+      const orderId = r.than.maDon;
+      await this.patchThread({ ganDon: orderId, theDatHang: { ...draft, maDon: orderId } }, `Đã tạo đơn nháp ${orderId} và gắn vào hội thoại.`);
+      status(line, `Đã tạo đơn nháp ${orderId}${(r.than.thieu ?? []).length ? " — có size không đủ tồn, xem ở màn Đơn hàng" : ""}.`, "good");
+      await this.loadCustomerOrders({ quiet: true });
+    }
+    // ------------------------------------------------------------------ stock picker
+    togglePicker() {
+      const pane = el("fp-tra-kho");
+      pane.hidden = !pane.hidden;
+      el("fp-ai-nghi").hidden = true;
+      el("fp-khach-khung").hidden = !pane.hidden;
+      if (!pane.hidden && this.products.length === 0) void this.searchInventory("landing");
+    }
+    setInvTab(tab) {
+      const other = tab === "other";
+      el("fp-kho-landing").hidden = other;
+      el("fp-kho-khac").hidden = !other;
+      for (const b of this.root.querySelectorAll('[data-action="set-facebook-inv-tab"]')) b.classList.toggle("active", b.dataset["tab"] === tab);
+    }
+    async searchInventory(tab) {
+      const line = el("fp-kho-trang-thai");
+      const other = tab === "other";
+      status(line, "Đang tra kho…");
+      const r = await this.ctx.gateway.landing("hang.tim", {
+        tuKhoa: el(other ? "facebookInvOtherQuery" : "facebookInvLandingQuery").value.trim(),
+        size: el(other ? "facebookInvOtherSize" : "facebookInvLandingSize").value.trim(),
+        ...other ? { nguon: el("facebookInvOtherSource").value } : {},
+        gioiHan: 60
+      });
+      if (!r.ok) {
+        status(line, r.viSao, "bad");
+        return;
+      }
+      this.products = r.than ?? [];
+      const list = el("fp-kho-the");
+      clear(list);
+      for (const p of this.products) {
+        const sizes = (p.size ?? []).filter((s) => Number(s.ton) > 0).map((s) => s.size);
+        list.appendChild(h(
+          "button",
+          { class: `facebook-product-card${this.pickedProduct?.ma === p.ma ? " selected" : ""}`, type: "button", "data-action": "pick-facebook-inv-product", "data-code": p.ma },
+          p.anh ? h("img", { class: "product-thumb", src: p.anh, alt: "", loading: "lazy" }) : h("div", { class: "product-thumb empty" }, "No image"),
+          h("span", { class: "facebook-product-card-info" }, h("strong", null, p.ten || p.ma), h("span", null, p.ma), h("small", null, sizes.length ? `Size ${sizes.join(", ")}` : "hết size"))
+        ));
+      }
+      status(line, this.products.length === 0 ? "Không có sản phẩm phù hợp." : `${this.products.length} sản phẩm.`, this.products.length > 0);
+      this.pickInventory(this.pickedProduct?.ma ?? this.products[0]?.ma ?? "");
+    }
+    pickInventory(code) {
+      const detail = el("fp-kho-chi-tiet");
+      clear(detail);
+      const p = this.products.find((x) => x.ma === code) ?? null;
+      this.pickedProduct = p;
+      for (const b of this.root.querySelectorAll('#fp-kho-the [data-action="pick-facebook-inv-product"]')) b.classList.toggle("selected", b.dataset["code"] === code);
+      if (p === null) {
+        detail.appendChild(h("div", { class: "subtle" }, "Chọn một sản phẩm để xem ảnh, size và thao tác."));
+        return;
+      }
+      const sizes = (p.size ?? []).filter((s) => Number(s.ton) > 0);
+      detail.append(
+        h(
+          "div",
+          { class: "facebook-product-detail-top" },
+          h("div", { class: "facebook-product-detail-hero" }, p.anh ? h("img", { src: p.anh, alt: p.ten }) : h("div", { class: "facebook-product-detail-no-image" }, "Chưa có ảnh")),
+          h(
+            "div",
+            { class: "facebook-product-detail-info" },
+            h("div", { class: "product-title" }, p.ten || p.ma),
+            h("div", { class: "subtle" }, p.ma),
+            h("div", { class: "facebook-product-detail-price" }, p.gia ? money(p.gia) : "Giá cần kiểm tra")
+          )
+        ),
+        h("div", { class: "facebook-product-detail-sizes" }, ...sizes.length ? sizes.map((s) => h("span", { class: "facebook-size-chip" }, s.size)) : [h("span", { class: "subtle" }, "Chưa có size còn hàng")]),
+        h("div", { class: "facebook-inv-stocks" }, ...sizes.map((s) => h("span", null, `${s.size} · ${s.kho || s.maKho || "Kho"}: `, h("b", null, String(s.ton))))),
+        h(
+          "div",
+          { class: "facebook-product-detail-actions" },
+          h("button", { class: "secondary-button compact-button", type: "button", "data-action": "insert-facebook-product-reply", "data-code": p.ma }, "Chèn vào tin nhắn"),
+          h("button", { class: "primary-button compact-button", type: "button", "data-action": "send-product-photo", "data-code": p.ma, disabled: !p.anh }, "Gửi ảnh cho khách"),
+          h("button", { class: "secondary-button compact-button", type: "button", "data-action": "add-product-to-cart", "data-code": p.ma }, "Thêm vào giỏ")
+        )
+      );
+    }
     /** Rule 4: hand the customer to Orders; this screen never writes an order itself. */
+    /** Đ7 ✓ on a size signal: the value goes into the profile's size portrait (same two fields as "Nhập tay"). */
+    async applyFitSignal(signal) {
+      const line = el("fp-don-trang-thai");
+      if (this.profile === null) {
+        status(line, "Gắn hồ sơ khách trước rồi mới lưu tín hiệu size.", "bad");
+        return false;
+      }
+      const fit = fitFrom(str(this.profile.sizeQuen), str(this.profile.formChan));
+      const note = (extra) => fit.notes.includes(extra) ? fit.notes : [fit.notes, extra].filter(Boolean).join(" · ");
+      if (signal.type === "footLength") fit.footLength = signal.value;
+      else if (signal.type === "footWidth") fit.footWidth = signal.value;
+      else if (signal.type === "sizeEU" && !signal.brand) fit.sizeEU = signal.value;
+      else if (signal.type === "sizeEU") fit.notes = note(`${signal.brand} ${signal.value}`);
+      else if (signal.type === "wearing") fit.notes = note(`đang đi ${signal.value}`);
+      else fit.notes = note(signal.value);
+      const r = await this.ctx.gateway.landing("khach.ho-so.ghi", { ma: this.profile.ma, ten: this.profile.ten, ...fitToProfile(fit) });
+      if (!r.ok || !r.than?.khach) {
+        status(line, r.viSao || "Không lưu được.", "bad");
+        return false;
+      }
+      this.profile = r.than.khach;
+      this.paintFit();
+      status(line, `Đã lưu ${signal.label.toLowerCase()} ${signal.value} vào hồ sơ khách.`, "good");
+      return true;
+    }
     composeOrder() {
       const thread = this.openThread;
       this.ctx.shell.open("don", {
         soanDon: true,
-        khach: thread === null ? "" : str(thread.tenNguoi) || str(thread.nguoi),
-        dienThoai: el("fp-kh-dien-thoai").value.trim()
+        khach: thread === null ? "" : str(this.profile?.ten) || str(thread.tenNguoi) || str(thread.nguoi),
+        dienThoai: el("fp-kh-dien-thoai").value.trim(),
+        ...thread?.maKhach ? { maKhach: thread.maKhach } : {}
       });
     }
   };
+  function initials(name) {
+    const words = String(name || "KH").trim().split(/\s+/).filter(Boolean);
+    const text2 = words.length > 1 ? `${words[0]?.[0] ?? ""}${words[words.length - 1]?.[0] ?? ""}` : (words[0] ?? "KH").slice(0, 2);
+    return text2.toUpperCase();
+  }
 
   // ../omi/packages/omi-ui/src/views/date-filter.ts
   var two2 = (n) => n < 10 ? `0${n}` : String(n);
@@ -5520,7 +11417,10 @@ ${sentence}`;
       "pay-finance-partner": (b) => this.payPartner(b),
       "save-finance-cost-overrides": () => this.saveCostOverrides(),
       "void-finance-entry": (b) => this.voidEntry(str(b.dataset["entryId"])),
-      "reload-finance": () => this.loadFinance()
+      "reload-finance": () => this.loadFinance(),
+      // Đ10 Desk "Backup Google Drive": địa chỉ Apps Script + token là cấu hình shop trên landing (không còn localStorage).
+      "run-google-drive-backup": () => this.runBackup(),
+      "save-google-backup-config": () => this.saveBackupConfig()
     };
     /** Desk `financeTemplate` (app.js:11779): khung lọc, 9 thẻ số, nhập thu/chi + đối soát partner, ba bảng. */
     buildDesk() {
@@ -5533,6 +11433,7 @@ ${sentence}`;
         h(
           "div",
           { class: "split-actions" },
+          h("button", { class: "primary-button", type: "button", "data-action": "run-google-drive-backup" }, "Tạo backup Google Sheet"),
           h("button", { class: "secondary-button", type: "button", id: "nut-tc-luu-gia-mua", "data-action": "save-finance-cost-overrides" }, "Lưu giá mua đang sửa"),
           h("button", { class: "secondary-button", type: "button", id: "nut-tc-tai", "data-action": "reload-finance" }, "Tải lại")
         )
@@ -5550,7 +11451,7 @@ ${sentence}`;
         metric("Chi phí phát sinh", "tc-chi-phi", "Nhập tay ngoài đơn"),
         metric("Lợi nhuận tạm tính", "tc-lai", "Chưa thay thế báo cáo thuế")
       );
-      const input = (id, label, attrs = {}) => h("div", { class: "field" }, h("label", { for: id }, label), h("input", { id, ...attrs }));
+      const input2 = (id, label, attrs = {}) => h("div", { class: "field" }, h("label", { for: id }, label), h("input", { id, ...attrs }));
       const entryPanel = h(
         "section",
         { class: "panel finance-panel" },
@@ -5573,8 +11474,8 @@ ${sentence}`;
               h("label", { for: "financeEntryCategory" }, "Nhóm"),
               h("select", { id: "financeEntryCategory" }, ...ENTRY_GROUPS.map(([v, t]) => h("option", { value: v }, t)))
             ),
-            input("financeEntryAmount", "Số tiền", { inputmode: "numeric" }),
-            input("financeEntryOrderId", "Mã đơn nếu có")
+            input2("financeEntryAmount", "Số tiền", { inputmode: "numeric" }),
+            input2("financeEntryOrderId", "Mã đơn nếu có")
           ),
           h("div", { class: "field" }, h("label", { for: "financeEntryNote" }, "Ghi chú"), h("textarea", { id: "financeEntryNote", rows: "2" })),
           h("button", { class: "primary-button", type: "button", id: "nut-tc-luu-khoan", "data-action": "add-finance-entry" }, "Lưu khoản phát sinh"),
@@ -5603,10 +11504,57 @@ ${sentence}`;
         h("div", { class: "panel-header" }, h("div", null, h("h3", null, title), h("p", null, hint))),
         h("div", { class: "panel-body" }, body)
       );
+      const backupQuick = h(
+        "section",
+        { class: "panel finance-backup-panel finance-backup-quick omi-section-gap" },
+        h("div", { class: "panel-header" }, h("div", null, h("h3", null, "Backup Google Drive"), h("p", null, "Tạo Google Sheet riêng cho phiên hiện tại, gồm đơn hàng đầy đủ, khách hàng, vận đơn. Landing gửi thẳng dữ liệu của nó sang Apps Script."))),
+        h(
+          "div",
+          { class: "panel-body config-form" },
+          h(
+            "div",
+            { class: "grid two" },
+            h(
+              "div",
+              { class: "field" },
+              h("label", { for: "googleBackupReason" }, "Lý do backup"),
+              h(
+                "select",
+                { id: "googleBackupReason" },
+                h("option", { value: "manual" }, "Thủ công"),
+                h("option", { value: "daily" }, "Theo ngày"),
+                h("option", { value: "before-update" }, "Trước khi update phần mềm"),
+                h("option", { value: "before-import" }, "Trước khi import"),
+                h("option", { value: "after-import" }, "Sau khi import")
+              )
+            ),
+            input2("googleBackupNote", "Ghi chú")
+          ),
+          h("p", { class: "subtle", id: "tc-sao-luu-gan-nhat" }, "Chưa tạo backup. Khi bấm nút xanh phía trên, kết quả gần nhất sẽ hiện ở đây.")
+        )
+      );
+      const backupConfig = h(
+        "details",
+        { class: "panel finance-backup-panel finance-backup-config omi-section-gap" },
+        h("summary", null, h("span", null, h("strong", null, "Cấu hình Google Drive"), h("small", null, "URL Apps Script và Secret token - chỉ mở khi cần sửa"))),
+        h(
+          "div",
+          { class: "panel-body config-form" },
+          h(
+            "div",
+            { class: "grid two" },
+            input2("googleBackupWebhookUrl", "Web app URL", { placeholder: "script.google.com/macros/s/…/exec" }),
+            h("div", { class: "field" }, h("label", { for: "googleBackupToken" }, "Secret token"), h("input", { id: "googleBackupToken", type: "password", autocomplete: "off", placeholder: "Dán token đã đặt trong Apps Script" }))
+          ),
+          h("button", { class: "secondary-button", type: "button", "data-action": "save-google-backup-config" }, "Lưu cấu hình backup"),
+          h("span", { class: "status-line", id: "tc-sao-luu-cau-hinh" })
+        )
+      );
       return h(
         "div",
         { id: "tai-chinh-desk" },
         head,
+        backupQuick,
         filter.panel,
         h("p", { class: "status-line", id: "tc-trang-thai" }, "—"),
         cards,
@@ -5625,7 +11573,8 @@ ${sentence}`;
           "Thu / chi phát sinh",
           "Các khoản ngoài đơn, có thể gắn mã đơn nếu cần. Khoản nhập nhầm thì Hoàn tác — sổ vẫn giữ dòng đó.",
           table(["Ngày", "Loại", "Nhóm", "Số tiền", "Đơn", "Ghi chú", ""], "tc-bang-thu-chi")
-        )
+        ),
+        backupConfig
       );
     }
     async loadFinance() {
@@ -5766,10 +11715,10 @@ ${sentence}`;
         status(line, "Partner này không còn công nợ mua hàng.", "bad");
         return;
       }
-      const input = this.root.querySelector(`[data-finance-partner-payment="${CSS.escape(partnerId)}"]`);
-      const amount = Math.min(digits(input?.value ?? ""), due);
+      const input2 = this.root.querySelector(`[data-finance-partner-payment="${CSS.escape(partnerId)}"]`);
+      const amount = Math.min(digits(input2?.value ?? ""), due);
       if (amount <= 0) {
-        input?.focus();
+        input2?.focus();
         status(line, "Hãy nhập số tiền đã thanh toán lớn hơn 0.", "bad");
         return;
       }
@@ -5787,10 +11736,10 @@ ${sentence}`;
     async saveCostOverrides() {
       const line = el("tc-trang-thai");
       const rows = [];
-      for (const input of this.root.querySelectorAll("#tc-bang-gia-von [data-finance-cost-order-id]")) {
-        const value = digits(input.value);
-        if (value <= 0 || value === Number(input.dataset["original"] ?? 0)) continue;
-        rows.push({ maDon: str(input.dataset["financeCostOrderId"]), maDong: str(input.dataset["financeCostLineId"]), giaVon: value });
+      for (const input2 of this.root.querySelectorAll("#tc-bang-gia-von [data-finance-cost-order-id]")) {
+        const value = digits(input2.value);
+        if (value <= 0 || value === Number(input2.dataset["original"] ?? 0)) continue;
+        rows.push({ maDon: str(input2.dataset["financeCostOrderId"]), maDong: str(input2.dataset["financeCostLineId"]), giaVon: value });
       }
       if (rows.length === 0) {
         status(line, "Chưa có giá mua nào thay đổi.", "bad");
@@ -5816,6 +11765,58 @@ ${sentence}`;
       }
       await this.loadFinance();
       status(el("tc-trang-thai"), "Đã hoàn tác khoản thu/chi.", "good");
+    }
+    // ----- Đ10 Google Drive backup -----
+    drawLastBackup(last) {
+      const box = el("tc-sao-luu-gan-nhat");
+      clear(box);
+      if (!last || !str(last["fileUrl"] ?? last["fileName"])) {
+        box.append("Chưa tạo backup. Khi bấm nút xanh phía trên, kết quả gần nhất sẽ hiện ở đây.");
+        return;
+      }
+      box.append(
+        "Backup gần nhất: ",
+        h("strong", null, str(last["fileName"] ?? last["backupId"]) || "file backup"),
+        ` · ${dayClock(last["createdAt"])}`,
+        str(last["fileUrl"]) ? h("span", { class: "code" }, ` ${str(last["fileUrl"])}`) : "",
+        str(last["indexUrl"]) ? h("span", { class: "code" }, ` · sheet tổng hợp: ${str(last["indexUrl"])}`) : ""
+      );
+    }
+    async loadBackup() {
+      const r = await this.ctx.gateway.landing("sao-luu");
+      if (!r.ok) return;
+      this.drawLastBackup(r.than?.ganNhat ?? null);
+      status(el("tc-sao-luu-cau-hinh"), r.than?.daCauHinh ? "Đã cấu hình Apps Script (token không hiện lại)." : "Chưa cấu hình URL / token.", r.than?.daCauHinh === true);
+    }
+    async saveBackupConfig() {
+      const url = el("googleBackupWebhookUrl").value.trim();
+      const token = el("googleBackupToken").value.trim();
+      const giaTri = {};
+      if (url !== "") giaTri["google_sao_luu_url"] = url;
+      if (token !== "") giaTri["google_sao_luu_token"] = token;
+      const line = el("tc-sao-luu-cau-hinh");
+      if (Object.keys(giaTri).length === 0) {
+        status(line, "Nhập Web app URL hoặc Secret token.", "bad");
+        return;
+      }
+      const r = await this.ctx.gateway.landing("cau-hinh.ghi", { giaTri });
+      if (!r.ok) {
+        status(line, r.viSao, "bad");
+        return;
+      }
+      el("googleBackupToken").value = "";
+      status(line, "Đã lưu cấu hình backup Google Drive trên landing của shop.", "good");
+    }
+    async runBackup() {
+      const line = el("tc-trang-thai");
+      status(line, "Đang tạo backup Google Sheet...");
+      const r = await this.ctx.gateway.landing("sao-luu.chay", { lyDo: el("googleBackupReason").value, ghiChu: el("googleBackupNote").value.trim() });
+      if (!r.ok) {
+        status(line, r.viSao, "bad");
+        return;
+      }
+      this.drawLastBackup(r.than);
+      status(line, str(r.than?.["message"]) || "Đã tạo backup Google Sheet.", "good");
     }
     build(root) {
       root.append(this.buildDesk());
@@ -5941,6 +11942,7 @@ ${sentence}`;
       void this.loadAll();
     }
     async loadAll() {
+      void this.loadBackup();
       await this.loadFinance();
       await this.loadReport();
       await this.loadOwing();
@@ -5964,14 +11966,14 @@ ${sentence}`;
       const body = el("gv-bang");
       clear(body);
       for (const d of rows) {
-        const input = h("input", {
+        const input2 = h("input", {
           type: "text",
           class: "short",
           value: d.goiY > 0 ? String(d.goiY) : "",
           placeholder: d.goiY > 0 ? "gợi ý từ danh mục" : "giá vốn một đôi",
           "data-gia-von": `${d.maDon}|${d.maDong}`
         });
-        body.appendChild(tableRow([d.maDon, d.khach, `${d.ma}${d.ten ? ` · ${d.ten}` : ""}`, d.size || "—", d.soLuong, money(d.giaBan), input], [4, 5]));
+        body.appendChild(tableRow([d.maDon, d.khach, `${d.ma}${d.ten ? ` · ${d.ten}` : ""}`, d.size || "—", d.soLuong, money(d.giaBan), input2], [4, 5]));
       }
       el("gv-so").textContent = String(rows.length);
       status(line, rows.length === 0 ? "Mọi dòng đều đã có giá vốn." : `${rows.length} dòng chưa có giá vốn.`, rows.length === 0 ? "good" : "bad");
@@ -5993,10 +11995,10 @@ ${sentence}`;
     async saveCost() {
       const line = el("gv-trang-thai");
       const rows = [];
-      for (const input of document.querySelectorAll("#gv-bang [data-gia-von]")) {
-        const gia = digits(input.value);
+      for (const input2 of document.querySelectorAll("#gv-bang [data-gia-von]")) {
+        const gia = digits(input2.value);
         if (gia <= 0) continue;
-        const [maDon, maDong] = (input.dataset["giaVon"] ?? "").split("|");
+        const [maDon, maDong] = (input2.dataset["giaVon"] ?? "").split("|");
         if (maDon && maDong) rows.push({ maDon, maDong, giaVon: gia });
       }
       if (rows.length === 0) {
@@ -6108,6 +12110,7 @@ ${sentence}`;
   };
 
   // ../omi/packages/omi-ui/src/views/inbox.ts
+  var ARCHIVE_LABEL = { "chua-chay": "Chưa chạy", "dang-chay": "Đang chạy", "dang-dung": "Đang dừng an toàn", "da-dung": "Đã tạm dừng", xong: "Hoàn tất", loi: "Cần tiếp tục" };
   var InboxView = class extends View {
     id = "hop-thu";
     label = "Hộp thư";
@@ -6185,11 +12188,159 @@ ${sentence}`;
             ),
             h("p", { class: "subtle" }, "Bản thử đang bật chế độ thử: máy chủ CHẶN mọi tin gửi cho khách. Bấm trả lời sẽ nhận được câu từ chối rõ ràng — đó là đúng, không phải lỗi.")
           )
+        ),
+        // Đ6: mẫu xác nhận đơn (Desk màn Chính sách "Xác nhận đơn") — câu cuối của hoá đơn gửi từ Fanpage.
+        h(
+          "section",
+          { class: "panel" },
+          h(
+            "div",
+            { class: "panel-header" },
+            h("div", null, h("h3", null, "Xác nhận đơn"), h("p", null, "Đơn chỉ thành công khi khách xác nhận lại thông tin nhận hàng. Câu này đứng cuối hoá đơn gửi khách từ màn Fanpage."))
+          ),
+          h(
+            "div",
+            { class: "panel-body config-form" },
+            h("div", { class: "field" }, h("label", { for: "confirmationTemplate" }, "Mẫu tin nhắn xác nhận"), h("textarea", { id: "confirmationTemplate" })),
+            h(
+              "div",
+              { class: "split-actions" },
+              h("button", { class: "primary-button", type: "button", "data-action": "save-confirmation-template" }, "Lưu mẫu xác nhận"),
+              h("span", { class: "status-line", id: "ht-mau-trang-thai" })
+            )
+          )
+        ),
+        // Đ6: lưu trữ tin dài hạn (Desk `facebookTrainingPipelineTemplate`, bước 1).
+        h(
+          "section",
+          { class: "inline-panel training-pipeline" },
+          h(
+            "div",
+            { class: "section-title-row" },
+            h(
+              "div",
+              null,
+              h("h3", null, "Lưu trữ lịch sử Fanpage"),
+              h("p", { class: "subtle" }, "Kéo lại toàn bộ tin nhắn chữ từ Meta về kho của shop, có điểm dừng: dừng giữa chừng hay máy chủ khởi động lại đều tải tiếp đúng chỗ. Kho gốc giữ nguyên; bước phân tích bằng AI ở đợt sau.")
+            ),
+            h("span", { class: "badge amber", id: "lt-trang-thai" }, "Chưa chạy")
+          ),
+          h(
+            "div",
+            { class: "training-pipeline-grid" },
+            h(
+              "article",
+              { class: "training-pipeline-stage" },
+              h(
+                "div",
+                { class: "training-pipeline-stage-head" },
+                h("div", null, h("span", null, "1"), h("strong", null, "Tải lịch sử từ năm 2023")),
+                h("small", { id: "lt-trang-thai-nho" }, "Chưa chạy")
+              ),
+              h(
+                "div",
+                { class: "training-pipeline-metrics" },
+                h("span", null, h("strong", { id: "lt-hoi-thoai" }, "0"), " hội thoại đã xét"),
+                h("span", null, h("strong", { id: "lt-tin" }, "0"), " tin từ mốc"),
+                h("span", null, h("strong", { id: "lt-kho" }, "0"), " tin trong kho")
+              ),
+              h("div", { class: "training-page-progress", id: "lt-trang" }),
+              h("p", { class: "training-pipeline-error", id: "lt-loi", hidden: true }),
+              h(
+                "div",
+                { class: "split-actions" },
+                h("button", { class: "secondary-button", type: "button", id: "lt-bat-dau", "data-action": "start-facebook-archive-backfill" }, "Tải/tiếp tục từ năm 2023"),
+                h("button", { class: "secondary-button", type: "button", id: "lt-dung", "data-action": "pause-facebook-archive-backfill", hidden: true }, "Dừng tải"),
+                h("button", { class: "ghost-button", type: "button", "data-action": "restart-facebook-archive-backfill" }, "Quét lại từ đầu đến 2023"),
+                h("button", { class: "ghost-button", type: "button", "data-action": "refresh-facebook-archive" }, "Làm mới")
+              ),
+              h("p", { class: "status-line", id: "lt-dong" })
+            )
+          )
         )
       );
     }
+    actions = {
+      "save-confirmation-template": () => this.saveConfirmation(),
+      "start-facebook-archive-backfill": () => this.archive("hop-thu.luu-tru.bat-dau", {}),
+      "restart-facebook-archive-backfill": (b) => this.restartArchive(b),
+      "pause-facebook-archive-backfill": () => this.archive("hop-thu.luu-tru.dung", {}),
+      "refresh-facebook-archive": () => this.loadArchive()
+    };
+    archiveTimer = null;
     load() {
       void this.loadAll();
+      void this.loadArchive();
+    }
+    async saveConfirmation() {
+      const line = el("ht-mau-trang-thai");
+      const r = await this.ctx.gateway.landing("hop-thu.cau-hinh.ghi", { mauXacNhan: el("confirmationTemplate").value.trim() });
+      status(line, r.ok ? "Đã lưu mẫu xác nhận." : r.viSao, r.ok ? "good" : "bad");
+    }
+    async restartArchive(button) {
+      if (button.dataset["armed"] !== "1") {
+        button.dataset["armed"] = "1";
+        button.textContent = "Bấm lần nữa: quét lại từ đầu";
+        setTimeout(() => {
+          delete button.dataset["armed"];
+          button.textContent = "Quét lại từ đầu đến 2023";
+        }, 6e3);
+        return;
+      }
+      delete button.dataset["armed"];
+      button.textContent = "Quét lại từ đầu đến 2023";
+      await this.archive("hop-thu.luu-tru.bat-dau", { lamLai: true });
+    }
+    async archive(job, args) {
+      const line = el("lt-dong");
+      status(line, "Đang gửi lệnh…");
+      const r = await this.ctx.gateway.landing(job, args);
+      if (!r.ok) {
+        status(line, r.viSao, "bad");
+        return;
+      }
+      status(line, str(r.than?.message) || "Xong.", "good");
+      if (r.than?.luuTru) this.paintArchive(r.than.luuTru);
+    }
+    async loadArchive() {
+      const r = await this.ctx.gateway.landing("hop-thu.luu-tru");
+      if (!r.ok) {
+        status(el("lt-dong"), r.viSao, "bad");
+        return;
+      }
+      if (r.than?.luuTru) this.paintArchive(r.than.luuTru);
+    }
+    paintArchive(state) {
+      const label = ARCHIVE_LABEL[state.trangThai] ?? state.trangThai;
+      const badgeNode = el("lt-trang-thai");
+      badgeNode.textContent = label;
+      badgeNode.className = `badge ${state.trangThai === "xong" ? "green" : state.trangThai === "loi" ? "red" : "amber"}`;
+      el("lt-trang-thai-nho").textContent = label;
+      el("lt-hoi-thoai").textContent = String(state.tong?.soHoiThoai ?? 0);
+      el("lt-tin").textContent = String(state.tong?.soTin ?? 0);
+      el("lt-kho").textContent = String(state.tong?.trongKho ?? 0);
+      const running = state.trangThai === "dang-chay" || state.trangThai === "dang-dung";
+      el("lt-dung").hidden = !running;
+      el("lt-bat-dau").hidden = running;
+      el("lt-bat-dau").textContent = ["loi", "da-dung"].includes(state.trangThai) ? "Tiếp tục tải" : "Tải/tiếp tục từ năm 2023";
+      const errorNode = el("lt-loi");
+      errorNode.hidden = str(state.loiCuoi) === "";
+      errorNode.textContent = str(state.loiCuoi);
+      const pages = el("lt-trang");
+      clear(pages);
+      for (const p of Object.values(state.trang ?? {})) {
+        pages.appendChild(h(
+          "div",
+          null,
+          h("span", null, p.ten || p.ma),
+          h("strong", null, `${p.soHoiThoai} thoại · ${p.soTin} tin chữ`),
+          h("small", null, `${p.soTrangHoiThoai} trang hội thoại · ${p.xong ? "Hoàn tất tại mốc" : p.loi ? `Cần tiếp tục: ${p.loi}` : "Đang ở checkpoint"}`)
+        ));
+      }
+      if (this.archiveTimer !== null) clearTimeout(this.archiveTimer);
+      this.archiveTimer = running ? setTimeout(() => {
+        if (!el(`than-${this.id}`).hidden) void this.loadArchive();
+      }, 4e3) : null;
     }
     pickRecipient(person, channel) {
       el("ht-nguoi").value = str(person);
@@ -6200,7 +12351,10 @@ ${sentence}`;
       void this.loadNeedsHuman();
       void this.loadOutbox();
       const cfg = await this.ctx.gateway.landing("hop-thu.cau-hinh.doc");
-      if (cfg.ok && cfg.than?.cauHinh) el("ht-nguong").value = String(cfg.than.cauHinh.nguongTinCuGio ?? 24);
+      if (cfg.ok && cfg.than?.cauHinh) {
+        el("ht-nguong").value = String(cfg.than.cauHinh.nguongTinCuGio ?? 24);
+        el("confirmationTemplate").value = str(cfg.than.cauHinh.mauXacNhan);
+      }
     }
     async loadIncoming() {
       const line = el("hop-thu-trang-thai");
@@ -6282,6 +12436,271 @@ ${sentence}`;
     }
   };
 
+  // ../omi/packages/omi-ui/src/views/integrations/shop-tools.ts
+  var FIELDS = [
+    ["spxUserId", "SPX User ID", false, "Hồ sơ Shop trên spx.vn"],
+    ["spxSecretKey", "SPX Secret Key", true, "Chỉ điền khi đổi"],
+    ["spxSenderName", "Tên người gửi SPX", false, ""],
+    ["spxSenderPhone", "SĐT người gửi SPX", false, ""],
+    ["vtpUsername", "ViettelPost username", false, ""],
+    ["vtpPassword", "ViettelPost password", true, "Chỉ điền khi đổi"],
+    ["vtpSenderName", "Tên người gửi VTP", false, ""],
+    ["vtpSenderPhone", "SĐT người gửi VTP", false, ""]
+  ];
+  var ShopTools = class {
+    constructor(ctx) {
+      this.ctx = ctx;
+    }
+    ctx;
+    build() {
+      return h(
+        "div",
+        { id: "kn-d10" },
+        h(
+          "section",
+          { class: "panel omi-section-gap" },
+          h(
+            "div",
+            { class: "section-title-row" },
+            h(
+              "div",
+              null,
+              h("h2", null, "Tài khoản vận chuyển đối tác"),
+              h("p", { class: "subtle" }, "Cổng kết nối cho site bán lại / site sinh đôi: mỗi site một tài khoản SPX / ViettelPost và người gửi riêng. App ID/Secret SPX dùng chung của shop; đơn mang mã site nào thì tạo vận đơn bằng tài khoản site đó.")
+            )
+          ),
+          h("div", { id: "kn-site-ds" }, h("p", { class: "subtle" }, "Đang tải…")),
+          h(
+            "div",
+            { class: "ai-provider-config omi-section-gap" },
+            h("h3", null, "Thêm đối tác mới"),
+            h(
+              "div",
+              { class: "grid two compact-config-grid" },
+              h("label", null, "Slug site (chữ thường + số, vd: abcshop)", h("input", { id: "shipPartnerNewSlug", placeholder: "abcshop" })),
+              h("label", null, "Tên hiển thị", h("input", { id: "shipPartnerNewLabel", placeholder: "ABC Shop" }))
+            ),
+            h(
+              "div",
+              { class: "split-actions omi-actions-top" },
+              h("button", { class: "secondary-button", type: "button", "data-action": "add-shipping-partner-site" }, "Thêm đối tác")
+            )
+          ),
+          h("p", { class: "status-line", id: "kn-site-trang-thai" }, "—")
+        ),
+        h(
+          "section",
+          { class: "panel omi-section-gap" },
+          h(
+            "div",
+            { class: "panel-header" },
+            h(
+              "div",
+              null,
+              h("h3", null, "Tiện ích trình duyệt"),
+              h("p", null, "Hai tiện ích Chrome đi kèm OMI (thư mục tien-ich): tra tồn ngay trên Facebook / Zalo / Sapo, và mua hộ tự động. Mỗi tiện ích cần địa chỉ landing + khoá dưới đây; tạo khoá mới thì khoá cũ hết dùng.")
+            ),
+            h(
+              "div",
+              { class: "split-actions" },
+              h("button", { class: "secondary-button", type: "button", id: "kn-khoa-tao" }, "Tạo khoá mới")
+            )
+          ),
+          h(
+            "div",
+            { class: "panel-body" },
+            h("p", { class: "status-line", id: "kn-khoa-trang-thai" }, "—"),
+            h("input", { id: "kn-khoa-moi", readonly: true, hidden: true })
+          )
+        ),
+        h(
+          "section",
+          { class: "panel omi-section-gap" },
+          h(
+            "div",
+            { class: "panel-header" },
+            h(
+              "div",
+              null,
+              h("h3", null, "Mua hộ tự động"),
+              h("p", null, "Khách chuyển khoản xong, dòng đơn thuộc kho / nguồn có từ khoá cấu hình (nhóm Mua hộ) vào hàng đợi; tiện ích trình duyệt đặt COD trên web đối tác và DỪNG nếu lệch giá hoặc hết size.")
+            ),
+            h(
+              "div",
+              { class: "split-actions" },
+              h("button", { class: "secondary-button", type: "button", "data-action": "load-auto-purchase-queue" }, "Tải hàng đợi"),
+              h("button", { class: "primary-button", type: "button", "data-action": "scan-auto-purchase-queue" }, "Quét đơn đã CK")
+            )
+          ),
+          h(
+            "div",
+            { class: "panel-body" },
+            h("p", { class: "status-line", id: "kn-mua-ho-trang-thai" }, "—"),
+            h("div", { class: "table-wrap" }, h(
+              "table",
+              null,
+              h("thead", null, h("tr", null, ...["Đơn", "Sản phẩm", "Giá nhập kỳ vọng", "Trên web", "Trạng thái", "Lý do", ""].map((t) => h("th", null, t)))),
+              h("tbody", { id: "kn-mua-ho-bang" })
+            ))
+          )
+        )
+      );
+    }
+    async load() {
+      await Promise.all([this.loadSites(), this.loadKey(), this.loadQueue()]);
+    }
+    // ----- carrier accounts per site -----
+    async loadSites() {
+      const r = await this.ctx.gateway.landing("van-don.tai-khoan-site");
+      const box = el("kn-site-ds");
+      clear(box);
+      if (!r.ok) {
+        box.append(h("p", { class: "status-line bad" }, r.viSao));
+        return;
+      }
+      const sites = r.than?.partnerSites ?? [];
+      for (const site of sites) box.appendChild(this.siteCard(site));
+      const twin = r.than?.siteDoi;
+      if (sites.length === 0) box.appendChild(h("p", { class: "subtle" }, twin?.ma ? `Chưa có tài khoản riêng cho site nào. Site sinh đôi "${twin.ten || twin.ma}" đang gửi bằng tài khoản của shop — thêm slug "${twin.ma}" để tách.` : "Chưa có đối tác nào."));
+    }
+    siteCard(site) {
+      const spx = site.status.spx;
+      const vtp = site.status.viettelPost;
+      const configured = spx.configured || vtp.configured;
+      const prefill = { spxUserId: spx.userId, spxSenderName: spx.senderName, spxSenderPhone: spx.senderPhone, vtpUsername: vtp.username, vtpSenderName: vtp.senderName, vtpSenderPhone: vtp.senderPhone };
+      return h(
+        "details",
+        { class: "ai-provider-config" },
+        h("summary", null, h("strong", null, site.label || site.slug), " ", badge(configured ? "Đã cấu hình" : "Chưa cấu hình", configured ? "green" : "amber")),
+        h("p", { class: "subtle" }, `SPX: ${spx.configured ? "sẵn sàng" : `thiếu ${spx.missing.join(", ") || "cấu hình"}`} · ViettelPost: ${vtp.configured ? "sẵn sàng" : "chưa cấu hình"} · Slug: ${site.slug}.`),
+        h(
+          "div",
+          { class: "grid two compact-config-grid" },
+          ...FIELDS.map(([field, label, secret, hint]) => h(
+            "label",
+            null,
+            label,
+            h("input", {
+              id: `shipPartner_${site.slug}_${field}`,
+              type: secret ? "password" : "text",
+              value: secret ? "" : str(prefill[field]),
+              placeholder: secret ? (field === "spxSecretKey" ? spx.hasSecret : vtp.hasPassword) ? "đã có — chỉ điền khi đổi" : hint : hint
+            })
+          ))
+        ),
+        h(
+          "div",
+          { class: "split-actions omi-actions-top" },
+          h("button", { class: "secondary-button", type: "button", "data-action": "save-shipping-partner-account", "data-site": site.slug }, "Lưu tài khoản"),
+          h("button", { class: "secondary-button", type: "button", "data-action": "test-shipping-connection", "data-carrier": "spx", "data-site": site.slug }, "Test SPX"),
+          h("button", { class: "secondary-button", type: "button", "data-action": "test-shipping-connection", "data-carrier": "vtp", "data-site": site.slug }, "Test ViettelPost"),
+          h("button", { class: "secondary-button", type: "button", "data-action": "remove-shipping-partner-site", "data-site": site.slug }, "Gỡ đối tác")
+        )
+      );
+    }
+    async saveAccount(slug) {
+      const body = { site: slug };
+      for (const [field] of FIELDS) {
+        const input2 = document.getElementById(`shipPartner_${slug}_${field}`);
+        if (input2 && input2.value.trim() !== "") body[field] = input2.value.trim();
+      }
+      const r = await this.ctx.gateway.landing("van-don.tai-khoan-site.ghi", body);
+      status(el("kn-site-trang-thai"), r.ok ? str(r.than?.message) : r.viSao, r.ok ? "good" : "bad");
+      if (r.ok) await this.loadSites();
+    }
+    async addSite() {
+      const slug = el("shipPartnerNewSlug").value.trim().toLowerCase();
+      const line = el("kn-site-trang-thai");
+      if (!/^[a-z][a-z0-9]{1,19}$/.test(slug)) {
+        status(line, "Slug site chỉ gồm chữ thường + số, 2-20 ký tự, bắt đầu bằng chữ cái.", "bad");
+        return;
+      }
+      const r = await this.ctx.gateway.landing("van-don.tai-khoan-site.ghi", { site: slug, label: el("shipPartnerNewLabel").value.trim() });
+      status(line, r.ok ? str(r.than?.message) : r.viSao, r.ok ? "good" : "bad");
+      if (r.ok) {
+        el("shipPartnerNewSlug").value = "";
+        el("shipPartnerNewLabel").value = "";
+        await this.loadSites();
+      }
+    }
+    /** Desk asks `window.confirm`; OMI asks by a second click on the same button. */
+    async removeSite(button) {
+      const slug = str(button.dataset["site"]);
+      if (button.dataset["armed"] !== "1") {
+        button.dataset["armed"] = "1";
+        button.textContent = "Bấm lần nữa để gỡ";
+        return;
+      }
+      const r = await this.ctx.gateway.landing("van-don.tai-khoan-site.ghi", { site: slug, remove: true });
+      status(el("kn-site-trang-thai"), r.ok ? str(r.than?.message) : r.viSao, r.ok ? "good" : "bad");
+      if (r.ok) await this.loadSites();
+    }
+    // ----- extension key -----
+    async loadKey() {
+      const r = await this.ctx.gateway.landing("tien-ich.khoa");
+      const line = el("kn-khoa-trang-thai");
+      if (!r.ok) {
+        status(line, r.viSao, "bad");
+        return;
+      }
+      status(line, r.than?.daCo ? `Đã có khoá (…${str(r.than.duoi)}), tạo lúc ${dayClock(r.than.taoLuc)}. Khoá không hiện lại — mất thì tạo khoá mới.` : "Chưa có khoá tiện ích.", r.than?.daCo === true);
+    }
+    armKeyButton() {
+      const button = el("kn-khoa-tao");
+      confirmTwice(button, "Bấm lần nữa: khoá cũ hết dùng", () => void this.createKey());
+    }
+    async createKey() {
+      const r = await this.ctx.gateway.landing("tien-ich.tao-khoa");
+      const line = el("kn-khoa-trang-thai");
+      if (!r.ok) {
+        status(line, r.viSao, "bad");
+        return;
+      }
+      const box = el("kn-khoa-moi");
+      box.value = str(r.than?.khoa);
+      box.hidden = false;
+      status(line, str(r.than?.message), "good");
+    }
+    // ----- automatic purchase queue -----
+    async loadQueue() {
+      const r = await this.ctx.gateway.landing("mua-ho-tu-dong");
+      const line = el("kn-mua-ho-trang-thai");
+      if (!r.ok) {
+        status(line, r.viSao, "bad");
+        return;
+      }
+      const t = r.than ?? {};
+      status(line, t.enabled ? `Đang bật${t.site ? ` · web ${t.site}` : ""} · ${t.pending ?? 0} chờ · ${t.working ?? 0} đang chạy.` : `Đang tắt${(t.thieu ?? []).length ? ` — thiếu cấu hình: ${(t.thieu ?? []).join(", ")}` : " (mua_ho_bat)"}.`, t.enabled === true);
+      const body = el("kn-mua-ho-bang");
+      clear(body);
+      const tone = (s) => s === "success" ? "green" : s === "pending" || s === "working" ? "blue" : s === "stopped" || s === "blocked" ? "amber" : "red";
+      for (const item of t.recent ?? []) {
+        body.appendChild(h(
+          "tr",
+          null,
+          h("td", null, h("strong", null, item.orderCode), h("div", { class: "subtle" }, dayClock(item.createdAt))),
+          h("td", null, `${item.productCode} · size ${item.size} ×${item.qty}`),
+          h("td", null, money(item.expectedLineTotal)),
+          h("td", null, item.actualTotal ? money(item.actualTotal) : "—"),
+          h("td", null, badge(item.status, tone(item.status)), item.supersportsOrderNumber ? h("div", { class: "subtle" }, item.supersportsOrderNumber) : ""),
+          h("td", null, item.reason || item.error || "—"),
+          h("td", null, ["stopped", "error", "blocked", "expired"].includes(item.status) ? h("button", { class: "secondary-button compact-button", type: "button", "data-action": "requeue-auto-purchase", "data-id": item.id }, "Xếp lại") : "")
+        ));
+      }
+      if ((t.recent ?? []).length === 0) body.appendChild(h("tr", null, h("td", { colspan: "7" }, "Hàng đợi trống.")));
+    }
+    async scanQueue() {
+      const r = await this.ctx.gateway.landing("mua-ho-tu-dong.quet");
+      status(el("kn-mua-ho-trang-thai"), r.ok ? str(r.than?.message) : r.viSao, r.ok ? "good" : "bad");
+      if (r.ok) await this.loadQueue();
+    }
+    async requeue(id) {
+      const r = await this.ctx.gateway.landing("mua-ho-tu-dong.xep-lai", { ids: [id] });
+      status(el("kn-mua-ho-trang-thai"), r.ok ? str(r.than?.message) : r.viSao, r.ok ? "good" : "bad");
+      if (r.ok) await this.loadQueue();
+    }
+  };
+
   // ../omi/packages/omi-ui/src/views/integrations.ts
   var ERASE = "__xoa__";
   var IntegrationsView = class extends View {
@@ -6297,10 +12716,42 @@ ${sentence}`;
     /** Desk's "Thử kết nối" buttons (Đ3): each asks the real service with the SAVED keys; nothing is posted to customers. */
     actions = {
       "refresh-integrations": () => this.loadSettings(),
-      "test-shipping-connection": (b) => this.probe("van-don.thu-ket-noi", { hang: str(b.dataset["carrier"]) }, str(b.dataset["carrier"]) === "vtp" ? "Viettel Post" : "SPX"),
+      "test-shipping-connection": (b) => this.probe(
+        "van-don.thu-ket-noi",
+        { hang: str(b.dataset["carrier"]), ...str(b.dataset["site"]) ? { site: str(b.dataset["site"]) } : {} },
+        `${str(b.dataset["carrier"]) === "vtp" ? "Viettel Post" : "SPX"}${str(b.dataset["site"]) ? ` (${str(b.dataset["site"])})` : ""}`,
+        str(b.dataset["site"]) ? "kn-site-trang-thai" : "ket-noi-thu"
+      ),
+      // Đ10: tài khoản vận chuyển theo site (Desk shippingPartnerAccountsTemplate), khoá tiện ích, hàng đợi mua hộ tự động.
+      "save-shipping-partner-account": (b) => this.tools.saveAccount(str(b.dataset["site"])),
+      "add-shipping-partner-site": () => this.tools.addSite(),
+      "remove-shipping-partner-site": (b) => this.tools.removeSite(b),
+      "load-auto-purchase-queue": () => this.tools.loadQueue(),
+      "scan-auto-purchase-queue": () => this.tools.scanQueue(),
+      "requeue-auto-purchase": (b) => this.tools.requeue(str(b.dataset["id"])),
       "test-telegram-alert": () => this.probe("tien.thu-telegram", {}, "Telegram"),
-      "test-facebook-connection": () => this.probe("hop-thu.thu-facebook", {}, "Facebook")
+      "test-facebook-connection": () => this.probe("hop-thu.thu-facebook", {}, "Facebook"),
+      // Đ6: page qua app Meta trung tâm trên Xeon; nhập token tay; ngắt; bật webhook; nhật ký webhook.
+      "connect-facebook-oauth": async () => {
+        if (await startMetaLogin(this.ctx.gateway, el("kn-fb-trang-thai"))) el("kn-fb-hoan-tat").hidden = false;
+      },
+      "finish-facebook-oauth": async () => {
+        if (await finishMetaLogin(this.ctx.gateway, el("kn-fb-trang-thai"))) {
+          el("kn-fb-hoan-tat").hidden = !hasPendingLogin();
+          await this.loadPages();
+        }
+      },
+      "add-manual-facebook-page": () => this.addManualPage(),
+      "subscribe-facebook-page": (b) => this.subscribePage(str(b.dataset["pageId"])),
+      "disconnect-facebook-pages": (b) => this.disconnectPages(b),
+      "load-facebook-webhook-events": () => this.loadWebhookLog(),
+      // Đ6: cần người trên Telegram.
+      "save-handoff-settings": () => this.saveHandoff(),
+      "set-telegram-webhook": () => this.probe("hop-thu.telegram.dat-webhook", {}, "Webhook Telegram", "kn-tg-trang-thai"),
+      "process-handoff-timeouts": () => this.probe("hop-thu.can-nguoi.quet-qua-han", {}, "Quét quá hạn", "kn-tg-trang-thai")
     };
+    pages = [];
+    tools = new ShopTools(this.ctx);
     build(root) {
       root.append(
         h(
@@ -6332,6 +12783,9 @@ ${sentence}`;
             h("p", { class: "status-line", id: "ket-noi-thu" }, "—")
           )
         ),
+        this.tools.build(),
+        this.facebookPanel(),
+        this.telegramPanel(),
         h(
           "div",
           { class: "runtime-alert", id: "ket-noi-nhac" },
@@ -6339,9 +12793,208 @@ ${sentence}`;
         ),
         h("div", { id: "ket-noi-nhom" })
       );
+      this.tools.armKeyButton();
     }
     load() {
       void this.loadSettings();
+      void this.loadPages();
+      void this.loadHandoff();
+      void this.tools.load();
+    }
+    /** Desk `facebookLoginConnectorTemplate` + `connectedFacebookPageCard`, through the central Meta app. */
+    facebookPanel() {
+      return h(
+        "section",
+        { class: "panel" },
+        h(
+          "div",
+          { class: "facebook-login-card" },
+          h(
+            "div",
+            { class: "facebook-login-main" },
+            h("div", { class: "facebook-brand-mark" }, "f"),
+            h(
+              "div",
+              null,
+              h("div", { class: "connector-eyebrow" }, "Đăng nhập kết nối"),
+              h("h3", null, "Facebook Page Login"),
+              h("p", { class: "subtle" }, "Đăng nhập bằng tài khoản đang quản trị fanpage. Page nối vào app Meta TRUNG TÂM của nhà phát triển (Xeon nhận webhook và chuyển tin về landing này) — shop không phải tạo app riêng; token page chỉ nằm trên landing của shop.")
+            )
+          ),
+          h(
+            "div",
+            { class: "facebook-login-actions" },
+            h("button", { class: "facebook-login-button", type: "button", "data-action": "connect-facebook-oauth" }, h("span", { class: "facebook-button-icon" }, "f"), h("span", null, "Đăng nhập với Facebook")),
+            h("button", { class: "secondary-button", type: "button", id: "kn-fb-hoan-tat", "data-action": "finish-facebook-oauth", hidden: true }, "Hoàn tất kết nối"),
+            h("button", { class: "ghost-button", type: "button", "data-action": "disconnect-facebook-pages" }, "Ngắt kết nối tất cả")
+          ),
+          h("p", { class: "status-line", id: "kn-fb-trang-thai" }, "—"),
+          h("div", { id: "kn-fb-trang" }),
+          h(
+            "details",
+            { class: "manual-token-details" },
+            h("summary", null, "Không dùng được đăng nhập? Nhập Page Token thủ công"),
+            h(
+              "div",
+              { class: "manual-token-grid" },
+              h("div", { class: "field" }, h("label", { for: "manualFacebookPageId" }, "Page ID"), h("input", { id: "manualFacebookPageId" })),
+              h("div", { class: "field" }, h("label", { for: "manualFacebookPageName" }, "Tên page"), h("input", { id: "manualFacebookPageName" })),
+              h("div", { class: "field manual-token-field" }, h("label", { for: "manualFacebookPageToken" }, "Page Access Token"), h("textarea", { id: "manualFacebookPageToken", placeholder: "Dán Page Access Token của fanpage cần thêm" })),
+              h("button", { class: "primary-button", type: "button", "data-action": "add-manual-facebook-page" }, "Lưu fanpage thủ công")
+            )
+          ),
+          h(
+            "details",
+            { class: "manual-token-details" },
+            h("summary", null, "Nhật ký webhook"),
+            h("div", { class: "split-actions" }, h("button", { class: "secondary-button compact-button", type: "button", "data-action": "load-facebook-webhook-events" }, "Tải nhật ký webhook")),
+            h("div", { id: "kn-webhook" })
+          )
+        )
+      );
+    }
+    /** Desk `telegramConfigTemplate` — the handoff part: timeout, webhook, overdue scan. */
+    telegramPanel() {
+      return h(
+        "section",
+        { class: "panel" },
+        h(
+          "div",
+          { class: "panel-header" },
+          h(
+            "div",
+            null,
+            h("h3", null, "Cần người thật trên Telegram"),
+            h("p", null, "Bot chuyển hội thoại cho người là nhóm trực nghe ngay; quá thời gian chờ chưa ai nhận thì nhắc lại. Token bot và chat ID nhóm trực nhập ở nhóm Telegram bên dưới.")
+          )
+        ),
+        h(
+          "div",
+          { class: "panel-body config-form" },
+          h(
+            "div",
+            { class: "grid two" },
+            h("div", { class: "field" }, h("label", { for: "handoffOperatorTimeoutMinutes" }, "Thời gian chờ người thật (phút)"), h("input", { id: "handoffOperatorTimeoutMinutes", type: "number", min: "1", max: "1440" })),
+            h("label", { class: "check" }, h("input", { type: "checkbox", id: "kn-tg-bao" }), " Báo Telegram khi bot chuyển người")
+          ),
+          h(
+            "div",
+            { class: "split-actions" },
+            h("button", { class: "primary-button", type: "button", "data-action": "save-handoff-settings" }, "Lưu"),
+            h("button", { class: "secondary-button", type: "button", "data-action": "set-telegram-webhook" }, "Set webhook"),
+            h("button", { class: "ghost-button", type: "button", "data-action": "process-handoff-timeouts" }, "Xử lý timeout ngay")
+          ),
+          h("p", { class: "subtle" }, "Sau khi Set webhook, trong nhóm trực gõ /tra <mã hội thoại> <câu trả lời> hoặc /xong <mã hội thoại>."),
+          h("p", { class: "status-line", id: "kn-tg-trang-thai" }, "—")
+        )
+      );
+    }
+    async loadPages() {
+      const r = await this.ctx.gateway.landing("hop-thu.trang");
+      if (!r.ok) {
+        status(el("kn-fb-trang-thai"), r.viSao, "bad");
+        return;
+      }
+      this.pages = r.than?.trang ?? [];
+      const box = el("kn-fb-trang");
+      clear(box);
+      for (const p of this.pages) {
+        box.appendChild(h(
+          "div",
+          { class: "connector-card" },
+          h(
+            "div",
+            null,
+            h("div", { class: "product-title" }, p.ten || "Fanpage"),
+            h("div", { class: "subtle" }, `Page ID: ${p.ma}`),
+            h("div", { class: "subtle" }, `Nối lúc ${dayClock(p.capLuc)}${p.coToken ? "" : " · chưa có token"}`)
+          ),
+          h(
+            "div",
+            { class: "policy-card-actions" },
+            h("span", { class: "badge green" }, "Đã liên kết"),
+            h("button", { class: "secondary-button compact-button", type: "button", "data-action": "subscribe-facebook-page", "data-page-id": p.ma }, "Đăng ký app/webhook"),
+            h("button", { class: "ghost-button compact-button", type: "button", "data-action": "disconnect-facebook-pages", "data-page-id": p.ma }, "Ngắt")
+          )
+        ));
+      }
+      if (this.pages.length === 0) box.appendChild(h("p", { class: "subtle" }, "Chưa nối fanpage nào."));
+    }
+    async addManualPage() {
+      const line = el("kn-fb-trang-thai");
+      const r = await this.ctx.gateway.landing("hop-thu.trang.them", {
+        ma: el("manualFacebookPageId").value.trim(),
+        ten: el("manualFacebookPageName").value.trim(),
+        token: el("manualFacebookPageToken").value.trim()
+      });
+      if (!r.ok) {
+        status(line, r.viSao, "bad");
+        return;
+      }
+      el("manualFacebookPageToken").value = "";
+      status(line, r.than?.xeon?.ok === false ? `Đã lưu token trên landing; Xeon chưa nhận: ${str(r.than.xeon.viSao)}` : "Đã lưu fanpage và báo Xeon định tuyến tin về landing này.", r.than?.xeon?.ok !== false);
+      await this.loadPages();
+    }
+    async subscribePage(pageId) {
+      const line = el("kn-fb-trang-thai");
+      const r = await this.ctx.gateway.landing("hop-thu.trang.dang-ky", { ma: pageId });
+      status(line, r.ok ? str(r.than?.message) || "Đã bật webhook." : r.viSao, r.ok ? "good" : "bad");
+    }
+    async disconnectPages(button) {
+      const line = el("kn-fb-trang-thai");
+      const one = str(button.dataset["pageId"]);
+      const ids = one ? [one] : this.pages.map((p) => p.ma);
+      if (ids.length === 0) {
+        status(line, "Chưa nối fanpage nào.", "bad");
+        return;
+      }
+      if (!armed(button, "Bấm lần nữa để ngắt")) return;
+      const r = await this.ctx.gateway.landing("hop-thu.trang.ngat", { ma: ids });
+      if (!r.ok) {
+        status(line, r.viSao, "bad");
+        return;
+      }
+      status(line, `Đã ngắt ${(r.than?.daNgat ?? []).length} page: Xeon thôi chuyển tin, landing xoá token.`, "good");
+      await this.loadPages();
+    }
+    async loadWebhookLog() {
+      const box = el("kn-webhook");
+      clear(box);
+      const r = await this.ctx.gateway.landing("hop-thu.nhat-ky-webhook", { gioiHan: 20 });
+      if (!r.ok) {
+        box.appendChild(h("p", { class: "status-line bad" }, r.viSao));
+        return;
+      }
+      const events = r.than?.suKien ?? [];
+      if (events.length === 0) {
+        box.appendChild(h("p", { class: "subtle" }, "Chưa có webhook event."));
+        return;
+      }
+      box.appendChild(h("div", { class: "qa-list" }, ...events.slice(0, 20).map((e) => h(
+        "div",
+        { class: "knowledge-card" },
+        h(
+          "div",
+          { class: "knowledge-card-header" },
+          h("div", null, h("div", { class: "product-title" }, dayClock(e.nhanLuc)), h("div", { class: "subtle" }, `${e.maSuKien}${e.daXacMinh ? "" : " · chưa xác minh"}`)),
+          h("span", { class: "badge blue" }, e.nguon === "omi" ? "OMI" : e.nguon === "xeon" ? "Meta qua Xeon" : "Meta")
+        ),
+        h("pre", { class: "event-json" }, JSON.stringify(e.goi, null, 2).slice(0, 4e3))
+      ))));
+    }
+    async loadHandoff() {
+      const r = await this.ctx.gateway.landing("hop-thu.cau-hinh.doc");
+      if (!r.ok) return;
+      el("handoffOperatorTimeoutMinutes").value = String(r.than?.cauHinh?.phutQuaHan ?? 15);
+      el("kn-tg-bao").checked = r.than?.cauHinh?.baoTelegram !== false;
+    }
+    async saveHandoff() {
+      const line = el("kn-tg-trang-thai");
+      const r = await this.ctx.gateway.landing("hop-thu.cau-hinh.ghi", {
+        phutQuaHan: Number(el("handoffOperatorTimeoutMinutes").value),
+        baoTelegram: el("kn-tg-bao").checked
+      });
+      status(line, r.ok ? "Đã lưu." : r.viSao, r.ok ? "good" : "bad");
     }
     async loadSettings() {
       const line = el("ket-noi-trang-thai");
@@ -6354,8 +13007,8 @@ ${sentence}`;
       this.draw(r.than?.nhom ?? []);
       status(line, `${this.boxes.size} mục cấu hình. Sửa rồi bấm Lưu cấu hình.`, "good");
     }
-    async probe(job, args, name) {
-      const line = el("ket-noi-thu");
+    async probe(job, args, name, lineId2 = "ket-noi-thu") {
+      const line = el(lineId2);
       status(line, `Đang thử ${name}…`);
       const r = await this.ctx.gateway.landing(job, args);
       if (!r.ok) {
@@ -6449,7 +13102,7 @@ ${sentence}`;
     let timer = null;
     let seq2 = 0;
     const box = h("div", { class: "order-sku-suggestions", id: opts.boxId });
-    const input = h("input", {
+    const input2 = h("input", {
       id: opts.inputId,
       type: "text",
       class: "wide",
@@ -6460,7 +13113,7 @@ ${sentence}`;
       }
     });
     async function run() {
-      const query = input.value.trim();
+      const query = input2.value.trim();
       clear(box);
       if (query.length < MIN_CHARS) return;
       seq2 += 1;
@@ -6497,7 +13150,7 @@ ${sentence}`;
                 onclick: () => {
                   opts.onPick({ ma: item.ma, ten: item.ten, size: s.size, gia: s.gia || item.gia });
                   clear(box);
-                  input.value = "";
+                  input2.value = "";
                 }
               }, `size ${s.size}`))
             )
@@ -6506,7 +13159,7 @@ ${sentence}`;
         ));
       }
     }
-    return h("div", { class: "order-product-search" }, input, box);
+    return h("div", { class: "order-product-search" }, input2, box);
   }
 
   // ../omi/packages/omi-ui/src/views/orders/order-editor.ts
@@ -6666,8 +13319,8 @@ ${sentence}`;
           h("div", { class: "field" }, h("label", { for: "manageOrderAddressDetail" }, "Địa chỉ chi tiết"), h("input", { id: "manageOrderAddressDetail", placeholder: "Số nhà, tên đường" })),
           addressFields({
             prefix: "oe",
-            search: (input) => this.gateway.landing("dia-chi.tim", { ...input }),
-            checkSplit: (input) => this.gateway.landing("dia-chi.doi-hai-cap", { ...input })
+            search: (input2) => this.gateway.landing("dia-chi.tim", { ...input2 }),
+            checkSplit: (input2) => this.gateway.landing("dia-chi.doi-hai-cap", { ...input2 })
           }),
           h("button", { class: "secondary-button", type: "button", "data-action": "open-order-customer-create" }, "Tạo khách hàng mới")
         )
@@ -6864,7 +13517,7 @@ ${sentence}`;
       const body = h("tbody");
       for (const l of this.cart) {
         const locked = l.daMua > 0;
-        const input = (field) => h("input", { value: String(l[field]), inputmode: "numeric", class: "short", "data-order-item-id": l.key, "data-order-item-field": field });
+        const input2 = (field) => h("input", { value: String(l[field]), inputmode: "numeric", class: "short", "data-order-item-id": l.key, "data-order-item-field": field });
         body.appendChild(h(
           "tr",
           { "data-order-item-row": l.key, class: locked ? "order-cart-row-locked" : "" },
@@ -6874,10 +13527,10 @@ ${sentence}`;
             h("span", { class: "product-thumb placeholder" }, l.ma.slice(0, 6) || "SP"),
             h("div", null, h("strong", null, l.ten || l.ma), h("div", { class: "subtle" }, `${l.ma}${l.size ? ` · size ${l.size}` : ""}${locked ? ` · đã mua ${l.daMua}` : ""}`))
           )),
-          h("td", null, input("soLuong")),
-          h("td", null, input("donGia")),
+          h("td", null, input2("soLuong")),
+          h("td", null, input2("donGia")),
           h("td", null, h("select", { "data-order-item-id": l.key, "data-order-item-field": "loaiChietKhau" }, ...options([["money", "Theo số tiền"], ["percent", "Theo phần trăm (%)"]], l.loaiChietKhau))),
-          h("td", null, input("chietKhau")),
+          h("td", null, input2("chietKhau")),
           h("td", null, h("strong", { "data-order-item-total": l.key }, money(totals.lineTotal(l)))),
           h("td", null, locked ? h("button", { class: "ghost-button compact-button", type: "button", disabled: true, title: `Đã mua ${l.daMua}, không thể xóa.` }, "Đã mua") : h("button", { class: "ghost-button compact-button danger", type: "button", "data-action": "remove-order-cart-item", "data-order-item-id": l.key }, "Xóa"))
         ));
@@ -7231,11 +13884,11 @@ ${sentence}`;
     { ma: "workflow_attention", ten: "Cần xử lý" },
     { ma: "cancelled", ten: "Đã hủy" }
   ];
-  function drawTabs(bar, counts, active) {
-    while (bar.firstChild) bar.removeChild(bar.firstChild);
+  function drawTabs(bar2, counts, active) {
+    while (bar2.firstChild) bar2.removeChild(bar2.firstChild);
     const tabs = counts.nhom?.length ? counts.nhom : WORKFLOW_TABS;
     for (const tab of tabs) {
-      bar.appendChild(h("button", {
+      bar2.appendChild(h("button", {
         class: `landing-order-status-tab${tab.ma === active ? " is-active" : ""}`,
         type: "button",
         "data-action": "chon-nhom",
@@ -7287,6 +13940,8 @@ ${sentence}`;
             if (e.key === "Enter") void this.loadOrders();
           } }),
           h("select", { id: "don-loc-trang-thai", onchange: () => void this.loadOrders() }, ...EXTRA_FILTERS.map(([v, t]) => h("option", { value: v }, t))),
+          // Đ10 site sinh đôi (Desk landingOrderSite): mọi site / site chính / site thứ hai trong cấu hình shop.
+          h("select", { id: "don-loc-site", onchange: () => void Promise.all([this.loadOrders(), this.loadCounts()]) }, h("option", { value: "" }, "Mọi site"), h("option", { value: "chinh" }, "Site chính")),
           h("button", { class: "secondary-button", id: "nut-don-tai", type: "button", onclick: () => void this.loadOrders() }, "Tải danh sách đơn"),
           h("button", { class: "secondary-button", id: "nut-don-thung-rac", type: "button", onclick: () => this.toggleBin() }, "Thùng rác"),
           h("button", { class: "primary-button", id: "nut-don-moi", type: "button", onclick: () => this.openCreate({}) }, "+ Đơn thủ công"),
@@ -7417,6 +14072,7 @@ ${sentence}`;
       });
     }
     load() {
+      void this.loadSites();
       void this.loadCounts();
       void this.loadPartners().then(() => this.loadOrders());
     }
@@ -7733,6 +14389,7 @@ ${sentence}`;
         dienThoai: el("don-loc-dien-thoai").value.trim(),
         tuKhoa: el("don-tim").value.trim(),
         gioiHan: 100,
+        ...el("don-loc-site").value ? { site: el("don-loc-site").value } : {},
         // Trong thùng rác thì không lọc theo tab. Ô lọc trạng thái thắng tab khi được chọn.
         ...this.bin ? { daXoa: "chi" } : { nhom: extra || this.tab }
       });
@@ -7758,6 +14415,7 @@ ${sentence}`;
           "div",
           null,
           d.khach,
+          d.site ? h("div", null, badge(d.site, "violet")) : null,
           // Đơn chưa gắn hồ sơ khách: "Chờ duyệt khách" + hai nút (Desk).
           !d.daXoa && (d.maKhach ?? "") === "" ? h(
             "div",
@@ -7783,8 +14441,18 @@ ${sentence}`;
       deleted.textContent = `${this.counts.soDaXoa ?? 0} đã xoá`;
       status(line, this.bin ? `${rows.length} đơn trong thùng rác.` : `${rows.length} đơn.`, "good");
     }
+    /** Đ10: the twin site (shop setting `site_doi_ma`) joins the site filter. */
+    async loadSites() {
+      const r = await this.ctx.gateway.landing("cau-hinh.doc");
+      const fields = (r.than?.nhom ?? []).flatMap((g) => g.muc ?? []);
+      const twin = str(fields.find((x) => x.khoa === "site_doi_ma")?.giaTri);
+      const select = el("don-loc-site");
+      if (!twin || [...select.options].some((o) => o.value === twin)) return;
+      select.appendChild(h("option", { value: twin }, str(fields.find((x) => x.khoa === "site_doi_ten")?.giaTri) || twin));
+    }
     async loadCounts() {
-      const r = await this.ctx.gateway.landing("don.dem-nhom");
+      const site = el("don-loc-site").value;
+      const r = await this.ctx.gateway.landing("don.dem-nhom", site ? { site } : {});
       if (!r.ok) return;
       this.counts = r.than ?? {};
       drawTabs(el("don-nhom"), this.counts, this.tab);
@@ -8646,7 +15314,7 @@ Mã tra cứu: ${r.than?.maBiMat ?? ""}`;
       }
       if (rows.length === 0) body.appendChild(h("tr", null, h("td", { colspan: "7", class: "subtle" }, "Chưa có sản phẩm cần mua.")));
       const head = h("thead", null, h("tr", null, ...["Mã / size", "Tên sản phẩm", "Cần", "Đã mua", "Còn thiếu", "Đơn ưu tiên", ""].map((t) => h("th", null, t))));
-      const input = (id, label, attrs = {}) => h("div", { class: "field" }, h("label", { for: id }, label), h("input", { id, ...attrs }));
+      const input2 = (id, label, attrs = {}) => h("div", { class: "field" }, h("label", { for: id }, label), h("input", { id, ...attrs }));
       const form = h(
         "div",
         { class: "config-form omi-section-gap" },
@@ -8654,11 +15322,11 @@ Mã tra cứu: ${r.than?.maBiMat ?? ""}`;
           "div",
           { class: "grid three" },
           h("div", { class: "field" }, h("label", null, "Đối tác xác nhận"), h("div", { class: "copy-box" }, p.ten || p.ma)),
-          input("dtPurchaseProductCode", "Mã sản phẩm"),
-          input("dtPurchaseSize", "Size"),
-          input("dtPurchaseQty", "Số lượng thực tế mua được", { value: "1", inputmode: "numeric" }),
-          input("dtPurchaseCost", "Giá mua thực tế / sản phẩm", { inputmode: "numeric" }),
-          input("dtPurchaseNote", "Ghi chú"),
+          input2("dtPurchaseProductCode", "Mã sản phẩm"),
+          input2("dtPurchaseSize", "Size"),
+          input2("dtPurchaseQty", "Số lượng thực tế mua được", { value: "1", inputmode: "numeric" }),
+          input2("dtPurchaseCost", "Giá mua thực tế / sản phẩm", { inputmode: "numeric" }),
+          input2("dtPurchaseNote", "Ghi chú"),
           h("div", { class: "field" }, h("label", null, " "), h("button", { class: "primary-button", type: "button", "data-action": "confirm-partner-purchase" }, "Xác nhận phiên mua"))
         ),
         h("span", { class: "status-line", id: "dtPurchaseStatus" })
@@ -9157,6 +15825,7 @@ Quy tắc điền:
         return h("div", { class: "field" }, h("label", { for: id }, label), node);
       };
       this.lineName = h("input", { id: "webProductLineName", placeholder: "VD: Nike Rival Fly 4" });
+      this.lineTemplate = h("input", { id: "webUseAsLineTemplate", type: "checkbox" });
       this.overrideMode = h("select", { id: "webOverrideMode" }, h("option", { value: "append" }, "Bổ sung vào mô tả dòng"), h("option", { value: "replace" }, "Thay thế mô tả dòng"));
       this.statusLine = h("span", { class: "status-line", id: "hs-web-trang-thai" });
       const aiBlock = h(
@@ -9259,6 +15928,8 @@ Quy tắc điền:
           h("div", { class: "field" }, h("label", { for: "webProductLineName" }, "Tên dòng sản phẩm"), this.lineName),
           area("webLineKeywords", "Từ khóa nhận diện cùng dòng", 2, "Mỗi dòng một từ khóa")
         ),
+        h("label", { class: "check-row" }, this.lineTemplate, " Dùng sản phẩm này làm mẫu cho dòng"),
+        h("p", { class: "subtle" }, "Bật để lưu mô tả chung thành mẫu của cả dòng: các mã cùng dòng tự nhận hồ sơ, và hồ sơ mẫu được gửi lên kho kiến thức trên Xeon (màn Sản phẩm mẫu)."),
         this.statusLine,
         aiBlock,
         seoBlock,
@@ -9269,6 +15940,8 @@ Quy tắc điền:
     root;
     areas = /* @__PURE__ */ new Map();
     lineName;
+    /** Đ9 (left from Đ5): Desk `webUseAsLineTemplate` — this product's line fields become the shared line + Xeon profile. */
+    lineTemplate;
     overrideMode;
     statusLine;
     area(id) {
@@ -9284,6 +15957,7 @@ Quy tắc điền:
       const own = c["rieng"] ?? {};
       for (const node of this.areas.values()) node.value = "";
       this.lineName.value = text(c["dongSanPham"]);
+      this.lineTemplate.checked = false;
       this.area("webLineKeywords").value = lines(c["tuKhoaDong"]);
       this.area("webLineIntro").value = text(c["gioiThieu"]);
       this.area("webLineFeatures").value = lines(c["tinhNang"]);
@@ -9329,6 +16003,22 @@ Quy tắc điền:
           ghiChuSize: this.area("webOverrideSizeNote").value.trim()
         },
         ...baiSeo === null ? {} : { baiSeo }
+      };
+    }
+    /** The line-template body for `tu-van-size.dong.tu-san-pham`, or null when the box is not ticked. */
+    lineTemplateBody(code) {
+      if (!this.lineTemplate.checked) return null;
+      return {
+        ma: code,
+        tenDong: this.lineName.value.trim(),
+        tuKhoa: this.area("webLineKeywords").value,
+        gioiThieu: this.area("webLineIntro").value.trim(),
+        tinhNang: this.area("webLineFeatures").value,
+        congNghe: this.area("webLineTechnologies").value,
+        phuHop: this.area("webLineBestFor").value,
+        khongHop: this.area("webLineNotFor").value,
+        huongDanFit: this.area("webLineFitGuide").value.trim(),
+        ghiChuSize: this.area("webLineSizeNote").value.trim()
       };
     }
     say(message, tone = "") {
@@ -9453,7 +16143,7 @@ Quy tắc điền:
       const basics = h(
         "div",
         { class: "grid two" },
-        this.input("hs-ma", "Mã sản phẩm", "KJ6158"),
+        h("div", { class: "field" }, h("label", { for: "hs-ma" }, "Mã sản phẩm"), h("input", { id: "hs-ma", placeholder: "KJ6158", oninput: () => this.drawReview(), onblur: () => void this.lookupLibrary() })),
         this.input("hs-ten", "Tên sản phẩm", "Giày chạy Nike Pegasus 40"),
         this.input("hs-hang", "Tên hãng", "adidas, Nike..."),
         kindBox,
@@ -9639,6 +16329,45 @@ Quy tắc điền:
         price: digits(value("hs-gia-sale"))
       };
     }
+    async lookupLibrary() {
+      if (this.loaded) return;
+      const code = el("hs-ma").value.trim();
+      if (!code) return;
+      const line = el("hang-sua-trang-thai");
+      status(line, "Đang tra thư viện sản phẩm…");
+      const r = await this.host.gateway.landing("hang.thu-vien.tra-ma", { ma: code });
+      if (!r.ok) {
+        status(line, `${r.viSao} Có thể tiếp tục nhập thủ công.`, "bad");
+        return;
+      }
+      const product = r.than?.product;
+      const template = r.than?.template?.defaults ?? {};
+      if (!product) {
+        status(line, "Mã chưa có trong thư viện; có thể tiếp tục nhập thủ công.");
+        return;
+      }
+      const fill = (id, value) => {
+        const input2 = el(id);
+        if (!input2.value.trim() && String(value ?? "").trim()) input2.value = String(value);
+      };
+      const seo = product["seo"] ?? {};
+      fill("hs-ten", product["name"]);
+      fill("hs-hang", product["brand"]);
+      fill("hs-mon", product["category"]);
+      fill("hs-gioi-tinh", product["gender"] || template["gender"]);
+      fill("hs-mo-ta", product["description"] || template["description"]);
+      fill("hs-gioi-thieu", product["description"] || template["description"]);
+      fill("hs-seo-tieu-de", seo["title"]);
+      fill("hs-seo-mo-ta", seo["description"]);
+      fill("hs-seo-tu-khoa", Array.isArray(seo["keywords"]) ? seo["keywords"].join(", ") : "");
+      const media = Array.isArray(product["media"]) ? product["media"] : [];
+      if (this.images.length === 0) {
+        this.images = media.map((m) => String(m["storageUrl"] ?? "")).filter(Boolean).map((url) => ({ id: nextId("anh"), url, pending: false }));
+        this.drawGallery();
+      }
+      this.drawReview();
+      status(line, `Đã tự điền từ thư viện · ${String(product["status"] ?? "needs_review")}.`, "good");
+    }
     // ---------------------------------------------------------------- variants
     variantsFromText() {
       const sale = digits(el("hs-gia-sale").value);
@@ -9760,9 +16489,9 @@ Quy tắc điền:
       status(line, "Ảnh mới sẽ tải lên landing khi bấm Lưu.", "good");
     }
     async addFiles(event) {
-      const input = event.target;
-      const files = [...input.files ?? []];
-      input.value = "";
+      const input2 = event.target;
+      const files = [...input2.files ?? []];
+      input2.value = "";
       await this.readFiles(files);
     }
     async paste(event) {
@@ -9869,14 +16598,14 @@ Quy tắc điền:
         this.drawVariants();
       },
       "add-catalog-gallery-link": () => {
-        const input = el("catalogGalleryLink");
-        const url = input.value.trim();
+        const input2 = el("catalogGalleryLink");
+        const url = input2.value.trim();
         if (!/^https?:\/\//i.test(url)) {
           status(el("hang-sua-trang-thai"), "Cần nhập link ảnh hợp lệ.", "bad");
           return;
         }
         this.images.push({ id: nextId("anh"), url, pending: false });
-        input.value = "";
+        input2.value = "";
         this.drawGallery();
       },
       "move-landing-image": (b) => {
@@ -10003,6 +16732,18 @@ Quy tắc điền:
       });
       if (!r.ok) {
         this.web.say(r.viSao, "bad");
+        return;
+      }
+      const template = this.web.lineTemplateBody(code);
+      if (template !== null) {
+        if (String(template["tenDong"]) === "") {
+          this.web.say(`Đã lưu nội dung web của ${code}. Muốn làm mẫu cho dòng thì cần tên dòng sản phẩm.`, "bad");
+          return;
+        }
+        const t = await this.host.gateway.landing("tu-van-size.dong.tu-san-pham", template);
+        this.web.say(t.ok ? `Đã lưu nội dung web của ${code}. ${t.than?.message ?? ""}` : `Đã lưu nội dung web của ${code}, nhưng chưa lưu được mẫu dòng: ${t.viSao}`, t.ok ? "good" : "bad");
+        this.drawReview();
+        await this.host.changed(code);
         return;
       }
       this.web.say(`Đã lưu nội dung web của ${code}.`, "good");
@@ -10296,7 +17037,7 @@ Quy tắc điền:
       "void-partner-fee-payment": (b) => this.voidPayment(str(b.dataset["paymentId"]))
     };
     build(root) {
-      const input = (id, label, attrs = {}) => h("div", { class: "field" }, h("label", { for: id }, label), h("input", { id, ...attrs }));
+      const input2 = (id, label, attrs = {}) => h("div", { class: "field" }, h("label", { for: id }, label), h("input", { id, ...attrs }));
       const purchase = h(
         "div",
         { id: "mh-tab-purchase" },
@@ -10314,11 +17055,11 @@ Quy tắc điền:
             "div",
             { class: "grid three" },
             h("div", { class: "field" }, h("label", { for: "purchasePartnerId" }, "Đối tác xác nhận"), h("select", { id: "purchasePartnerId" }, h("option", { value: "" }, "Chọn đối tác"))),
-            input("purchaseProductCode", "Mã sản phẩm"),
-            input("purchaseSize", "Size"),
-            input("purchaseQty", "Số lượng thực tế mua được", { value: "1", inputmode: "numeric" }),
-            input("purchaseActualCostPrice", "Giá mua thực tế / sản phẩm", { inputmode: "numeric" }),
-            input("purchaseNote", "Ghi chú"),
+            input2("purchaseProductCode", "Mã sản phẩm"),
+            input2("purchaseSize", "Size"),
+            input2("purchaseQty", "Số lượng thực tế mua được", { value: "1", inputmode: "numeric" }),
+            input2("purchaseActualCostPrice", "Giá mua thực tế / sản phẩm", { inputmode: "numeric" }),
+            input2("purchaseNote", "Ghi chú"),
             h("div", { class: "field" }, h("label", null, " "), h("button", { class: "primary-button", type: "button", id: "nut-mh-xac-nhan", "data-action": "confirm-partner-purchase" }, "Xác nhận phiên mua"))
           ),
           h("span", { class: "status-line", id: "mh-form-trang-thai" })
@@ -10954,7 +17695,7 @@ Quy tắc điền:
         });
         return node;
       };
-      const input = (fieldName, placeholder, cls = "") => bind(h("input", { value: now[fieldName], placeholder, "aria-label": placeholder, ...cls ? { class: cls } : {}, ...NUMERIC.includes(fieldName) ? { inputmode: "numeric" } : {} }), fieldName);
+      const input2 = (fieldName, placeholder, cls = "") => bind(h("input", { value: now[fieldName], placeholder, "aria-label": placeholder, ...cls ? { class: cls } : {}, ...NUMERIC.includes(fieldName) ? { inputmode: "numeric" } : {} }), fieldName);
       const issues = issuesOf(item);
       const sizes = (item.size ?? []).filter((s) => Number(s.ton) > 0);
       const list = Number(item.giaNiemYet || 0);
@@ -10971,7 +17712,7 @@ Quy tắc điền:
         { class: "landing-web-card-more" },
         h("summary", null, `Thông tin khác${issues.length ? ` · ${issues.length} cảnh báo` : ""}`),
         issues.length ? h("div", { class: "landing-issue-list" }, ...issues.map((i) => h("span", { class: `badge ${i.color}` }, i.label))) : null,
-        h("div", { class: "grid two" }, input("brand", "Hãng"), input("gender", "Giới tính")),
+        h("div", { class: "grid two" }, input2("brand", "Hãng"), input2("gender", "Giới tính")),
         h("div", { class: "grid two" }, statusSelect, h("span", { class: "subtle" }, item.nguon || "TopRun")),
         h(
           "div",
@@ -10998,10 +17739,10 @@ Quy tắc điền:
           { class: "landing-web-card-body" },
           h("strong", { class: "landing-web-card-name" }, [item.hang, item.ten, item.ma].filter(Boolean).join(" ")),
           h("div", { class: "landing-web-card-code" }, item.ma),
-          input("name", "Tên sản phẩm", "landing-web-name-input"),
-          h("div", { class: "landing-web-price-row" }, input("listPrice", "Niêm yết", "landing-web-list-price"), input("salePrice", "Giá sale", "landing-web-sale-price")),
+          input2("name", "Tên sản phẩm", "landing-web-name-input"),
+          h("div", { class: "landing-web-price-row" }, input2("listPrice", "Niêm yết", "landing-web-list-price"), input2("salePrice", "Giá sale", "landing-web-sale-price")),
           h("div", { class: `landing-price-status${mode === "source_higher_than_manual" ? " warning" : item.giaTay ? " manual" : ""}` }, priceStatusText(mode, Number(item.giaTay ?? 0))),
-          h("div", { class: "landing-web-fast-fields" }, bind(kindSelect(now.productKind, { "aria-label": "Phân loại" }), "productKind"), input("category", "Môn thể thao")),
+          h("div", { class: "landing-web-fast-fields" }, bind(kindSelect(now.productKind, { "aria-label": "Phân loại" }), "productKind"), input2("category", "Môn thể thao")),
           more
         )
       );
@@ -11076,6 +17817,25 @@ Quy tắc điền:
     title = "Cấu hình";
     workspace = "common";
     glyph = "⚙";
+    prices = null;
+    pricesEditable = false;
+    ops = null;
+    actions = {
+      "disable-partner-ai": () => this.saveOps({ tatHangDoiTac: !(this.ops?.tatHangDoiTac === true) }),
+      "force-human": () => this.saveOps({ epNguoi: !(this.ops?.epNguoi === true) }),
+      "save-ai-reply-settings": () => this.saveOps({ cheDoTraLoi: el("cd-ai-che-do").value, nguoiTruc: el("cd-ai-nguoi-truc").checked, tuPhanTich: el("cd-ai-tu-soan").checked }),
+      "tokenai-price-add": () => {
+        this.readPrices();
+        this.prices?.models.push({ key: "", input: "", output: "", cacheRead: "", from: "", until: "" });
+        this.paintPrices();
+      },
+      "tokenai-price-remove": (b) => {
+        this.readPrices();
+        this.prices?.models.splice(Number(b.dataset["index"]), 1);
+        this.paintPrices();
+      },
+      "tokenai-price-save": () => this.savePrices()
+    };
     build(root) {
       root.append(
         h(
@@ -11134,9 +17894,145 @@ Quy tắc điền:
               )
             )
           )
+        ),
+        h(
+          "div",
+          { class: "config-grid omi-section-gap" },
+          h(
+            "section",
+            { class: "panel" },
+            h("div", { class: "panel-header" }, h("div", null, h("h3", null, "AI trả lời khách"), h("p", null, "AI chạy trên Xeon; khoá AI không nằm trên máy này. Chế độ riêng từng hội thoại / trang đặt ở màn Fanpage và Zalo."))),
+            h(
+              "div",
+              { class: "panel-body config-form" },
+              h(
+                "div",
+                { class: "field" },
+                h("label", { for: "cd-ai-che-do" }, "Mặc định cho hội thoại chưa đặt riêng"),
+                h("select", { id: "cd-ai-che-do" }, h("option", { value: "auto" }, "Bot tự trả lời (qua kiểm tra)"), h("option", { value: "suggest" }, "AI chỉ soạn nháp, người gửi"), h("option", { value: "off" }, "Tắt bot"))
+              ),
+              h("label", { class: "check" }, h("input", { type: "checkbox", id: "cd-ai-nguoi-truc" }), " Người trực ưu tiên (AI chỉ gợi ý)"),
+              h("label", { class: "check" }, h("input", { type: "checkbox", id: "cd-ai-tu-soan" }), " Tin khách mới ở hội thoại chế độ gợi ý: AI soạn nháp sẵn"),
+              h("div", { class: "split-actions" }, h("button", { class: "primary-button", type: "button", "data-action": "save-ai-reply-settings" }, "Lưu chế độ AI"), h("span", { class: "status-line", id: "cd-ai-trang-thai" }))
+            )
+          ),
+          h(
+            "section",
+            { class: "panel" },
+            h("div", { class: "panel-header" }, h("div", null, h("h3", null, "Manual Override"), h("p", null, "Dùng khi đối tác lỗi tồn, sản phẩm không muốn bán, hoặc cần ép người thật xử lý."))),
+            h(
+              "div",
+              { class: "panel-body config-form" },
+              h("p", { class: "subtle", id: "cd-ai-override" }, "—"),
+              h(
+                "div",
+                { class: "split-actions" },
+                h("button", { class: "danger-button", type: "button", id: "cd-ai-doi-tac", "data-action": "disable-partner-ai" }, "Tạm dừng hàng đối tác"),
+                h("button", { class: "ghost-button", type: "button", id: "cd-ai-ep-nguoi", "data-action": "force-human" }, "Ép takeover toàn bộ ca rủi ro")
+              )
+            )
+          ),
+          h(
+            "section",
+            { class: "panel tokenai-pricing" },
+            h("div", { class: "panel-header" }, h("div", null, h("h3", null, "Bảng giá AI"), h("p", { id: "cd-gia-mo-ta" }, "Dùng để đổi token ra tiền ước tính (VND) trên màn Token AI. Bảng giữ MỘT chỗ trên Xeon cho mọi shop; mỗi lượt gọi lưu đơn giá lúc gọi."))),
+            h("div", { class: "panel-body config-form", id: "cd-gia-than" }, h("p", { class: "subtle" }, "Đang tải bảng giá AI…"))
+          )
         )
       );
       confirmTwice(el("nut-cd-roi"), "Bấm lần nữa để rời key", () => void this.leave());
+    }
+    load() {
+      void this.loadAi();
+    }
+    async loadAi() {
+      const [ops, prices] = await Promise.all([
+        this.ctx.gateway.landing("ai.van-hanh"),
+        this.ctx.gateway.landing("ai.bang-gia")
+      ]);
+      if (ops.ok && ops.than?.vanHanh) {
+        this.ops = ops.than.vanHanh;
+        this.paintOps();
+      } else status(el("cd-ai-trang-thai"), ops.viSao, "bad");
+      if (prices.ok && prices.than?.pricing) {
+        const text2 = (v) => v === void 0 || v === null ? "" : String(v);
+        this.prices = { rateVndPerUsd: text2(prices.than.pricing.rateVndPerUsd), models: prices.than.pricing.models.map((m) => ({ key: text2(m["key"]), input: text2(m["input"]), output: text2(m["output"]), cacheRead: text2(m["cacheRead"]), from: text2(m["from"]), until: text2(m["until"]) })) };
+        this.pricesEditable = prices.than.duocSua === true;
+        this.paintPrices();
+      } else {
+        const body = el("cd-gia-than");
+        clear(body);
+        body.appendChild(h("p", { class: "subtle" }, prices.viSao || "Không tải được bảng giá AI."));
+      }
+    }
+    paintOps() {
+      const o = this.ops;
+      if (o === null) return;
+      el("cd-ai-che-do").value = o.cheDoTraLoi;
+      el("cd-ai-nguoi-truc").checked = o.nguoiTruc;
+      el("cd-ai-tu-soan").checked = o.tuPhanTich;
+      el("cd-ai-override").textContent = `Hàng đối tác: ${o.tatHangDoiTac ? "ĐANG TẠM DỪNG (AI chỉ tư vấn hàng có sẵn)" : "bình thường"} · Ép người thật: ${o.epNguoi ? "ĐANG BẬT (bot không tự gửi ở đâu cả)" : "tắt"}.`;
+      el("cd-ai-doi-tac").textContent = o.tatHangDoiTac ? "Mở lại hàng đối tác" : "Tạm dừng hàng đối tác";
+      el("cd-ai-ep-nguoi").textContent = o.epNguoi ? "Thôi ép takeover" : "Ép takeover toàn bộ ca rủi ro";
+    }
+    async saveOps(body) {
+      const r = await this.ctx.gateway.landing("ai.van-hanh.ghi", body);
+      status(el("cd-ai-trang-thai"), r.ok ? "Đã lưu cấu hình AI." : r.viSao, r.ok ? "good" : "bad");
+      if (r.ok && r.than?.vanHanh) {
+        this.ops = r.than.vanHanh;
+        this.paintOps();
+      }
+    }
+    readPrices() {
+      if (this.prices === null || !this.pricesEditable) return;
+      const value = (id) => document.getElementById(id)?.value ?? "";
+      this.prices.rateVndPerUsd = value("tokenai-rate");
+      this.prices.models = this.prices.models.map((_row, i) => ({ key: value(`tokenai-price-${i}-key`), input: value(`tokenai-price-${i}-input`), output: value(`tokenai-price-${i}-output`), cacheRead: value(`tokenai-price-${i}-cacheRead`), from: value(`tokenai-price-${i}-from`), until: value(`tokenai-price-${i}-until`) }));
+    }
+    paintPrices() {
+      const body = el("cd-gia-than");
+      clear(body);
+      const p = this.prices;
+      if (p === null) return;
+      const edit = this.pricesEditable;
+      const fields = [["key", "text", "ag/gemini-3.7-flash-low"], ["input", "number", "0.75"], ["output", "number", "3.75"], ["cacheRead", "number", ""], ["from", "date", ""], ["until", "date", ""]];
+      body.append(
+        h("div", { class: "field" }, h("label", { for: "tokenai-rate" }, "Tỉ giá (đồng / 1 USD)"), h("input", { id: "tokenai-rate", type: "number", min: "1000", step: "10", value: p.rateVndPerUsd, disabled: !edit })),
+        h(
+          "div",
+          { class: "table-wrap" },
+          h(
+            "table",
+            { class: "tokenai-table tokenai-pricing-table" },
+            h("thead", null, h("tr", null, ...["Model", "Vào $/1M", "Ra $/1M", "Đọc cache $/1M", "Áp dụng từ", "Đến hết", ""].map((c) => h("th", null, c)))),
+            h("tbody", { id: "cd-gia-bang" }, ...p.models.map((row, i) => h(
+              "tr",
+              null,
+              ...fields.map(([field, type, placeholder]) => h("td", null, h("input", { id: `tokenai-price-${i}-${field}`, type, ...type === "number" ? { min: "0", step: "0.001" } : {}, placeholder, value: row[field], disabled: !edit }))),
+              h("td", null, edit ? h("button", { class: "ghost-button", type: "button", "data-action": "tokenai-price-remove", "data-index": String(i) }, "Xoá") : "")
+            )))
+          )
+        ),
+        edit ? h(
+          "div",
+          { class: "split-actions" },
+          h("button", { class: "secondary-button", type: "button", "data-action": "tokenai-price-add" }, "Thêm dòng"),
+          h("button", { class: "primary-button", type: "button", "data-action": "tokenai-price-save" }, "Lưu bảng giá AI"),
+          h("span", { class: "status-line", id: "cd-gia-trang-thai" })
+        ) : h("p", { class: "subtle", id: "cd-gia-trang-thai" }, "Bảng giá dùng chung mọi shop, do nơi cấp phần mềm sửa trên Xeon — máy này chỉ xem.")
+      );
+    }
+    async savePrices() {
+      this.readPrices();
+      const p = this.prices;
+      if (p === null) return;
+      const r = await this.ctx.gateway.landing("ai.bang-gia.ghi", { rateVndPerUsd: Number(p.rateVndPerUsd) || 0, models: p.models });
+      if (!r.ok) {
+        status(el("cd-gia-trang-thai"), r.viSao, "bad");
+        return;
+      }
+      await this.loadAi();
+      status(el("cd-gia-trang-thai"), "Đã lưu bảng giá AI. Các lượt gọi AI từ giờ tính theo giá mới.", "good");
     }
     licenseChanged(license2) {
       if (license2 === null) return;
@@ -11746,7 +18642,9 @@ Quy tắc điền:
     glyph = "ND";
     contentLoaded = false;
     actions = {
-      "save-landing-content": () => this.save()
+      "save-landing-content": () => this.save(),
+      "save-landing-email-config": () => this.saveSmtp(),
+      "test-landing-email-config": () => this.testSmtp()
     };
     build(root) {
       const form = h("div", { class: "panel-body config-form" });
@@ -11773,18 +18671,95 @@ Quy tắc điền:
             )
           ),
           h("span", { class: "status-line", id: "noi-dung-trang-thai" }, "Đang tải…"),
-          form
+          form,
+          this.smtpBlock()
         )
       );
+    }
+    /** Desk `landingContentTemplate` "Cài đặt SMTP landing" + a test button Desk did not have. */
+    smtpBlock() {
+      const input2 = (id, label, attrs = {}) => h("div", { class: "field" }, h("label", { for: id }, label), h("input", { id, ...attrs }));
+      return h(
+        "div",
+        { class: "panel-body config-form" },
+        h("div", { class: "section-title-row compact" }, h("h4", null, "Cài đặt SMTP landing")),
+        h("div", { class: "grid two" }, input2("landingEmailSmtpHost", "SMTP host"), input2("landingEmailSmtpPort", "SMTP port", { value: "587" })),
+        h("div", { class: "grid two" }, input2("landingEmailSmtpUser", "SMTP user"), input2("landingEmailSmtpPass", "SMTP pass", { type: "password", autocomplete: "off", placeholder: "Để trống nếu không đổi" })),
+        h("div", { class: "grid two" }, input2("landingEmailSmtpFrom", "Email gửi đi"), h("label", { class: "check-row" }, h("input", { id: "landingEmailSmtpSecure", type: "checkbox" }), " SMTP secure SSL/TLS")),
+        h(
+          "div",
+          { class: "split-actions" },
+          h("button", { class: "secondary-button", type: "button", "data-action": "save-landing-email-config" }, "Lưu cấu hình SMTP online"),
+          h("input", { id: "landingEmailTestTo", placeholder: "Email nhận thư thử" }),
+          h("button", { class: "ghost-button", type: "button", "data-action": "test-landing-email-config" }, "Gửi thư thử")
+        ),
+        h("span", { class: "status-line", id: "noi-dung-smtp-trang-thai" }),
+        h("p", { class: "subtle" }, "Mật khẩu SMTP chỉ gửi lên landing và không hiển thị lại trên OMI. Lưu ở đây thì landing dùng SMTP của shop thay cho SMTP_* trong .env.")
+      );
+    }
+    async loadSmtp() {
+      const r = await this.ctx.gateway.landing("cau-hinh.doc");
+      if (!r.ok) {
+        status(el("noi-dung-smtp-trang-thai"), r.viSao, "bad");
+        return;
+      }
+      const items = r.than?.nhom?.find((g) => g.ma === "email")?.muc ?? [];
+      const value = (key) => items.find((m) => m.khoa === key);
+      el("landingEmailSmtpHost").value = value("smtp_host")?.giaTri ?? "";
+      el("landingEmailSmtpPort").value = value("smtp_port")?.giaTri || "587";
+      el("landingEmailSmtpUser").value = value("smtp_user")?.giaTri ?? "";
+      el("landingEmailSmtpFrom").value = value("smtp_from")?.giaTri ?? "";
+      el("landingEmailSmtpSecure").checked = /^(1|true)$/i.test(value("smtp_secure")?.giaTri ?? "");
+      const pass = value("smtp_pass");
+      el("landingEmailSmtpPass").placeholder = pass?.daDat ? `Đã đặt (${pass.duoi}) — để trống nếu không đổi` : "Chưa đặt";
+    }
+    async saveSmtp() {
+      const line = el("noi-dung-smtp-trang-thai");
+      const v = (id) => el(id).value.trim();
+      if (v("landingEmailSmtpHost") === "" || v("landingEmailSmtpUser") === "") {
+        status(line, "Cần SMTP host và SMTP user.", "bad");
+        return;
+      }
+      const giaTri = {
+        smtp_host: v("landingEmailSmtpHost"),
+        smtp_port: v("landingEmailSmtpPort"),
+        smtp_user: v("landingEmailSmtpUser"),
+        smtp_from: v("landingEmailSmtpFrom"),
+        smtp_secure: el("landingEmailSmtpSecure").checked ? "1" : ""
+      };
+      if (v("landingEmailSmtpPass") !== "") giaTri["smtp_pass"] = el("landingEmailSmtpPass").value;
+      status(line, "Đang lưu…");
+      const r = await this.ctx.gateway.landing("cau-hinh.ghi", { giaTri });
+      if (!r.ok) {
+        status(line, r.viSao, "bad");
+        return;
+      }
+      el("landingEmailSmtpPass").value = "";
+      await this.loadSmtp();
+      status(line, "Đã lưu cấu hình SMTP landing.", "good");
+    }
+    async testSmtp() {
+      const line = el("noi-dung-smtp-trang-thai");
+      const to = el("landingEmailTestTo").value.trim();
+      status(line, "Đang gửi thư thử…");
+      let r;
+      try {
+        r = await this.ctx.gateway.landing("email.thu", { den: to });
+      } catch (e) {
+        status(line, e.message, "bad");
+        return;
+      }
+      status(line, r.ok ? r.than?.message ?? "Đã gửi thư thử." : r.viSao, r.ok ? "good" : "bad");
     }
     field(f) {
       const id = `nd-${f.key}`;
       if (f.kind === "check") return h("label", { class: "check-row" }, h("input", { id, type: "checkbox" }), ` ${f.label}`);
-      const input = f.kind === "area" ? h("textarea", { id, rows: String(f.rows ?? 3) }) : h("input", { id, type: "text" });
-      return h("div", { class: "field" }, h("label", { for: id }, f.label), input, f.hint ? h("small", { class: "subtle" }, f.hint) : null);
+      const input2 = f.kind === "area" ? h("textarea", { id, rows: String(f.rows ?? 3) }) : h("input", { id, type: "text" });
+      return h("div", { class: "field" }, h("label", { for: id }, f.label), input2, f.hint ? h("small", { class: "subtle" }, f.hint) : null);
     }
     load() {
       void this.loadContent();
+      void this.loadSmtp();
     }
     async loadContent() {
       const line = el("noi-dung-trang-thai");
@@ -11821,7 +18796,6 @@ Quy tắc điền:
   };
 
   // ../omi/packages/omi-ui/src/views/stock-sync.ts
-  var BATCH = 500;
   var StockSyncView = class extends View {
     id = "dong-bo-kho";
     label = "Đồng bộ kho";
@@ -11829,6 +18803,8 @@ Quy tắc điền:
     workspace = "common";
     glyph = "ĐK";
     fromFile = [];
+    importSession = "";
+    appliedImportSession = "";
     build(root) {
       const select = (id, label, options2, onchange) => h(
         "div",
@@ -11836,7 +18812,7 @@ Quy tắc điền:
         h("label", { for: id }, label),
         h("select", { id, onchange }, ...options2.map(([value, text2]) => h("option", { value }, text2)))
       );
-      const step = (n, title, note, tag) => h("div", { class: "pipeline-step" }, h("div", { class: "pipeline-index" }, n), h("div", null, h("h4", null, title), h("p", null, note)), h("span", { class: "badge blue" }, tag));
+      const step2 = (n, title, note, tag) => h("div", { class: "pipeline-step" }, h("div", { class: "pipeline-index" }, n), h("div", null, h("h4", null, title), h("p", null, note)), h("span", { class: "badge blue" }, tag));
       const importForm = h(
         "div",
         { class: "config-form" },
@@ -11873,11 +18849,20 @@ Quy tắc điền:
             "div",
             { id: "hang-tep-xem", hidden: true },
             h("p", { class: "subtle", id: "hang-tep-cot" }),
+            h(
+              "div",
+              { class: "omi-inline-form" },
+              h("label", null, "Kho đích", h("select", { id: "hang-tep-kho" })),
+              h("label", null, "Chế độ", h("select", { id: "hang-tep-che-do" }, h("option", { value: "merge" }, "Bổ sung/cập nhật"), h("option", { value: "replace" }, "Thay mới theo file")))
+            ),
             h("div", { class: "table-wrap scroll" }, h("table", null, h("tbody", { id: "hang-tep-bang" }))),
+            h("div", { class: "warn", id: "hang-tep-chenh-lech", hidden: true }),
             h(
               "div",
               { class: "toolbar" },
-              h("button", { class: "primary-button", id: "nut-hang-nhap", type: "button", onclick: () => void this.importFile() }, "Nhập lên landing"),
+              h("button", { class: "secondary-button", id: "nut-hang-nhap", type: "button", onclick: () => void this.previewFileImport() }, "Xem chênh lệch"),
+              h("button", { class: "primary-button", id: "nut-hang-ap-dung", type: "button", hidden: true, onclick: () => void this.applyFileImport() }, "Áp dụng phiên nhập"),
+              h("button", { class: "secondary-button", id: "nut-hang-hoan-tac", type: "button", hidden: true, onclick: () => void this.undoFileImport() }, "Hoàn tác lần vừa nhập"),
               h("span", { class: "status-line", id: "hang-nhap-trang-thai" })
             )
           )
@@ -11918,11 +18903,11 @@ Quy tắc điền:
             h(
               "div",
               { class: "stock-pipeline" },
-              step("1", "Import", "Đọc file Excel / Google Sheet / CSV và nhận cột theo tiêu đề.", "Sheet"),
-              step("2", "Code", "Gom các dòng size theo mã sản phẩm; SKU biến thể mặc định Mã-Size.", "Cross-check"),
-              step("3", "Size", "Chuẩn hóa size US / UK / EU về size web (EU, chữ S–3XL).", "Brand rule"),
-              step("4", "Merge", "Ghi theo mã + nguồn: hàng đối tác không cộng vào tồn của shop.", "Catalog"),
-              step("5", "Publish", "Còn tồn thì lên web và bot tư vấn được; ảnh ngoài tải về landing.", "AI ready")
+              step2("1", "Import", "Đọc file Excel / Google Sheet / CSV và nhận cột theo tiêu đề.", "Sheet"),
+              step2("2", "Code", "Gom các dòng size theo mã sản phẩm; SKU biến thể mặc định Mã-Size.", "Cross-check"),
+              step2("3", "Size", "Chuẩn hóa size US / UK / EU về size web (EU, chữ S–3XL).", "Brand rule"),
+              step2("4", "Merge", "Ghi theo mã + nguồn: hàng đối tác không cộng vào tồn của shop.", "Catalog"),
+              step2("5", "Publish", "Còn tồn thì lên web và bot tư vấn được; ảnh ngoài tải về landing.", "AI ready")
             ),
             h("span", { class: "status-line", id: "cacheImagesStatus" })
           )
@@ -12186,7 +19171,7 @@ Quy tắc điền:
       const body = el("inventoryReceiptLines");
       clear(body);
       for (const line of this.receiptLines) {
-        const input = (field) => h("input", {
+        const input2 = (field) => h("input", {
           value: String(line[field]),
           inputmode: "numeric",
           class: "short",
@@ -12203,8 +19188,8 @@ Quy tắc điền:
           h("td", null, line.size),
           h("td", null, line.warehouse),
           h("td", { class: "num" }, String(line.available)),
-          h("td", null, input("quantity")),
-          h("td", null, input("unitCost")),
+          h("td", null, input2("quantity")),
+          h("td", null, input2("unitCost")),
           h("td", { class: "num", "data-line-total": line.key }, money(line.quantity * line.unitCost)),
           h("td", null, h("button", { class: "ghost-button compact-button danger", type: "button", "data-action": "remove-inventory-receipt-line", "data-sku": line.key }, "Xóa"))
         ));
@@ -12266,6 +19251,7 @@ Quy tắc điền:
     load() {
       void this.loadHistory();
       void this.loadReceipts();
+      void this.loadImportWarehouses();
     }
     async loadHistory() {
       const line = el("hang-nhap-trang-thai");
@@ -12286,6 +19272,11 @@ Quy tắc điền:
       status(line, "Đang mở hộp thoại…");
       el("hang-tep-xem").hidden = true;
       this.fromFile = [];
+      this.importSession = "";
+      this.appliedImportSession = "";
+      el("hang-tep-chenh-lech").hidden = true;
+      el("nut-hang-ap-dung").hidden = true;
+      el("nut-hang-hoan-tac").hidden = true;
       const r = await this.ctx.gateway.pickSpreadsheet();
       if (!r.ok) {
         status(line, r.viSao, "bad");
@@ -12300,31 +19291,79 @@ Quy tắc điền:
       el("hang-tep-xem").hidden = false;
       status(line, this.fromFile.length ? "Xem lại rồi bấm Nhập." : "Không ra món nào.", this.fromFile.length === 0 ? "bad" : "good");
     }
-    async importFile() {
+    async loadImportWarehouses() {
+      const r = await this.ctx.gateway.landing("hang.kho");
+      if (!r.ok) return;
+      const select = el("hang-tep-kho");
+      clear(select);
+      for (const w of r.than?.kho ?? []) select.appendChild(h("option", { value: w.id }, `${w.name || w.id} · ${w.type === "order" ? "Order" : "Hàng sẵn"}`));
+    }
+    async previewFileImport() {
       const line = el("hang-nhap-trang-thai");
       if (this.fromFile.length === 0) {
         status(line, "Chưa có món để nhập.", "bad");
         return;
       }
-      status(line, `Đang nhập ${this.fromFile.length} món…`);
-      const total = { soMon: 0, soBienThe: 0, biBo: 0 };
-      const batches = [];
-      for (let i = 0; i < this.fromFile.length; i += BATCH) batches.push(this.fromFile.slice(i, i + BATCH));
-      for (const [index, batch] of batches.entries()) {
-        const r = await this.ctx.gateway.landing("hang.nap-them", { mon: batch });
-        if (!r.ok) {
-          status(line, `Gói ${index + 1}/${batches.length}: ${r.viSao}`, "bad");
-          return;
-        }
-        total.soMon += r.than?.soMon ?? 0;
-        total.soBienThe += r.than?.soBienThe ?? 0;
-        total.biBo += r.than?.biBo ?? 0;
-        status(line, `Đã nhập ${total.soMon}/${this.fromFile.length}…`);
+      const maKho2 = el("hang-tep-kho").value;
+      if (!maKho2) {
+        status(line, "Chưa có kho đích. Hãy tạo kho trước.", "bad");
+        return;
+      }
+      const cheDo = el("hang-tep-che-do").value;
+      status(line, `Đang đối chiếu ${this.fromFile.length} món với ${maKho2}…`);
+      const r = await this.ctx.gateway.landing("hang.kho.nhap-file.xem-truoc", { maKho: maKho2, cheDo, mon: this.fromFile });
+      if (!r.ok || !r.than?.phien) {
+        status(line, r.viSao, "bad");
+        return;
+      }
+      const p = r.than.phien;
+      this.importSession = p.id;
+      const diff = el("hang-tep-chenh-lech");
+      diff.hidden = false;
+      const prices = (p.mauGia ?? []).map((x) => `${x.ma}/${x.size}: ${money(x.giaFile)} → ${money(x.giaWeb)}`).join("; ");
+      diff.textContent = `Thêm ${p.them} dòng · đổi ${p.thayDoi} · giữ nguyên ${p.giuNguyen} · vắng trong file ${p.vangFile}${p.seNgungBan ? ` · sẽ ngừng bán ${p.seNgungBan}` : ""}${p.dangGiuCho ? ` · ${p.dangGiuCho} dòng đang giữ chỗ` : ""}.${prices ? ` Giá mẫu: ${prices}.` : ""}`;
+      el("nut-hang-ap-dung").hidden = p.dangGiuCho > 0;
+      status(line, p.dangGiuCho ? "Chưa thể thay mới: có dòng vắng file đang giữ chỗ cho đơn mở." : "Đã tạo bản xem trước. Kho chưa thay đổi.", p.dangGiuCho ? "bad" : "good");
+    }
+    async applyFileImport() {
+      const line = el("hang-nhap-trang-thai");
+      if (!this.importSession) {
+        status(line, "Hãy xem chênh lệch trước.", "bad");
+        return;
+      }
+      status(line, "Đang áp dụng nguyên tử…");
+      const maPhien = this.importSession;
+      const r = await this.ctx.gateway.landing("hang.kho.nhap-file.ap-dung", { maPhien });
+      if (!r.ok) {
+        this.importSession = "";
+        el("nut-hang-ap-dung").hidden = true;
+        status(line, r.viSao, "bad");
+        return;
       }
       this.fromFile = [];
+      this.importSession = "";
+      this.appliedImportSession = r.than?.coTheHoanTac ? maPhien : "";
+      el("nut-hang-hoan-tac").hidden = !this.appliedImportSession;
       el("hang-tep-xem").hidden = true;
       await this.loadHistory();
-      status(line, `Xong: ${total.soMon} món, ${total.soBienThe} size${total.biBo ? `, landing bỏ ${total.biBo}` : ""}.`, "good");
+      status(line, `Đã áp dụng: ${r.than?.soMon ?? 0} món, ${r.than?.soBienThe ?? 0} size.`, "good");
+    }
+    async undoFileImport() {
+      const line = el("hang-nhap-trang-thai");
+      if (!this.appliedImportSession) {
+        status(line, "Không có phiên nhập nào có thể hoàn tác.", "bad");
+        return;
+      }
+      status(line, "Đang hoàn tác phiên nhập…");
+      const r = await this.ctx.gateway.landing("hang.kho.nhap-file.hoan-tac", { maPhien: this.appliedImportSession });
+      if (!r.ok) {
+        status(line, r.viSao, "bad");
+        return;
+      }
+      this.appliedImportSession = "";
+      el("nut-hang-hoan-tac").hidden = true;
+      await this.loadHistory();
+      status(line, `Đã hoàn tác, khôi phục ${r.than?.soMon ?? 0} món / ${r.than?.soBienThe ?? 0} size.`, "good");
     }
   };
 
@@ -12343,20 +19382,25 @@ Quy tắc điền:
     workspace = "landing";
     glyph = "KS";
     warehouses = [];
+    partners = [];
     actions = {
       "rs-reload": () => this.loadAll(),
+      "rs-scan": () => this.openPage("/scan", "Đã mở màn quét tem trên trình duyệt. Điện thoại mở cùng địa chỉ (đăng nhập quản trị web)."),
+      "open-seller-mobile": () => this.openPage("/m", "Đã mở trang điện thoại cho người bán."),
       "rs-import": () => this.importLine(),
       "rs-adjust": (b) => this.openRowForm(b, "adjust"),
       "rs-transfer": (b) => this.openRowForm(b, "transfer"),
       "rs-price": (b) => this.openRowForm(b, "price"),
       "rs-policy": () => this.savePolicy(),
+      "rs-policy-warehouse": (b) => this.loadPolicy(b.value),
+      "rs-warehouse-save": () => this.saveWarehouse(),
       "rs-row-cancel": (b) => {
         b.closest("tr")?.remove();
       },
       "rs-row-save": (b) => this.saveRowForm(b)
     };
     build(root) {
-      const input = (id, placeholder, type = "text") => h("input", { id, type, placeholder });
+      const input2 = (id, placeholder, type = "text") => h("input", { id, type, placeholder });
       root.append(
         h(
           "section",
@@ -12367,12 +19411,14 @@ Quy tắc điền:
             h(
               "div",
               null,
-              h("h3", null, "Kho hàng sẵn"),
-              h("p", { id: "rs-tom-tat" }, "Nguồn sự thật tồn hàng sẵn (tách hẳn kho order). Đang tải…")
+              h("h3", null, "Kho hàng"),
+              h("p", { id: "rs-tom-tat" }, "Một module kho; mỗi kho là Hàng sẵn hoặc Order. Đang tải…")
             ),
             h(
               "div",
               { class: "panel-actions" },
+              h("button", { class: "secondary-button", type: "button", "data-action": "rs-scan" }, "📷 Quét tem nhập/kiểm kho"),
+              h("button", { class: "secondary-button", type: "button", "data-action": "open-seller-mobile" }, "Trang điện thoại"),
               h("button", { class: "secondary-button", type: "button", id: "nut-hang-co-san-tai", "data-action": "rs-reload" }, "Tải lại")
             )
           ),
@@ -12391,15 +19437,15 @@ Quy tắc điền:
                 h(
                   "div",
                   { class: "omi-form-2" },
-                  h("label", null, "Mã sản phẩm", input("rs-import-code", "VD: IC1304")),
-                  h("label", null, "Size", input("rs-import-size", "VD: 42 / US 8.5")),
+                  h("label", null, "Mã sản phẩm", input2("rs-import-code", "VD: IC1304")),
+                  h("label", null, "Size", input2("rs-import-size", "VD: 42 / US 8.5")),
                   h("label", null, "Chi nhánh", h("select", { id: "rs-import-branch" })),
                   h("label", null, "Số lượng", h("input", { id: "rs-import-qty", type: "number", min: "1", value: "1" })),
-                  h("label", null, "Giá vốn", input("rs-import-cost", "đ/đôi", "number")),
-                  h("label", null, "Hoặc mã kho mới", input("rs-import-branch-new", "VD: kho-cau-giay")),
-                  h("label", null, "Nhà cung cấp", input("rs-import-supplier", "Tuỳ chọn"))
+                  h("label", null, "Giá vốn", input2("rs-import-cost", "đ/đôi", "number")),
+                  h("label", null, "Hoặc mã kho mới", input2("rs-import-branch-new", "VD: kho-cau-giay")),
+                  h("label", null, "Nhà cung cấp", input2("rs-import-supplier", "Tuỳ chọn"))
                 ),
-                h("label", null, "Ghi chú phiếu", input("rs-import-note", "NCC, đợt hàng...")),
+                h("label", null, "Ghi chú phiếu", input2("rs-import-note", "NCC, đợt hàng...")),
                 h(
                   "div",
                   { class: "omi-actions-top" },
@@ -12410,12 +19456,48 @@ Quy tắc điền:
               h(
                 "div",
                 { class: "omi-card" },
-                h("h4", null, "Chi nhánh / kho"),
-                h("p", { class: "subtle" }, "Kho nào đang giữ bao nhiêu đôi. Mã kho mới xuất hiện khi nhập phiếu vào nó lần đầu."),
+                h("h4", null, "Chi nhánh / nguồn đáp ứng"),
+                h("p", { class: "subtle" }, "Mỗi kho có loại vận hành và chính sách riêng; Order không được cộng vào tồn hàng sẵn."),
+                h(
+                  "div",
+                  { class: "omi-form-2" },
+                  h("label", null, "Mã kho", input2("rs-warehouse-id", "VD: kho-ha-noi")),
+                  h("label", null, "Tên kho", input2("rs-warehouse-name", "Kho Hà Nội")),
+                  h("label", null, "Loại", h("select", { id: "rs-warehouse-type" }, h("option", { value: "ready" }, "Hàng sẵn"), h("option", { value: "order" }, "Order"))),
+                  h("label", null, "Ưu tiên", h("input", { id: "rs-warehouse-priority", type: "number", min: "0", value: "0" })),
+                  h("label", null, "Công thức giá web", h("select", { id: "rs-price-mode" }, h("option", { value: "image_tool" }, "Quy tắc Image Tool"), h("option", { value: "percent" }, "Giá file + %"), h("option", { value: "fixed" }, "Giá file + số tiền"), h("option", { value: "file" }, "Giữ giá file"))),
+                  h("label", null, "% tăng thêm theo kho", h("input", { id: "rs-price-uplift", type: "number", min: "0", max: "100", step: "0.1", value: "0" })),
+                  h("label", null, "Cộng thêm (đ)", h("input", { id: "rs-price-fixed", type: "number", min: "0", value: "0" })),
+                  h("label", null, "Làm tròn lên", h("select", { id: "rs-price-rounding" }, h("option", { value: "10000" }, "10.000đ"), h("option", { value: "50000" }, "50.000đ"), h("option", { value: "100000" }, "100.000đ")))
+                ),
+                h("p", { class: "subtle" }, "Partner mua hàng là tùy chọn và độc lập với loại Hàng sẵn / Order."),
+                h(
+                  "div",
+                  { class: "omi-form-2" },
+                  h("label", null, "Liên kết partner", h("select", { id: "rs-partner-mode" }, h("option", { value: "none" }, "Không dùng partner"), h("option", { value: "existing" }, "Partner có sẵn"), h("option", { value: "create" }, "Tạo partner mới"))),
+                  h("label", null, "Partner có sẵn", h("select", { id: "rs-partner-existing" }, h("option", { value: "" }, "— chọn partner —"))),
+                  h("label", null, "Mã partner mới", input2("rs-partner-id", "VD: ncc-nike-jp")),
+                  h("label", null, "Tên partner mới", input2("rs-partner-name", "Nhà cung cấp / người mua hộ")),
+                  h("label", null, "Mã cổng partner", input2("rs-partner-portal", "VD: nike-jp")),
+                  h("label", null, "Chính sách mua", input2("rs-partner-policy", "Điều khoản mua, phí, đối soát..."))
+                ),
+                h("p", { class: "subtle" }, "Điều chỉnh riêng theo nhóm (shop tự điền; 0 = chỉ dùng quy tắc nền Image Tool):"),
+                h(
+                  "div",
+                  { class: "omi-form-2" },
+                  h("label", null, "Giày · tăng (%)", h("input", { id: "rs-price-shoe-percent", type: "number", min: "0", max: "100", step: "0.1", value: "0" })),
+                  h("label", null, "Giày · cộng thêm (đ)", h("input", { id: "rs-price-shoe-fixed", type: "number", min: "0", value: "0" })),
+                  h("label", null, "Quần áo · tăng (%)", h("input", { id: "rs-price-apparel-percent", type: "number", min: "0", max: "100", step: "0.1", value: "0" })),
+                  h("label", null, "Quần áo · cộng thêm (đ)", h("input", { id: "rs-price-apparel-fixed", type: "number", min: "0", value: "0" })),
+                  h("label", null, "Phụ kiện · tăng (%)", h("input", { id: "rs-price-accessory-percent", type: "number", min: "0", max: "100", step: "0.1", value: "0" })),
+                  h("label", null, "Phụ kiện · cộng thêm (đ)", h("input", { id: "rs-price-accessory-fixed", type: "number", min: "0", value: "0" }))
+                ),
+                h("button", { class: "secondary-button", type: "button", "data-action": "rs-warehouse-save" }, "Lưu kho"),
+                h("span", { class: "status-line", id: "rs-warehouse-status" }),
                 h(
                   "table",
                   { class: "data-table" },
-                  h("thead", null, h("tr", null, h("th", null, "Kho"), h("th", null, "Số đôi"), h("th", null, "Dòng size"), h("th", null, "Nguồn"))),
+                  h("thead", null, h("tr", null, h("th", null, "Kho"), h("th", null, "Loại"), h("th", null, "Partner mua hàng"), h("th", null, "Số đôi"), h("th", null, "Dòng size"))),
                   h("tbody", { id: "rs-kho" })
                 )
               )
@@ -12423,17 +19505,21 @@ Quy tắc điền:
             h(
               "div",
               { class: "omi-card omi-section-gap" },
-              h("h4", null, "Chính sách bán hàng sẵn (hiển thị trên web)"),
+              h("h4", null, "Chính sách bán theo kho"),
+              h("label", null, "Kho áp dụng", h("select", { id: "rs-policy-warehouse", "data-action": "rs-policy-warehouse" })),
               h("label", null, "Tóm tắt chính sách", h("textarea", { id: "rs-policy-summary", rows: "3" })),
               h(
                 "div",
                 { class: "omi-inline-form" },
+                h("label", null, h("input", { type: "checkbox", id: "rs-policy-enabled", checked: true }), " Cho phép bán"),
                 h("label", null, h("input", { type: "checkbox", id: "rs-policy-cod", checked: true }), " Cho COD"),
                 h("label", null, "Cọc (%)", h("input", { type: "number", id: "rs-policy-deposit", min: "0", max: "100", value: "0" })),
+                h("label", null, "Ngày hàng về", h("input", { type: "number", id: "rs-policy-lead", min: "0", value: "0" })),
+                h("label", null, "Hạn mức đặt", h("input", { type: "number", id: "rs-policy-limit", min: "0", value: "0" })),
                 h("button", { class: "secondary-button", type: "button", id: "nut-rs-luu-chinh-sach", "data-action": "rs-policy" }, "Lưu chính sách"),
                 h("span", { class: "status-line", id: "rs-policy-trang-thai" })
               ),
-              h("p", { class: "subtle" }, "Cọc 0% = khách hàng sẵn không phải cọc (COD toàn phần). Phần hàng order trong cùng đơn vẫn cọc như cũ.")
+              h("p", { class: "subtle" }, "Đơn hàng chụp lại phiên bản chính sách đã dùng; sửa tại đây không đổi điều kiện của đơn cũ.")
             ),
             h("h4", { class: "omi-section-gap" }, "Tồn kho hiện tại"),
             h(
@@ -12456,29 +19542,37 @@ Quy tắc điền:
     load() {
       void this.loadAll();
     }
+    async openPage(path, done) {
+      const r = await this.ctx.gateway.openLandingPage(path);
+      status(el("hang-co-san-trang-thai"), r.ok ? done : r.viSao, r.ok ? "good" : "bad");
+    }
     async loadAll() {
       const line = el("hang-co-san-trang-thai");
       status(line, "Đang tải…");
-      const [stock, stores, book, policy] = await Promise.all([
+      const [stock, stores, book, partners] = await Promise.all([
         this.ctx.gateway.landing("hang.theo-nguon", { nguon: "ready", gioiHan: 2e3 }),
         this.ctx.gateway.landing("hang.kho"),
         this.ctx.gateway.landing("hang.bien-dong", { gioiHan: 40 }),
-        this.ctx.gateway.landing("hang.chinh-sach-hang-san", {})
+        this.ctx.gateway.landing("doi-tac.danh-sach")
       ]);
-      if (policy.ok && policy.than?.chinhSach) {
-        el("rs-policy-summary").value = policy.than.chinhSach.tomTat;
-        el("rs-policy-cod").checked = policy.than.chinhSach.choCod;
-        el("rs-policy-deposit").value = String(policy.than.chinhSach.phanTramCoc);
-      }
       if (!stock.ok) {
         status(line, stock.viSao, "bad");
         return;
       }
       this.warehouses = stores.ok ? stores.than?.kho ?? [] : [];
+      this.partners = partners.ok && Array.isArray(partners.than) ? partners.than : [];
+      const partnerSelect = el("rs-partner-existing");
+      const selectedPartner = partnerSelect.value;
+      clear(partnerSelect);
+      partnerSelect.appendChild(h("option", { value: "" }, "— chọn partner —"));
+      for (const partner of this.partners) partnerSelect.appendChild(h("option", { value: partner.ma }, `${partner.ten || partner.ma} · ${partner.ma}`));
+      if (selectedPartner && this.partners.some((partner) => partner.ma === selectedPartner)) partnerSelect.value = selectedPartner;
       this.drawWarehouses();
+      const policyWarehouse = el("rs-policy-warehouse").value;
+      if (policyWarehouse) await this.loadPolicy(policyWarehouse);
       this.drawStock(stock.than?.mon ?? []);
       this.drawBook(book.ok ? book.than?.bienDong ?? [] : []);
-      status(line, stores.ok && book.ok ? "" : stores.viSao || book.viSao, stores.ok && book.ok ? "" : "bad");
+      if (line.textContent === "Đang tải…") status(line, stores.ok && book.ok ? "" : stores.viSao || book.viSao, stores.ok && book.ok ? "" : "bad");
     }
     drawWarehouses() {
       const select = el("rs-import-branch");
@@ -12490,9 +19584,15 @@ Quy tắc điền:
       const body = el("rs-kho");
       clear(body);
       for (const w of this.warehouses) {
-        body.appendChild(h("tr", null, h("td", null, h("b", null, w.id)), h("td", { class: "num" }, String(w.pairs)), h("td", { class: "num" }, String(w.sizes)), h("td", null, w.sources.join(", "))));
+        const linked = (w.partners ?? []).filter((partner) => partner.enabled !== false).map((partner) => `${partner.partnerId}${partner.isDefault ? " (mặc định)" : ""}`).join(", ");
+        body.appendChild(h("tr", null, h("td", null, h("b", null, w.name || w.id), h("br"), h("span", { class: "subtle" }, w.id)), h("td", null, w.type === "order" ? "Order" : "Hàng sẵn"), h("td", null, linked || "—"), h("td", { class: "num" }, String(w.pairs)), h("td", { class: "num" }, String(w.sizes))));
       }
-      if (this.warehouses.length === 0) body.appendChild(h("tr", null, h("td", { colspan: "4", class: "subtle" }, "Chưa có kho nào.")));
+      if (this.warehouses.length === 0) body.appendChild(h("tr", null, h("td", { colspan: "5", class: "subtle" }, "Chưa có kho nào.")));
+      const policySelect = el("rs-policy-warehouse");
+      const policyChosen = policySelect.value;
+      clear(policySelect);
+      for (const w of this.warehouses) policySelect.appendChild(h("option", { value: w.id }, `${w.name || w.id} · ${w.type === "order" ? "Order" : "Hàng sẵn"}`));
+      if (policyChosen && this.warehouses.some((w) => w.id === policyChosen)) policySelect.value = policyChosen;
     }
     drawStock(items) {
       const rows = [];
@@ -12655,14 +19755,935 @@ Quy tắc điền:
     }
     async savePolicy() {
       const line = el("rs-policy-trang-thai");
-      const r = await this.ctx.gateway.landing("hang.ghi-chinh-sach-hang-san", {
+      const warehouseId = el("rs-policy-warehouse").value;
+      if (!warehouseId) {
+        status(line, "Chọn kho cần lưu chính sách.", "bad");
+        return;
+      }
+      const r = await this.ctx.gateway.landing("hang.kho.chinh-sach.ghi", {
+        maKho: warehouseId,
         tomTat: el("rs-policy-summary").value.trim(),
+        choPhepBan: el("rs-policy-enabled").checked,
         choCod: el("rs-policy-cod").checked,
-        phanTramCoc: Number(el("rs-policy-deposit").value || 0)
+        phanTramCoc: Number(el("rs-policy-deposit").value || 0),
+        soNgayHangVe: Number(el("rs-policy-lead").value || 0),
+        hanMucDat: Number(el("rs-policy-limit").value || 0)
       });
-      status(line, r.ok ? "Đã lưu chính sách bán hàng sẵn." : r.viSao, r.ok ? "good" : "bad");
+      status(line, r.ok ? `Đã lưu chính sách của ${warehouseId} · phiên bản ${r.than?.chinhSach?.version ?? "mới"}.` : r.viSao, r.ok ? "good" : "bad");
+    }
+    async loadPolicy(warehouseId) {
+      if (!warehouseId) return;
+      const line = el("rs-policy-trang-thai");
+      status(line, "Đang tải chính sách…");
+      const r = await this.ctx.gateway.landing("hang.kho.chinh-sach", { maKho: warehouseId });
+      if (!r.ok) {
+        status(line, r.viSao, "bad");
+        return;
+      }
+      const p = r.than?.chinhSach;
+      el("rs-policy-summary").value = str(p?.summary);
+      el("rs-policy-enabled").checked = p?.enabled !== false;
+      el("rs-policy-cod").checked = p?.cod !== false;
+      el("rs-policy-deposit").value = String(p?.depositPercent ?? 0);
+      el("rs-policy-lead").value = String(p?.leadTimeDays ?? 0);
+      el("rs-policy-limit").value = String(p?.orderLimit ?? 0);
+      status(line, p ? `Đang dùng phiên bản ${p.version ?? 1}.` : "Kho chưa có chính sách; đang dùng giá trị mặc định.");
+    }
+    async saveWarehouse() {
+      const line = el("rs-warehouse-status");
+      const id = el("rs-warehouse-id").value.trim();
+      const name = el("rs-warehouse-name").value.trim();
+      if (!id || !name) {
+        status(line, "Cần mã và tên kho.", "bad");
+        return;
+      }
+      const partnerMode = el("rs-partner-mode").value;
+      let partnerId = "";
+      if (partnerMode === "existing") {
+        partnerId = el("rs-partner-existing").value;
+        if (!partnerId) {
+          status(line, "Hãy chọn partner cần liên kết.", "bad");
+          return;
+        }
+      } else if (partnerMode === "create") {
+        partnerId = el("rs-partner-id").value.trim();
+        const partnerName = el("rs-partner-name").value.trim();
+        const portalCode = el("rs-partner-portal").value.trim();
+        if (!partnerId || !partnerName || !portalCode) {
+          status(line, "Partner mới cần mã, tên và mã cổng.", "bad");
+          return;
+        }
+        status(line, "Đang tạo partner…");
+        const created = await this.ctx.gateway.landing("doi-tac.ghi", { ma: partnerId, ten: partnerName, maCong: portalCode, trangThai: "active" });
+        if (!created.ok) {
+          status(line, created.viSao, "bad");
+          return;
+        }
+      }
+      const doiTac = partnerId ? [{ maDoiTac: partnerId, vaiTro: "supplier", uuTien: 0, macDinh: true, dangDung: true, chinhSachMua: el("rs-partner-policy").value.trim() }] : [];
+      const r = await this.ctx.gateway.landing("hang.kho.ghi", {
+        id,
+        ten: name,
+        loai: el("rs-warehouse-type").value,
+        trangThai: "active",
+        uuTien: Number(el("rs-warehouse-priority").value || 0),
+        doiTac,
+        congThucGia: { cheDo: el("rs-price-mode").value, phanTramTang: Number(el("rs-price-uplift").value || 0), congThem: Number(el("rs-price-fixed").value || 0), lamTron: Number(el("rs-price-rounding").value || 1e4), nhom: {
+          shoe: { phanTramTang: Number(el("rs-price-shoe-percent").value || 0), congThem: Number(el("rs-price-shoe-fixed").value || 0) },
+          apparel: { phanTramTang: Number(el("rs-price-apparel-percent").value || 0), congThem: Number(el("rs-price-apparel-fixed").value || 0) },
+          accessory: { phanTramTang: Number(el("rs-price-accessory-percent").value || 0), congThem: Number(el("rs-price-accessory-fixed").value || 0) }
+        } }
+      });
+      if (!r.ok) {
+        status(line, partnerMode === "create" ? `Partner đã được tạo nhưng chưa liên kết được với kho: ${r.viSao}` : r.viSao, "bad");
+        return;
+      }
+      status(line, `Đã lưu kho ${name}.`, "good");
+      await this.loadAll();
     }
   };
+
+  // ../omi/packages/omi-ui/src/views/partner-catalog/partner-catalog.ts
+  var option2 = (value, label, selected) => h("option", { value, selected: value === selected }, label);
+  var PartnerCatalog = class {
+    constructor(ctx) {
+      this.ctx = ctx;
+    }
+    ctx;
+    sources = [];
+    sapoConfigured = false;
+    sapoName = "Sapo";
+    rows = [];
+    lookup = null;
+    manual = [];
+    queue = [];
+    selectedCatalogCode = "";
+    queueSeq = 0;
+    landingBase() {
+      return str(this.ctx.shell.license()?.diaChiLanding).replace(/\/+$/, "");
+    }
+    image(url) {
+      const u = str(url);
+      if (u === "" || /^(https?:|data:)/i.test(u)) return u;
+      const base = this.landingBase();
+      return base === "" ? "" : `${base}/${u.replace(/^\/+/, "")}`;
+    }
+    // ------------------------------------------------------------------ DOM
+    build() {
+      return h(
+        "div",
+        { id: "kdt-desk" },
+        h(
+          "div",
+          { class: "grid three" },
+          this.metricCard("Dòng tải về", h("div", { class: "value", id: "kdt-so-dong" }, "0"), "Dòng web đã được gom theo mã sản phẩm khi lưu"),
+          this.metricCard("Sản phẩm đã gom", h("div", { class: "value", id: "kdt-so-sp" }, "0"), "Mỗi sản phẩm một mã, size gộp theo nguồn"),
+          this.metricCard("Nguồn đối tác", h("div", { class: "value", id: "kdt-so-nguon" }, "0"), "Danh sách nguồn do shop cấu hình")
+        ),
+        h(
+          "section",
+          { class: "panel omi-section-gap" },
+          h(
+            "div",
+            { class: "panel-header" },
+            h(
+              "div",
+              null,
+              h("h3", null, "Kho đối tác"),
+              h("p", null, "Tải thông tin giày từ web của các đối tác shop đã cấu hình (WooCommerce, Haravan); đồng bộ vào catalog tư vấn hoặc đẩy thành hàng sẵn.")
+            ),
+            h(
+              "div",
+              { class: "split-actions" },
+              h("button", { class: "secondary-button", type: "button", id: "kdt-nut-tai", "data-action": "fetch-partner-catalog" }, "Tải / phân tích"),
+              h("button", { class: "secondary-button", type: "button", "data-action": "classify-runrepeat-partner-products" }, "Chấm tham khảo RunRepeat"),
+              h("button", { class: "primary-button", type: "button", "data-action": "sync-partner-products" }, "Đồng bộ vào catalog"),
+              h("button", { class: "primary-button", type: "button", id: "syncDasbuiReadyStockButton", "data-action": "sync-dasbui-ready-stock", hidden: true }, "Đẩy kho sẵn lên web")
+            )
+          ),
+          h(
+            "div",
+            { class: "panel-body" },
+            h(
+              "div",
+              { class: "toolbar" },
+              h("div", { class: "field" }, h("label", { for: "partnerSource" }, "Đối tác"), h("select", { id: "partnerSource", onchange: () => this.sourceChanged() }, option2("all", "Tất cả", "all"))),
+              h("div", { class: "field" }, h("label", { for: "partnerLineFilter" }, "Hãng"), h("select", { id: "partnerLineFilter", onchange: () => this.drawRows() }, option2("all", "Tất cả hãng", "all"))),
+              h("div", { class: "field" }, h("label", { for: "partnerQuery" }, "Tìm tên, mã, hãng"), h("input", { id: "partnerQuery", placeholder: "VD: Viper Court, Barricade, speed", oninput: () => this.drawRows() })),
+              h("label", { class: "check-row" }, h("input", { id: "partnerOnlyAvailable", type: "checkbox", checked: true }), " Chỉ lấy hàng còn bán")
+            ),
+            h("div", { class: "inline-panel", id: "kdt-trang-thai", hidden: true }),
+            h("div", { class: "inline-panel", id: "kdt-day-kho", hidden: true }),
+            h("div", { class: "inline-panel", id: "kdt-ket-qua", hidden: true }),
+            h(
+              "div",
+              { class: "table-wrap partner-table-wrap" },
+              h(
+                "table",
+                null,
+                h("thead", null, h("tr", null, ...["Ảnh", "Sản phẩm", "Đối tác", "Hãng", "Nhóm", "Size", "Giá", "Kho"].map((t) => h("th", null, t)))),
+                h("tbody", { id: "kdt-bang" }, h("tr", null, h("td", { colspan: "8" }, "Chưa có dữ liệu. Bấm Tải / phân tích.")))
+              )
+            )
+          )
+        ),
+        this.lookupPanel(),
+        this.manualPanel(),
+        this.sourcesPanel()
+      );
+    }
+    /** Desk `metricCard`; the value node is built at the call site so its id is written out literally. */
+    metricCard(label, value, hint) {
+      return h("section", { class: "panel metric" }, h("div", { class: "label" }, label), value, h("div", { class: "hint" }, hint));
+    }
+    lookupPanel() {
+      return h(
+        "section",
+        { class: "panel realtime-lookup-panel omi-section-gap" },
+        h(
+          "div",
+          { class: "panel-header" },
+          h("div", null, h("h3", null, "Tra kho đa nguồn realtime"), h("p", null, "Catalog/ảnh ưu tiên ảnh của kho shop trước, sau đó ảnh đối tác. Tồn kho lấy theo nguồn bạn chọn.")),
+          h("button", { class: "primary-button", type: "button", id: "kdt-nut-tra", "data-action": "run-realtime-lookup" }, "Tra kho")
+        ),
+        h(
+          "div",
+          { class: "panel-body" },
+          h(
+            "div",
+            { class: "toolbar realtime-toolbar" },
+            h("div", { class: "field" }, h("label", { for: "realtimeLookupQuery" }, "Tên hoặc mã sản phẩm"), h("input", { id: "realtimeLookupQuery", placeholder: "VD: 1041A370-106, JR1741" })),
+            h("div", { class: "field" }, h("label", { for: "realtimeLookupSize" }, "Size"), h("input", { id: "realtimeLookupSize", placeholder: "Tùy chọn" })),
+            h("div", { class: "field" }, h("label", { for: "realtimeLookupMinPrice" }, "Giá từ"), h("input", { id: "realtimeLookupMinPrice", inputmode: "numeric", placeholder: "VD: 2000000" })),
+            h("div", { class: "field" }, h("label", { for: "realtimeLookupMaxPrice" }, "Giá đến"), h("input", { id: "realtimeLookupMaxPrice", inputmode: "numeric", placeholder: "VD: 3500000" })),
+            h("span", { id: "kdt-tra-nguon" }),
+            h("label", { class: "check-row" }, h("input", { id: "realtimeLookupOnlyAvailable", type: "checkbox", checked: true }), " Chỉ hiện hàng còn theo tồn kho đã sync")
+          ),
+          h("div", { class: "inline-panel" }, h("b", null, "Ưu tiên ảnh: "), "Kho shop → ảnh đối tác → ảnh URL web/Sapo."),
+          h("div", { id: "kdt-tra-ket-qua" }, h("div", { class: "empty-state compact-empty" }, "Nhập mã/tên sản phẩm rồi bấm Tra kho để xem tồn theo nguồn."))
+        )
+      );
+    }
+    manualPanel() {
+      return h(
+        "section",
+        { class: "panel runner-manual-panel omi-section-gap", id: "kdt-thu-cong" },
+        h(
+          "div",
+          { class: "panel-header" },
+          h(
+            "div",
+            null,
+            h("h3", { id: "kdt-thu-cong-tieu-de" }, "Đối tác thủ công - kho thủ công"),
+            h("p", null, "Dùng danh mục sản phẩm để nhìn ảnh/mã, còn tồn thì bạn tick theo ảnh đối tác gửi. Tồn chỉ có 2 trạng thái: còn hàng hoặc hết hàng.")
+          ),
+          h(
+            "div",
+            { class: "split-actions" },
+            h("button", { class: "secondary-button", type: "button", id: "kdt-nut-thu-cong", "data-action": "bootstrap-runner-manual" }, "Tải danh mục + ảnh đại diện")
+          )
+        ),
+        h(
+          "div",
+          { class: "panel-body" },
+          h(
+            "div",
+            { class: "grid three" },
+            this.metricCard("Sản phẩm đối tác", h("div", { class: "value", id: "kdt-tc-tong" }, "0"), "Danh mục đã tải"),
+            this.metricCard("Đang còn hàng", h("div", { class: "value", id: "kdt-tc-con" }, "0"), "Theo tick thủ công"),
+            this.metricCard("Có ảnh đại diện", h("div", { class: "value", id: "kdt-tc-anh" }, "0"), "Ảnh local/ảnh đã import")
+          ),
+          h(
+            "div",
+            { class: "toolbar runner-manual-toolbar" },
+            h("div", { class: "field" }, h("label", { for: "runnerManualSource" }, "Nguồn thủ công"), h("select", { id: "runnerManualSource", onchange: () => void this.loadManual() })),
+            h("div", { class: "field" }, h("label", { for: "runnerManualQuery" }, "Tìm mã, tên, size"), h("input", { id: "runnerManualQuery", placeholder: "VD: DV7480, Pegasus, 42", oninput: () => this.drawManual() })),
+            h(
+              "div",
+              { class: "field" },
+              h("label", { for: "runnerManualStatusFilter" }, "Trạng thái"),
+              h(
+                "select",
+                { id: "runnerManualStatusFilter", onchange: () => this.drawManual() },
+                option2("all", "Tất cả", "all"),
+                option2("available", "Đang còn hàng", "all"),
+                option2("empty", "Đang hết hàng", "all"),
+                option2("missing_image", "Thiếu ảnh local", "all")
+              )
+            ),
+            h(
+              "div",
+              { class: "field" },
+              h("label", { for: "runnerManualImageSlot" }, "Góc upload"),
+              h("select", { id: "runnerManualImageSlot" }, ...[1, 2, 3, 4].map((slot) => option2(String(slot), `Góc ${slot}`, "1")))
+            )
+          ),
+          h("div", { class: "inline-panel", id: "kdt-tc-trang-thai", hidden: true }),
+          h(
+            "div",
+            { class: "runner-stock-image-desk" },
+            h(
+              "div",
+              { class: "runner-paste-zone", id: "runnerStockPasteZone", tabindex: "0", onpaste: (e) => void this.pasteImages(e) },
+              h("div", null, h("b", null, "Dán ảnh tồn đối tác"), h("span", null, "Dán nhiều ảnh bằng Ctrl+V, hoặc chọn nhiều file. Mỗi ảnh sẽ vào hàng đợi duyệt (AI trên Xeon đọc size + giá).")),
+              h(
+                "label",
+                { class: "secondary-button compact-button" },
+                "Chọn ảnh",
+                h("input", { id: "runnerStockImageFiles", type: "file", accept: "image/*", multiple: true, onchange: (e) => void this.pickImages(e) })
+              )
+            ),
+            h(
+              "div",
+              { class: "runner-match-board" },
+              h("div", { class: "runner-board-panel" }, h("div", { class: "section-title" }, "Ảnh đối tác cần ghép"), h("div", { class: "runner-source-grid", id: "kdt-hang-doi-anh" })),
+              h("div", { class: "runner-board-panel" }, h("div", { class: "section-title" }, "Ảnh catalog để ghép vào ảnh đối tác"), h("div", { class: "runner-catalog-grid", id: "kdt-catalog-ghep" }))
+            )
+          ),
+          h("div", { class: "runner-product-grid", id: "kdt-tc-luoi" })
+        )
+      );
+    }
+    sourcesPanel() {
+      return h(
+        "section",
+        { class: "panel omi-section-gap" },
+        h(
+          "div",
+          { class: "panel-header" },
+          h(
+            "div",
+            null,
+            h("h3", null, "Nguồn đối tác của shop"),
+            h("p", null, "Thay danh sách đối tác viết cứng của Sales Desk: mỗi shop tự khai web đối tác, nền tảng, chế độ (web có tồn / thủ công) và nguồn nào được đẩy thành hàng sẵn.")
+          ),
+          h(
+            "div",
+            { class: "split-actions" },
+            h("button", { class: "secondary-button", type: "button", "data-action": "add-partner-source-row" }, "+ Thêm nguồn"),
+            h("button", { class: "primary-button", type: "button", "data-action": "save-partner-sources" }, "Lưu nguồn đối tác")
+          )
+        ),
+        h(
+          "div",
+          { class: "panel-body" },
+          h("div", { class: "table-wrap" }, h(
+            "table",
+            null,
+            h("thead", null, h("tr", null, ...["Mã", "Tên hiển thị", "Nền tảng", "Địa chỉ web", "Chế độ", "Mã kho", "Đẩy kho sẵn", "Chỉ giày", ""].map((t) => h("th", null, t)))),
+            h("tbody", { id: "kdt-nguon-bang" })
+          )),
+          h("span", { class: "status-line", id: "kdt-nguon-trang-thai" })
+        )
+      );
+    }
+    // ------------------------------------------------------------------ load
+    async load() {
+      const r = await this.ctx.gateway.landing("nguon-hang.ds");
+      if (!r.ok) {
+        this.inline("kdt-trang-thai", "Trạng thái", r.viSao);
+        return;
+      }
+      this.sources = r.than?.nguon ?? [];
+      this.sapoConfigured = r.than?.sapo?.daCauHinh === true;
+      this.sapoName = str(r.than?.sapo?.ten) || "Sapo";
+      this.drawSourceControls();
+      this.drawSourceTable();
+      const last = await this.ctx.gateway.landing("doi-tac-web.xem");
+      if (last.ok) {
+        this.rows = last.than?.rows ?? [];
+        this.drawRows();
+        if (last.than?.result) this.inline("kdt-ket-qua", "Kết quả gần nhất", `${last.than.result.rows} mã sản phẩm từ ${last.than.result.rawRows} dòng biến thể (${last.than.result.luc.slice(0, 16).replace("T", " ")}).`);
+      }
+      await this.loadManual();
+    }
+    manualSources() {
+      return this.sources.filter((s) => s.cheDo === "thu-cong");
+    }
+    drawSourceControls() {
+      const select = el("partnerSource");
+      const web = this.sources.filter((x) => x.cheDo === "web");
+      const keep = web.some((x) => x.ma === select.value) || select.value === "all" && web.length === 0 ? select.value || "all" : web[0]?.ma ?? "all";
+      clear(select);
+      select.append(...this.sources.filter((s) => s.cheDo === "web").map((s) => option2(s.ma, s.ten, keep)), option2("all", "Tất cả", keep));
+      el("kdt-so-nguon").textContent = String(this.sources.length);
+      this.sourceChanged();
+      const checks = el("kdt-tra-nguon");
+      clear(checks);
+      const check = (value, label) => h("label", { class: "check-row" }, h("input", { type: "checkbox", "data-realtime-source": value, checked: true }), ` ${label}`);
+      checks.append(check("kho", "Kho shop"), ...this.sources.map((s) => check(s.ma, s.ten)), ...this.sapoConfigured ? [check("sapo", `${this.sapoName} realtime`)] : []);
+      const manual = el("runnerManualSource");
+      const keepManual = manual.value;
+      clear(manual);
+      manual.append(...this.manualSources().map((s) => option2(s.ma, s.ten, keepManual)));
+      el("kdt-thu-cong").hidden = this.manualSources().length === 0;
+    }
+    sourceChanged() {
+      const chosen = this.sources.find((s) => s.ma === el("partnerSource").value);
+      el("syncDasbuiReadyStockButton").hidden = !chosen?.dayKhoSan;
+    }
+    inline(id, label, text2) {
+      const box = el(id);
+      clear(box);
+      box.hidden = text2 === "";
+      box.append(h("b", null, `${label}: `), text2);
+    }
+    // ------------------------------------------------------------------ partner catalogue
+    drawRows() {
+      const brands = [...new Set(this.rows.map((r) => r.brand).filter(Boolean))].sort();
+      const brandSelect = el("partnerLineFilter");
+      const keep = brandSelect.value || "all";
+      clear(brandSelect);
+      brandSelect.append(option2("all", "Tất cả hãng", keep), ...brands.map((b) => option2(b, b, keep)));
+      const q2 = el("partnerQuery").value.trim().toLowerCase();
+      const brand = brandSelect.value;
+      const visible = this.rows.filter((r) => (brand === "all" || r.brand === brand) && (!q2 || `${r.code} ${r.name} ${r.partner} ${r.brand} ${r.category}`.toLowerCase().includes(q2)));
+      el("kdt-so-dong").textContent = String(this.rows.length);
+      el("kdt-so-sp").textContent = String(new Set(this.rows.map((r) => `${r.source}|${r.code}`)).size);
+      const body = el("kdt-bang");
+      clear(body);
+      for (const r of visible.slice(0, 180)) {
+        const img = this.image(r.imageUrl);
+        body.appendChild(h(
+          "tr",
+          null,
+          h("td", null, img ? h("img", { class: "product-thumb", src: img, alt: "" }) : "—"),
+          h("td", null, h("div", { class: "product-title" }, r.name || r.code), h("div", { class: "subtle" }, `${r.code} · ${r.brand}`)),
+          h("td", null, r.partner),
+          h("td", null, r.brand || "—"),
+          h("td", null, r.category || "—"),
+          h("td", null, r.sizes.join(", ") || "—"),
+          h("td", null, money(r.price), r.listPrice > r.price ? h("div", { class: "subtle" }, money(r.listPrice)) : ""),
+          h("td", null, badge(r.available ? "còn bán" : "hết", r.available ? "green" : "red"))
+        ));
+      }
+      if (visible.length === 0) body.appendChild(h("tr", null, h("td", { colspan: "8" }, this.rows.length ? "Không có dòng khớp bộ lọc." : "Chưa có dữ liệu. Bấm Tải / phân tích.")));
+    }
+    async fetchCatalog() {
+      const button = el("kdt-nut-tai");
+      button.disabled = true;
+      button.textContent = "Đang tải...";
+      this.inline("kdt-trang-thai", "Trạng thái", "Đang tải thông tin sản phẩm từ web đối tác. Lần đầu có thể lâu.");
+      const r = await this.ctx.gateway.landing("doi-tac-web.tai", {
+        nguon: el("partnerSource").value,
+        chiConHang: el("partnerOnlyAvailable").checked
+      });
+      button.disabled = false;
+      button.textContent = "Tải / phân tích";
+      if (!r.ok) {
+        this.inline("kdt-trang-thai", "Trạng thái", r.viSao);
+        return;
+      }
+      this.rows = r.than?.rows ?? [];
+      this.drawRows();
+      this.inline("kdt-trang-thai", "Trạng thái", `Hoàn tất: ${this.rows.length} mã sản phẩm.`);
+      this.inline("kdt-ket-qua", "Kết quả gần nhất", `${r.than?.result?.rows ?? 0} mã sản phẩm từ ${r.than?.result?.rawRows ?? 0} dòng biến thể.`);
+    }
+    async syncProducts() {
+      if (this.rows.length === 0) {
+        this.inline("kdt-trang-thai", "Trạng thái", "Chưa có sản phẩm đối tác để đồng bộ.");
+        return;
+      }
+      const chosen = el("partnerSource").value;
+      const r = await this.ctx.gateway.landing("doi-tac-web.dong-bo", chosen === "all" ? {} : { nguon: chosen });
+      this.inline("kdt-trang-thai", "Trạng thái", r.ok ? str(r.than?.message) : r.viSao);
+    }
+    async pushReadyStock(button) {
+      const chosen = el("partnerSource").value;
+      button.disabled = true;
+      this.inline("kdt-day-kho", "Đẩy kho sẵn", "Đang xử lý...");
+      const r = await this.ctx.gateway.landing("doi-tac-web.day-kho-san", { nguon: chosen });
+      button.disabled = false;
+      this.inline("kdt-day-kho", "Đẩy kho sẵn", r.ok ? str(r.than?.message) : `Lỗi: ${r.viSao}`);
+    }
+    // ------------------------------------------------------------------ realtime lookup
+    async runLookup() {
+      const sources = [...document.querySelectorAll("#kdt-tra-nguon [data-realtime-source]")].filter((c) => c.checked).map((c) => str(c.dataset["realtimeSource"]));
+      const box = el("kdt-tra-ket-qua");
+      if (sources.length === 0) {
+        clear(box);
+        box.append(h("div", { class: "inline-panel danger" }, h("b", null, "Lỗi: "), "Chọn ít nhất một nguồn kho."));
+        return;
+      }
+      const button = el("kdt-nut-tra");
+      button.disabled = true;
+      button.textContent = "Đang tra...";
+      const r = await this.ctx.gateway.landing("tra-ton", {
+        q: el("realtimeLookupQuery").value.trim(),
+        size: el("realtimeLookupSize").value.trim(),
+        giaTu: el("realtimeLookupMinPrice").value.replace(/\D/g, ""),
+        giaDen: el("realtimeLookupMaxPrice").value.replace(/\D/g, ""),
+        nguon: sources,
+        chiConHang: el("realtimeLookupOnlyAvailable").checked
+      });
+      button.disabled = false;
+      button.textContent = "Tra kho";
+      clear(box);
+      if (!r.ok) {
+        box.append(h("div", { class: "inline-panel danger" }, h("b", null, "Lỗi: "), r.viSao));
+        return;
+      }
+      this.lookup = r.than;
+      this.drawLookup();
+    }
+    drawLookup() {
+      const box = el("kdt-tra-ket-qua");
+      clear(box);
+      const result = this.lookup ?? {};
+      const images = (result.imageAssets ?? []).slice(0, 8);
+      box.append(
+        h(
+          "div",
+          { class: "realtime-result-grid" },
+          h(
+            "div",
+            { class: "realtime-images" },
+            h("div", { class: "section-title" }, "Ảnh ưu tiên"),
+            h(
+              "div",
+              { class: "image-pick-grid" },
+              ...images.map((a) => h(
+                "div",
+                { class: "image-pick" },
+                h("img", { src: this.image(a.url), alt: "" }),
+                h("div", { class: "subtle" }, a.label),
+                h("button", { class: "secondary-button compact-button", type: "button", "data-action": "copy-lookup-image", "data-image-url": a.url, "data-copy-code": a.code }, "Copy + giá")
+              )),
+              images.length ? "" : h("div", { class: "subtle" }, "Chưa tìm thấy ảnh theo mã này.")
+            )
+          ),
+          h(
+            "div",
+            { class: "realtime-stock" },
+            h("div", { class: "section-title" }, "Tồn kho"),
+            ...(result.sources ?? []).map((s) => this.sourceBlock(s)),
+            h("div", { class: "section-title omi-section-gap" }, "Catalog khớp"),
+            h(
+              "div",
+              { class: "lookup-match-list" },
+              ...(result.products ?? []).slice(0, 6).map((p) => h("div", { class: "lookup-match" }, h("b", null, p.name || p.code), h("span", null, `${p.code} · ${p.sourceName} · ${money(p.price)}`))),
+              (result.products ?? []).length ? "" : h("div", { class: "subtle" }, "Chưa có sản phẩm khớp trong catalog. Vẫn có thể tra Sapo theo mã.")
+            )
+          )
+        ),
+        h("div", { class: "subtle", id: "kdt-tra-luc" }, `Cập nhật: ${str(result.checkedAt).slice(0, 19).replace("T", " ")}`),
+        h("span", { class: "status-line", id: "kdt-tra-trang-thai" })
+      );
+    }
+    sourceBlock(source) {
+      if (!source.ok) return h("div", { class: "source-stock-block" }, h("h4", null, source.sourceName), h("div", { class: "inline-panel danger" }, source.message || "Không tra được nguồn này."));
+      return h(
+        "div",
+        { class: "source-stock-block" },
+        h("h4", null, source.sourceName),
+        h(
+          "div",
+          { class: "table-wrap compact-table-wrap" },
+          h(
+            "table",
+            null,
+            h("thead", null, h("tr", null, ...["Mã", "Size", "Có thể bán", "Tồn kho", "Giá", "Sửa"].map((t) => h("th", null, t)))),
+            h(
+              "tbody",
+              null,
+              ...source.variants.slice(0, 40).map((v) => h(
+                "tr",
+                null,
+                h("td", null, v.productCode || v.productName),
+                h("td", null, v.size, v.warehouseId && source.source === "kho" ? h("div", { class: "subtle" }, v.warehouseId) : ""),
+                h("td", null, badge(String(v.available), v.available > 0 ? "green" : "red")),
+                h("td", null, String(v.onHand)),
+                h("td", null, money(v.price)),
+                h("td", null, source.editable ? h(
+                  "div",
+                  { class: "inline-edit" },
+                  h("input", { type: "number", min: "0", step: "1", value: String(v.available), "data-realtime-stock-input": `${source.source}:${v.productCode}:${v.size}:${v.warehouseId}` }),
+                  h("button", { class: "secondary-button compact-button", type: "button", "data-action": "save-realtime-stock", "data-source": source.source, "data-source-name": source.sourceName, "data-code": v.productCode, "data-size": v.size, "data-warehouse": v.warehouseId }, "Lưu")
+                ) : h("span", { class: "subtle" }, "Sửa trong nguồn"))
+              )),
+              source.variants.length ? "" : h("tr", null, h("td", { colspan: "6" }, "Không có size phù hợp."))
+            )
+          )
+        )
+      );
+    }
+    async saveRealtimeStock(button) {
+      const d = button.dataset;
+      const key = `${str(d["source"])}:${str(d["code"])}:${str(d["size"])}:${str(d["warehouse"])}`;
+      const input2 = [...document.querySelectorAll("[data-realtime-stock-input]")].find((i) => i.dataset["realtimeStockInput"] === key);
+      const r = await this.ctx.gateway.landing("tra-ton.sua", {
+        nguon: str(d["source"]),
+        ma: str(d["code"]),
+        size: str(d["size"]),
+        soLuong: Number(input2?.value ?? 0),
+        ...str(d["warehouse"]) ? { maKho: str(d["warehouse"]) } : {}
+      });
+      status(el("kdt-tra-trang-thai"), r.ok ? str(r.than?.message) : r.viSao, r.ok ? "good" : "bad");
+    }
+    async copyLookupImage(button) {
+      const code = str(button.dataset["copyCode"]);
+      const line = el("kdt-tra-trang-thai");
+      if (!code) {
+        status(line, "Không có ảnh để copy.", "bad");
+        return;
+      }
+      status(line, "Đang dựng ảnh kèm giá…");
+      const card = await this.ctx.gateway.landing("dang-bai.the-sp.tao", { ma: code, anh: str(button.dataset["imageUrl"]) });
+      if (!card.ok || !str(card.than?.url)) {
+        status(line, card.viSao || "Không dựng được ảnh kèm giá.", "bad");
+        return;
+      }
+      const copied = await this.ctx.gateway.copyLandingImage(str(card.than?.url));
+      status(line, copied.ok ? "Đã copy ảnh kèm giá." : copied.viSao, copied.ok ? "good" : "bad");
+    }
+    // ------------------------------------------------------------------ manual partner stock
+    currentManual() {
+      return el("runnerManualSource").value;
+    }
+    async loadManual() {
+      const source = this.currentManual();
+      if (!source) {
+        this.manual = [];
+        this.drawManual();
+        return;
+      }
+      const chosen = this.sources.find((s) => s.ma === source);
+      el("kdt-thu-cong-tieu-de").textContent = `${chosen?.ten ?? source} - kho thủ công`;
+      const r = await this.ctx.gateway.landing("thu-cong.ds", { nguon: source });
+      if (!r.ok) {
+        this.inline("kdt-tc-trang-thai", "Đối tác", r.viSao);
+        return;
+      }
+      this.manual = r.than?.sanPham ?? [];
+      this.drawManual();
+    }
+    drawManual() {
+      const q2 = el("runnerManualQuery").value.trim().toLowerCase();
+      const filter = el("runnerManualStatusFilter").value;
+      const hasStock = (p) => p.sizes.some((s) => s.qty > 0);
+      const visible = this.manual.filter((p) => {
+        if (filter === "available" && !hasStock(p)) return false;
+        if (filter === "empty" && hasStock(p)) return false;
+        if (filter === "missing_image" && p.imageUrl) return false;
+        return !q2 || `${p.code} ${p.name} ${p.brand} ${p.sizes.map((s) => s.size).join(" ")}`.toLowerCase().includes(q2);
+      });
+      el("kdt-tc-tong").textContent = String(this.manual.length);
+      el("kdt-tc-con").textContent = String(this.manual.filter(hasStock).length);
+      el("kdt-tc-anh").textContent = String(this.manual.filter((p) => p.imageUrl).length);
+      const catalog = el("kdt-catalog-ghep");
+      clear(catalog);
+      for (const p of visible.slice(0, 80)) {
+        const img = this.image(p.imageUrl);
+        catalog.appendChild(h(
+          "button",
+          { class: `runner-catalog-card${this.selectedCatalogCode === p.code ? " selected" : ""}`, type: "button", "data-action": "select-runner-catalog-code", "data-code": p.code },
+          img ? h("img", { src: img, alt: "" }) : h("div", { class: "runner-compare-placeholder" }, "Chưa có ảnh"),
+          h("span", null, h("b", null, p.code), p.name),
+          h("em", null, hasStock(p) ? "Đang còn" : "Đang hết")
+        ));
+      }
+      if (visible.length === 0) catalog.appendChild(h("div", { class: "subtle" }, "Chưa có sản phẩm theo bộ lọc hiện tại."));
+      const grid = el("kdt-tc-luoi");
+      clear(grid);
+      for (const p of visible.slice(0, 80)) grid.appendChild(this.productCard(p));
+      if (visible.length === 0) grid.appendChild(h("div", { class: "empty-state compact-empty" }, "Chưa có danh mục đối tác. Bấm Tải danh mục + ảnh đại diện để khởi tạo."));
+      this.drawQueue();
+    }
+    productCard(p) {
+      const img = this.image(p.imageUrl);
+      const stocked = p.sizes.some((s) => s.qty > 0);
+      const assets = [p.imageUrl, ...p.galleryImages].slice(0, 4);
+      while (assets.length < 4) assets.push("");
+      return h(
+        "article",
+        { class: "runner-product-card" },
+        h("div", { class: "runner-product-image" }, img ? h("img", { src: img, alt: "" }) : h("div", { class: "runner-image-placeholder" }, "Chưa có ảnh")),
+        h(
+          "div",
+          { class: "runner-product-main" },
+          h(
+            "div",
+            { class: "runner-card-title-row" },
+            h("div", null, h("div", { class: "product-title" }, p.name || p.code), h("div", { class: "subtle" }, `${p.code} · ${p.brand}`)),
+            badge(stocked ? "Còn hàng" : "Hết hàng", stocked ? "green" : "red")
+          ),
+          h(
+            "div",
+            { class: "runner-size-grid" },
+            ...p.sizes.map((s) => h("button", { class: `runner-size-pill${s.qty > 0 ? " available" : ""}`, type: "button", "data-action": "toggle-runner-size", "data-code": p.code, "data-size": s.size, "data-available": s.qty > 0 ? "false" : "true" }, `Size ${s.size}`)),
+            p.sizes.length ? "" : h("span", { class: "subtle" }, "Chưa có size.")
+          ),
+          h(
+            "div",
+            { class: "runner-asset-grid" },
+            ...assets.map((url, index) => h(
+              "div",
+              { class: "runner-asset-row" },
+              h("input", { "data-runner-asset-code": p.code, "data-runner-asset-slot": String(index + 1), value: /^https?:/i.test(url) ? url : "", placeholder: `Asset URL góc ${index + 1}` }),
+              h("button", { class: "secondary-button compact-button", type: "button", "data-action": "download-runner-asset", "data-code": p.code, "data-slot": String(index + 1) }, "Tải")
+            ))
+          ),
+          h(
+            "div",
+            { class: "split-actions" },
+            h(
+              "label",
+              { class: "secondary-button compact-button runner-upload-label" },
+              "Import ảnh",
+              h("input", { type: "file", accept: "image/*", "data-runner-upload-code": p.code, onchange: (e) => void this.uploadProductImage(e, p.code) })
+            )
+          )
+        )
+      );
+    }
+    async bootstrapManual() {
+      const source = this.currentManual();
+      if (!source) {
+        this.inline("kdt-tc-trang-thai", "Đối tác", "Chưa có nguồn thủ công — thêm ở khung Nguồn đối tác của shop.");
+        return;
+      }
+      const button = el("kdt-nut-thu-cong");
+      button.disabled = true;
+      button.textContent = "Đang tải...";
+      this.inline("kdt-tc-trang-thai", "Đối tác", "Đang tải danh mục và ảnh đại diện...");
+      const r = await this.ctx.gateway.landing("thu-cong.tai", { nguon: source });
+      button.disabled = false;
+      button.textContent = "Tải danh mục + ảnh đại diện";
+      this.inline("kdt-tc-trang-thai", "Đối tác", r.ok ? str(r.than?.message) : r.viSao);
+      if (r.ok) await this.loadManual();
+    }
+    async toggleSize(button) {
+      const r = await this.ctx.gateway.landing("thu-cong.size", {
+        nguon: this.currentManual(),
+        ma: str(button.dataset["code"]),
+        size: str(button.dataset["size"]),
+        con: button.dataset["available"] === "true"
+      });
+      this.inline("kdt-tc-trang-thai", "Đối tác", r.ok ? str(r.than?.message) : r.viSao);
+      if (r.ok) await this.loadManual();
+    }
+    async downloadAsset(button) {
+      const code = str(button.dataset["code"]);
+      const slot = str(button.dataset["slot"]);
+      const input2 = [...document.querySelectorAll("[data-runner-asset-code]")].find((i) => i.dataset["runnerAssetCode"] === code && i.dataset["runnerAssetSlot"] === slot);
+      const r = await this.ctx.gateway.landing("thu-cong.anh-url", { ma: code, url: str(input2?.value).trim(), goc: Number(slot) || 1 });
+      this.inline("kdt-tc-trang-thai", "Đối tác", r.ok ? str(r.than?.message) : r.viSao);
+      if (r.ok) await this.loadManual();
+    }
+    async uploadProductImage(event, code) {
+      const file = event.target.files?.[0];
+      if (!file) return;
+      const anh2 = await readDataUrl(file);
+      const r = await this.ctx.gateway.landing("hang.tai-anh", { ma: code, anh: anh2, chinh: el("runnerManualImageSlot").value === "1" });
+      this.inline("kdt-tc-trang-thai", "Đối tác", r.ok ? `Đã lưu ảnh upload góc ${el("runnerManualImageSlot").value} cho ${code}.` : r.viSao);
+      if (r.ok) await this.loadManual();
+    }
+    // ----- stock photo queue -----
+    async pickImages(event) {
+      const input2 = event.target;
+      const files = [...input2.files ?? []];
+      input2.value = "";
+      for (const file of files) await this.enqueue(file);
+    }
+    async pasteImages(event) {
+      const files = [...event.clipboardData?.items ?? []].filter((i) => i.type.startsWith("image/")).map((i) => i.getAsFile()).filter((f) => f !== null);
+      if (files.length === 0) return;
+      event.preventDefault();
+      for (const file of files) await this.enqueue(file);
+    }
+    async enqueue(file) {
+      if (!this.currentManual()) {
+        this.inline("kdt-tc-trang-thai", "Đối tác", "Chọn nguồn thủ công trước khi dán ảnh.");
+        return;
+      }
+      const previewUrl = await readDataUrl(file);
+      this.queueSeq += 1;
+      const item = { id: `anh_${this.queueSeq}`, fileName: file.name || "Ảnh dán", previewUrl, status: "queued", statusText: "Chờ đọc", candidates: [], selectedCode: "", sizes: "", price: "", mode: "merge" };
+      this.queue.push(item);
+      this.drawQueue();
+      await this.analyze(item.id);
+    }
+    async analyze(id) {
+      const item = this.queue.find((i) => i.id === id);
+      if (!item) return;
+      item.status = "reading";
+      item.statusText = "Đang đọc ảnh trên Xeon…";
+      this.drawQueue();
+      const r = await this.ctx.gateway.landing("anh-ton.doc", { nguon: this.currentManual(), anh: item.previewUrl });
+      if (!r.ok) {
+        item.status = "error";
+        item.statusText = r.viSao;
+        this.drawQueue();
+        return;
+      }
+      item.candidates = r.than?.candidates ?? [];
+      if (!item.selectedCode && item.candidates[0]) item.selectedCode = item.candidates[0].code;
+      item.sizes = (r.than?.parsed?.sizes ?? []).join(" ") || item.sizes;
+      if (r.than?.parsed?.price) item.price = String(r.than.parsed.price);
+      item.status = "ready";
+      item.statusText = [str(r.than?.message), str(r.than?.loiXeon)].filter(Boolean).join(" · ");
+      this.drawQueue();
+    }
+    drawQueue() {
+      const box = el("kdt-hang-doi-anh");
+      clear(box);
+      for (const item of this.queue) box.appendChild(this.queueCard(item));
+      if (this.queue.length === 0) box.appendChild(h("div", { class: "subtle" }, "Chưa có ảnh trong hàng đợi."));
+    }
+    queueCard(item) {
+      const selected = this.manual.find((p) => p.code === item.selectedCode);
+      const selectedImage = this.image(selected?.imageUrl ?? item.candidates.find((c) => c.code === item.selectedCode)?.imageUrl ?? "");
+      const field = (label, name, placeholder) => h(
+        "label",
+        null,
+        h("span", null, label),
+        h("input", { value: item[name], placeholder, "data-runner-stock-field": name, "data-runner-stock-id": item.id, oninput: (e) => {
+          item[name] = e.target.value;
+        } })
+      );
+      const tone = item.status === "ready" || item.status === "applied" ? "green" : item.status === "error" ? "red" : "blue";
+      return h(
+        "article",
+        { class: "runner-source-card", "data-runner-stock-id": item.id, onclick: (e) => {
+          if (e.target.closest("input, select, button")) return;
+          if (!this.selectedCatalogCode) return;
+          item.selectedCode = this.selectedCatalogCode;
+          this.drawQueue();
+        } },
+        h(
+          "div",
+          { class: "runner-source-images" },
+          h("div", null, h("span", null, "Ảnh gốc"), h("img", { src: item.previewUrl, alt: "" })),
+          h(
+            "div",
+            { class: "runner-selected-match" },
+            h("span", null, "Ảnh đã ghép"),
+            selectedImage ? h("img", { src: selectedImage, alt: "" }) : h("div", { class: "runner-drop-placeholder" }, "Tick catalog rồi tick ảnh này")
+          )
+        ),
+        h(
+          "div",
+          { class: "runner-stock-card-main" },
+          h(
+            "div",
+            { class: "runner-card-title-row" },
+            h("div", null, h("div", { class: "product-title" }, item.fileName), h("div", { class: "subtle" }, item.selectedCode ? `Đã ghép: ${item.selectedCode}` : item.statusText)),
+            badge(item.status, tone)
+          ),
+          item.candidates.length ? h("div", { class: "runner-candidate-list" }, ...item.candidates.slice(0, 2).map((c) => h("span", null, `${c.code} · ${Math.round(c.confidence * 100)}%`))) : "",
+          h(
+            "div",
+            { class: "runner-stock-form" },
+            field("Mã đã ghép", "selectedCode", "Tick catalog hoặc nhập mã"),
+            field("Size còn", "sizes", "VD: 42 42.5 44"),
+            field("Giá", "price", "VD: 2150000"),
+            h(
+              "label",
+              null,
+              h("span", null, "Chế độ"),
+              h(
+                "select",
+                { "data-runner-stock-field": "mode", "data-runner-stock-id": item.id, onchange: (e) => {
+                  item.mode = e.target.value === "replace" ? "replace" : "merge";
+                } },
+                option2("merge", "Cộng vào tồn hiện có", item.mode),
+                option2("replace", "Thay tồn của mẫu này", item.mode)
+              )
+            )
+          ),
+          h(
+            "div",
+            { class: "split-actions" },
+            h("button", { class: "primary-button compact-button", type: "button", "data-action": "apply-runner-stock-image", "data-id": item.id, disabled: item.status === "applying" }, "Áp dụng"),
+            h("button", { class: "secondary-button compact-button", type: "button", "data-action": "reanalyze-runner-stock-image", "data-id": item.id }, "Đọc lại"),
+            h("button", { class: "ghost-button compact-button", type: "button", "data-action": "remove-runner-stock-image", "data-id": item.id }, "Bỏ")
+          )
+        )
+      );
+    }
+    async applyImage(id) {
+      const item = this.queue.find((i) => i.id === id);
+      if (!item) return;
+      item.status = "applying";
+      this.drawQueue();
+      const r = await this.ctx.gateway.landing("anh-ton.ap-dung", {
+        nguon: this.currentManual(),
+        ma: item.selectedCode.trim(),
+        sizes: item.sizes,
+        gia: item.price.replace(/\D/g, ""),
+        cheDo: item.mode,
+        anh: item.previewUrl
+      });
+      item.status = r.ok ? "applied" : "error";
+      item.statusText = r.ok ? str(r.than?.message) : r.viSao;
+      this.inline("kdt-tc-trang-thai", "Đối tác", item.statusText);
+      if (r.ok) await this.loadManual();
+      else this.drawQueue();
+    }
+    removeImage(id) {
+      this.queue = this.queue.filter((i) => i.id !== id);
+      this.drawQueue();
+    }
+    selectCatalogCode(code) {
+      this.selectedCatalogCode = code;
+      this.inline("kdt-tc-trang-thai", "Đối tác", `Đã chọn mã ${code}. Tick ảnh đối tác cần ghép.`);
+      this.drawManual();
+    }
+    // ------------------------------------------------------------------ the shop's partner sources
+    drawSourceTable() {
+      const body = el("kdt-nguon-bang");
+      clear(body);
+      for (const s of this.sources) body.appendChild(this.sourceRow(s));
+      if (this.sources.length === 0) body.appendChild(this.sourceRow({ ma: "", ten: "", nenTang: "haravan", diaChi: "", cheDo: "web", dayKhoSan: false, maKho: "", chiGiay: true }));
+    }
+    sourceRow(s) {
+      const cell = (child) => h("td", null, child);
+      return h(
+        "tr",
+        { "data-partner-source-row": "1" },
+        cell(h("input", { "data-f": "ma", value: s.ma, placeholder: "runner" })),
+        cell(h("input", { "data-f": "ten", value: s.ten, placeholder: "Runner Chuyên Nghiệp" })),
+        cell(h("select", { "data-f": "nenTang" }, option2("haravan", "Haravan / Shopify", s.nenTang), option2("woocommerce", "WooCommerce", s.nenTang))),
+        cell(h("input", { "data-f": "diaChi", value: s.diaChi, placeholder: "địa chỉ web đối tác" })),
+        cell(h("select", { "data-f": "cheDo" }, option2("web", "Web có tồn", s.cheDo), option2("thu-cong", "Thủ công", s.cheDo))),
+        cell(h("input", { "data-f": "maKho", value: s.maKho, placeholder: "tự đặt" })),
+        cell(h("input", { "data-f": "dayKhoSan", type: "checkbox", checked: s.dayKhoSan })),
+        cell(h("input", { "data-f": "chiGiay", type: "checkbox", checked: s.chiGiay })),
+        h("td", null, h("button", { class: "ghost-button compact-button", type: "button", "data-action": "remove-partner-source-row" }, "Bỏ"))
+      );
+    }
+    addSourceRow() {
+      el("kdt-nguon-bang").appendChild(this.sourceRow({ ma: "", ten: "", nenTang: "haravan", diaChi: "", cheDo: "web", dayKhoSan: false, maKho: "", chiGiay: true }));
+    }
+    removeSourceRow(button) {
+      button.closest("tr")?.remove();
+    }
+    async saveSources() {
+      const rows = [...document.querySelectorAll("#kdt-nguon-bang [data-partner-source-row]")];
+      const value = (row, f) => row.querySelector(`[data-f="${f}"]`);
+      const nguon = rows.map((row) => ({
+        ma: str(value(row, "ma")?.value).trim(),
+        ten: str(value(row, "ten")?.value).trim(),
+        nenTang: str(value(row, "nenTang")?.value),
+        diaChi: str(value(row, "diaChi")?.value).trim(),
+        cheDo: str(value(row, "cheDo")?.value),
+        maKho: str(value(row, "maKho")?.value).trim(),
+        dayKhoSan: value(row, "dayKhoSan")?.checked === true,
+        chiGiay: value(row, "chiGiay")?.checked !== false
+      })).filter((s) => s.ma !== "" || s.diaChi !== "");
+      const r = await this.ctx.gateway.landing("nguon-hang.ghi", { nguon });
+      status(el("kdt-nguon-trang-thai"), r.ok ? str(r.than?.message) : r.viSao, r.ok ? "good" : "bad");
+      if (r.ok) await this.load();
+    }
+  };
+  function readDataUrl(file) {
+    return new Promise((resolve, reject) => {
+      const reader = new FileReader();
+      reader.onload = () => resolve(String(reader.result ?? ""));
+      reader.onerror = () => reject(reader.error ?? new Error("Không đọc được tệp."));
+      reader.readAsDataURL(file);
+    });
+  }
 
   // ../omi/packages/omi-ui/src/views/source-stock.ts
   var SourceStockView = class extends View {
@@ -12729,6 +20750,2902 @@ Quy tắc điền:
     source = "campaign";
     note = "Hàng của đối tác mà shop được bán hộ, theo từng chiến dịch. Chiến dịch tắt hoặc hết hạn thì dòng hàng tự biến mất ở lần đồng bộ sau.";
     ids = { reload: "nut-kho-doi-tac-tai", line: "kho-doi-tac-trang-thai", body: "kho-doi-tac-bang", count: "kho-doi-tac-so" };
+    /** Đ10: Desk partner catalogue + realtime lookup + manual partner stock, partner list = the shop's config. */
+    catalog = new PartnerCatalog(this.ctx);
+    // Đ9: Desk "Chấm tham khảo RunRepeat" — classification rules are industry knowledge on Xeon.
+    // Đ10: the Desk partner screen's actions, same names (`partnerCatalogTemplate`, `realtimeLookupTemplate`, `runnerManualInventoryTemplate`).
+    actions = {
+      "classify-runrepeat-partner-products": () => this.classify(),
+      "fetch-partner-catalog": () => this.catalog.fetchCatalog(),
+      "sync-partner-products": () => this.catalog.syncProducts(),
+      "sync-dasbui-ready-stock": (b) => this.catalog.pushReadyStock(b),
+      "run-realtime-lookup": () => this.catalog.runLookup(),
+      "copy-lookup-image": (b) => this.catalog.copyLookupImage(b),
+      "save-realtime-stock": (b) => this.catalog.saveRealtimeStock(b),
+      "bootstrap-runner-manual": () => this.catalog.bootstrapManual(),
+      "toggle-runner-size": (b) => this.catalog.toggleSize(b),
+      "download-runner-asset": (b) => this.catalog.downloadAsset(b),
+      "apply-runner-stock-image": (b) => this.catalog.applyImage(str(b.dataset["id"])),
+      "reanalyze-runner-stock-image": (b) => this.catalog.analyze(str(b.dataset["id"])),
+      "remove-runner-stock-image": (b) => this.catalog.removeImage(str(b.dataset["id"])),
+      "select-runner-catalog-code": (b) => this.catalog.selectCatalogCode(str(b.dataset["code"])),
+      "add-partner-source-row": () => this.catalog.addSourceRow(),
+      "remove-partner-source-row": (b) => this.catalog.removeSourceRow(b),
+      "save-partner-sources": () => this.catalog.saveSources()
+    };
+    build(root) {
+      root.append(this.catalog.build());
+      super.build(root);
+      root.append(h(
+        "section",
+        { class: "panel omi-section-gap" },
+        h(
+          "div",
+          { class: "panel-header" },
+          h("div", null, h("h3", null, "Chấm tham khảo"), h("p", null, "Phân loại mã theo taxonomy tham khảo của gói ngành trên Xeon (daily, tempo, race, trail…) và dòng sản phẩm khớp tên.")),
+          h("button", { class: "secondary-button", type: "button", "data-action": "classify-runrepeat-partner-products" }, "Chấm tham khảo RunRepeat")
+        ),
+        h("div", { class: "panel-body", id: "kho-doi-tac-cham" }, h("p", { class: "subtle" }, "Chưa chấm."))
+      ));
+    }
+    load() {
+      super.load();
+      void this.catalog.load();
+    }
+    async classify() {
+      const box = el("kho-doi-tac-cham");
+      clear(box);
+      box.append(h("div", { class: "inline-panel" }, "Đang chấm phân loại tham khảo…"));
+      const r = await this.ctx.gateway.landing("kien-thuc.cham-dong", {});
+      clear(box);
+      if (!r.ok || !r.than) {
+        box.append(h("div", { class: "inline-panel" }, h("b", null, "RunRepeat reference: "), r.viSao));
+        return;
+      }
+      const t = r.than;
+      box.append(h(
+        "div",
+        { class: "inline-panel" },
+        h("b", null, "RunRepeat reference: "),
+        `Đã chấm ${t.tong ?? 0} mã: ${t.khop ?? 0} khớp, ${t.thieu ?? 0} chưa có dữ liệu. ${Object.entries(t.theoNhom ?? {}).map(([k, n]) => `${k}: ${n}`).join(" · ")}`
+      ));
+      const rows = (t.sanPham ?? []).filter((p) => p.status === "matched").slice(0, 200);
+      if (rows.length) box.append(table(["Mã", "Tên", "Nhóm", "Use case", "Dòng"], "kho-doi-tac-cham-bang"));
+      const body = document.getElementById("kho-doi-tac-cham-bang");
+      for (const p of rows) body?.appendChild(tableRow([p.ma, p.ten, p.category, (p.useCases ?? []).join(", "), p.dong?.name ?? "—"]));
+    }
+  };
+
+  // ../omi/packages/omi-ui/src/views/ai-demo.ts
+  var SAMPLE_RUNNING = "Shop còn giày chạy bộ size 42, chân hơi bè, tầm 3 triệu không?";
+  var SAMPLE_PARTNER = "Shop có HOKA size 44 không, nếu không có sẵn thì order được không?";
+  var SAMPLE_THREADS = [
+    { id: "mau-1", customer: "Anh Minh (mẫu)", need: "Giày chạy 10K, size 42, chân bè", messages: [{ from: "customer", text: "Shop ơi em chạy 10K, chân hơi bè, size 42 thì nên đi đôi nào ạ?" }] },
+    { id: "mau-2", customer: "Chị Lan (mẫu)", need: "Hỏi giá + ship Hà Nội", messages: [{ from: "customer", text: "Đôi Boston 13 size 38 còn không shop, ship Hà Nội mấy ngày?" }] }
+  ];
+  var DemoAiView = class extends View {
+    id = "demo-ai";
+    label = "Demo AI";
+    title = "Demo AI — hộp cát, không gửi khách";
+    workspace = "common";
+    glyph = "↗";
+    tab = "simulator";
+    chat = [];
+    lastCustomer = "";
+    suggested = "";
+    draft = null;
+    styleId = "";
+    styles = [];
+    busy = false;
+    sample = SAMPLE_THREADS[0].id;
+    sampleChats = new Map(SAMPLE_THREADS.map((t) => [t.id, t.messages.map((m) => ({ ...m }))]));
+    actions = {
+      "send-demo-customer-message": () => this.sendCustomer(),
+      "demo-sample-running": () => {
+        el("demoCustomerInput").value = SAMPLE_RUNNING;
+      },
+      "demo-sample-partner": () => {
+        el("demoCustomerInput").value = SAMPLE_PARTNER;
+      },
+      "reset-demo-chatbot": () => this.resetChat(),
+      "reset-demo-suggested-reply": () => {
+        el("demoEditedReply").value = this.suggested;
+        this.paintCompare();
+      },
+      "save-demo-style-reply": () => this.saveStyle(),
+      "send-ai-reply": () => this.sendSampleReply(),
+      "confirm-order": () => this.confirmSampleOrder(),
+      "open-fanpage-inbox": () => this.ctx.shell.open("fanpage"),
+      "open-training-review": () => this.ctx.shell.open("training", { tab: "review" })
+    };
+    build(root) {
+      const tabs = h(
+        "div",
+        { class: "view-tabs demo-ai-tabs" },
+        ...[["simulator", "AI phân tích hội thoại"], ["sample", "Hội thoại mẫu"], ["training", "Training từ inbox thật"], ["duel", "Đấu 2 mô hình"]].map(([id, label]) => h("button", { type: "button", "data-demo-ai-tab": id, class: id === this.tab ? "active" : "", onclick: () => this.setTab(id) }, label))
+      );
+      const delay = h("input", { id: "demoAIReplyDelay", type: "range", min: "0", max: "6000", step: "200", value: "800", oninput: () => {
+        el("demo-tre").textContent = `${(Number(el("demoAIReplyDelay").value) / 1e3).toFixed(1)}s`;
+      } });
+      const simulator = h(
+        "div",
+        { class: "chatbot-sim-layout", id: "demo-simulator" },
+        h(
+          "section",
+          { class: "panel chatbot-sim-panel" },
+          h(
+            "div",
+            { class: "panel-header" },
+            h("div", null, h("h3", null, "Màn hình khách hàng"), h("p", null, "Anh đóng vai khách để tạo tình huống. Hộp cát: bộ nhớ dùng một lần, công cụ chỉ đọc, không gửi ai.")),
+            h(
+              "div",
+              { class: "split-actions" },
+              h("span", { class: "badge red" }, "Không gửi khách"),
+              h("span", { class: "badge amber", id: "demo-trang-thai-badge" }, "Chưa phân tích"),
+              h("button", { class: "secondary-button", type: "button", "data-action": "reset-demo-chatbot" }, "Làm mới")
+            )
+          ),
+          h(
+            "div",
+            { class: "panel-body" },
+            h("div", { class: "chat-window chatbot-sim-window", id: "demo-chat" }),
+            h(
+              "div",
+              { class: "composer chatbot-sim-composer" },
+              h("div", { class: "sim-typing-config" }, h("label", { for: "demoAIReplyDelay" }, "Độ trễ mô phỏng AI đọc"), delay, h("span", { id: "demo-tre" }, "0.8s")),
+              h("div", { class: "field" }, h("label", { for: "demoCustomerInput" }, "Tin nhắn khách hàng"), h("textarea", { id: "demoCustomerInput", placeholder: `Ví dụ: ${SAMPLE_RUNNING}` })),
+              h(
+                "div",
+                { class: "split-actions" },
+                h("button", { class: "primary-button", type: "button", "data-action": "send-demo-customer-message" }, "Gửi sang AI gợi ý"),
+                h("button", { class: "secondary-button", type: "button", "data-action": "demo-sample-running" }, "Thử size 42 running"),
+                h("button", { class: "secondary-button", type: "button", "data-action": "demo-sample-partner" }, "Thử hỏi HOKA size 44")
+              )
+            )
+          )
+        ),
+        h(
+          "section",
+          { class: "panel" },
+          h(
+            "div",
+            { class: "panel-header" },
+            h("div", null, h("h3", null, "Màn hình AI gợi ý"), h("p", null, "AI tạo nháp trả lời để anh sửa. Bản anh sửa được ghi nhận làm ví dụ phong cách và đưa vào hàng đợi training (chờ duyệt).")),
+            h("span", { class: "badge blue", id: "demo-so-vi-du" }, "0 ví dụ phong cách")
+          ),
+          h(
+            "div",
+            { class: "panel-body" },
+            h(
+              "div",
+              { class: "field" },
+              h("label", { for: "demoEditedReply" }, "Nháp trả lời AI gợi ý"),
+              h("textarea", { id: "demoEditedReply", class: "demo-reply-editor", placeholder: "Sau khi khách nhắn, AI sẽ gợi ý câu trả lời ở đây để anh sửa theo đúng giọng shop.", oninput: () => this.paintCompare() })
+            ),
+            h(
+              "div",
+              { class: "field" },
+              h("label", { for: "demoReplyRationale" }, "Giải thích vì sao trả lời như vậy"),
+              h("textarea", { id: "demoReplyRationale", class: "demo-rationale-editor", placeholder: "Không bắt buộc. Ví dụ: Khách hỏi chung chung nên chưa gửi mẫu, cần hỏi thêm cự ly/đôi đang đi." })
+            ),
+            h(
+              "div",
+              { class: "split-actions" },
+              h("button", { class: "primary-button", type: "button", id: "demo-ghi-phong-cach", "data-action": "save-demo-style-reply", disabled: true }, "Ghi nhận phong cách"),
+              h("button", { class: "secondary-button", type: "button", id: "demo-lay-lai", "data-action": "reset-demo-suggested-reply", disabled: true }, "Lấy lại nháp AI"),
+              h("span", { class: "status-line", id: "demo-trang-thai" })
+            ),
+            h("div", { class: "inline-panel router-debug-box demo-style-box", id: "demo-so-sanh", hidden: true }),
+            h("div", { class: "sim-intent-grid", id: "demo-du-kien" }),
+            h("div", { class: "inline-panel router-debug-box", id: "demo-ket-qua", hidden: true }),
+            h(
+              "div",
+              { class: "section-title-row omi-section-gap" },
+              h("div", null, h("h3", null, "Đề xuất đưa vào training"), h("p", { class: "subtle" }, "Chỉ khi anh duyệt ở màn Training thì câu mới thành kịch bản chatbot."))
+            ),
+            h("div", { class: "recommendation-list", id: "demo-de-xuat" }),
+            h("div", { class: "inline-panel router-debug-box demo-style-box", id: "demo-vi-du", hidden: true })
+          )
+        )
+      );
+      const sample = h(
+        "div",
+        { class: "inbox-layout", id: "demo-sample", hidden: true },
+        h(
+          "section",
+          { class: "panel" },
+          h("div", { class: "panel-header" }, h("div", null, h("h3", null, "Hội thoại mẫu"), h("p", null, "Chỉ dùng để thử luồng tư vấn AI trước khi chạy dữ liệu thật."))),
+          h("div", { class: "panel-body thread-list", id: "demo-mau-ds" })
+        ),
+        h(
+          "section",
+          { class: "panel" },
+          h("div", { class: "panel-header" }, h("div", null, h("h3", { id: "demo-mau-ten" }, "—"), h("p", { id: "demo-mau-nhu-cau" }, "—")), h("span", { class: "badge amber" }, "mô phỏng")),
+          h(
+            "div",
+            { class: "panel-body" },
+            h("div", { class: "chat-window", id: "demo-mau-chat" }),
+            h(
+              "div",
+              { class: "composer" },
+              h("div", { class: "field" }, h("label", { for: "ai-draft" }, "Bản nháp AI sẽ gửi"), h("textarea", { id: "ai-draft" })),
+              h(
+                "div",
+                { class: "split-actions" },
+                h("button", { class: "secondary-button", type: "button", onclick: () => void this.draftSample() }, "AI soạn nháp"),
+                h("button", { class: "primary-button", type: "button", "data-action": "send-ai-reply" }, "Gửi nháp AI"),
+                h("button", { class: "secondary-button", type: "button", "data-action": "confirm-order" }, "Gửi thẻ xác nhận")
+              )
+            ),
+            h(
+              "section",
+              { class: "checkout-card" },
+              h("h4", null, "Thẻ đặt hàng mẫu"),
+              h(
+                "div",
+                { class: "checkout-form-grid" },
+                h("div", { class: "field" }, h("label", { for: "demo-don-ma" }, "Mã / tên sản phẩm"), h("input", { id: "demo-don-ma" })),
+                h("div", { class: "field" }, h("label", { for: "demo-don-size" }, "Size"), h("input", { id: "demo-don-size" })),
+                h("div", { class: "field" }, h("label", { for: "demo-don-sl" }, "Số lượng"), h("input", { id: "demo-don-sl", value: "1" })),
+                h("div", { class: "field" }, h("label", { for: "demo-don-gia" }, "Giá"), h("input", { id: "demo-don-gia", inputmode: "numeric" })),
+                h("div", { class: "field" }, h("label", { for: "demo-don-sdt" }, "SĐT"), h("input", { id: "demo-don-sdt" })),
+                h("div", { class: "field full" }, h("label", { for: "demo-don-dia-chi" }, "Địa chỉ"), h("input", { id: "demo-don-dia-chi" }))
+              ),
+              h("p", { class: "status-line", id: "demo-mau-trang-thai" })
+            )
+          )
+        )
+      );
+      const training = h(
+        "section",
+        { class: "panel demo-next-panel", id: "demo-training", hidden: true },
+        h(
+          "div",
+          { class: "panel-header" },
+          h("div", null, h("h3", null, "Đây là màn mô phỏng, không phải inbox thật"), h("p", null, "Muốn huấn luyện chatbot, dùng hội thoại thật đã lưu từ Fanpage (kho lưu trữ) ở màn Training AI.")),
+          h("span", { class: "badge blue" }, "Hội thoại thật")
+        ),
+        h(
+          "div",
+          { class: "panel-body" },
+          h(
+            "div",
+            { class: "demo-next-grid" },
+            this.nextStep("1", "Mở hội thoại thật", "Vào Fanpage để xem tin nhắn đã tải, kiểm tra ảnh và ngữ cảnh khách.", "open-fanpage-inbox", "Mở Fanpage"),
+            this.nextStep("2", "Phân tích kho chat", "Training AI → Ngày đầu vận hành: tải lịch sử, AI phân tích theo lô (đã ẩn thông tin cá nhân).", "open-training-review", "Mở Training"),
+            this.nextStep("3", "Duyệt thành chatbot", "Chỉ câu đã duyệt mới được đưa vào Q&A để bot dùng lần sau.", "open-training-review", "Mở hàng đợi")
+          )
+        )
+      );
+      const duel = h(
+        "section",
+        { class: "panel", id: "demo-duel", hidden: true },
+        h("div", { class: "panel-header" }, h("div", null, h("h3", null, "Đấu 2 mô hình"), h("p", null, "Hoãn theo lộ trình Đ7: cần hai mô hình trên Xeon và sổ token tách phiên đấu."))),
+        h("div", { class: "panel-body" }, h("p", { class: "subtle" }, "Chưa làm — sẽ bật khi Xeon có cấu hình mô hình thứ hai."))
+      );
+      root.append(tabs, simulator, sample, training, duel);
+      this.resetChat();
+      this.paintSamples();
+    }
+    nextStep(index, title, detail, action, label) {
+      return h(
+        "div",
+        { class: "demo-next-step" },
+        h("span", null, index),
+        h("strong", null, title),
+        h("p", null, detail),
+        h("button", { class: "secondary-button", type: "button", "data-action": action }, label)
+      );
+    }
+    load() {
+      void this.loadStyles();
+    }
+    setTab(tab) {
+      this.tab = tab;
+      for (const b of this.root.querySelectorAll("[data-demo-ai-tab]")) b.classList.toggle("active", b.dataset["demoAiTab"] === tab);
+      el("demo-simulator").hidden = tab !== "simulator";
+      el("demo-sample").hidden = tab !== "sample";
+      el("demo-training").hidden = tab !== "training";
+      el("demo-duel").hidden = tab !== "duel";
+    }
+    // ------------------------------------------------------------------ simulator
+    resetChat() {
+      this.chat = [{ from: "system", text: "Hộp cát: nhập tin nhắn khách để AI trên Xeon soạn nháp. Không gửi cho ai, không ghi vào dữ liệu shop." }];
+      this.lastCustomer = "";
+      this.suggested = "";
+      this.draft = null;
+      this.styleId = "";
+      el("demoEditedReply").value = "";
+      el("demoReplyRationale").value = "";
+      this.paintChat();
+      this.paintDraft();
+    }
+    paintChat() {
+      const box = el("demo-chat");
+      clear(box);
+      for (const line of this.chat) {
+        box.appendChild(h("div", { class: `message ${line.from}` }, line.text, line.accepted ? h("span", { class: "khi" }, "câu đã duyệt") : null));
+      }
+      box.scrollTop = box.scrollHeight;
+    }
+    async sendCustomer() {
+      const input2 = el("demoCustomerInput");
+      const text2 = input2.value.trim();
+      const line = el("demo-trang-thai");
+      if (text2 === "") {
+        status(line, "Nhập tin nhắn khách hàng trước khi gửi.", "bad");
+        return;
+      }
+      if (this.busy) return;
+      this.busy = true;
+      const history2 = this.chat.filter((m) => m.from !== "system").map((m) => ({ ai: m.from === "customer" ? "khach" : "shop", chu: m.text }));
+      this.chat.push({ from: "customer", text: text2 }, { from: "system", text: "AI đang đọc hội thoại..." });
+      this.lastCustomer = text2;
+      this.styleId = "";
+      input2.value = "";
+      this.paintChat();
+      const wait = new Promise((resolve) => setTimeout(resolve, Math.max(0, Number(el("demoAIReplyDelay").value) || 0)));
+      const [r] = await Promise.all([this.ctx.gateway.landing("ai.hop-cat", { lichSu: history2, chu: text2 }), wait]);
+      this.busy = false;
+      this.chat = this.chat.filter((m) => m.text !== "AI đang đọc hội thoại...");
+      if (!r.ok || !r.than?.goiY) {
+        this.chat.push({ from: "system", text: `AI chưa trả lời được: ${r.viSao}` });
+        this.paintChat();
+        status(line, r.viSao, "bad");
+        return;
+      }
+      this.draft = r.than.goiY;
+      this.suggested = this.draft.traLoi;
+      el("demoEditedReply").value = this.suggested;
+      el("demoReplyRationale").value = "";
+      this.chat.push({ from: "system", text: this.draft.canNguoi ? `AI đề nghị chuyển người thật: ${this.draft.lyDo}` : `AI đã soạn nháp (${this.draft.nguonTraLoi === "agent" ? "mô hình AI" : "máy luật"}) — sửa ở khung bên phải rồi Ghi nhận phong cách.` });
+      this.paintChat();
+      this.paintDraft();
+      status(line, "Đã có nháp — không gửi ai.", "good");
+    }
+    paintDraft() {
+      const draft = this.draft;
+      el("demo-ghi-phong-cach").disabled = this.lastCustomer === "";
+      el("demo-ghi-phong-cach").textContent = this.styleId ? "Cập nhật câu đã duyệt" : "Ghi nhận phong cách";
+      el("demo-lay-lai").disabled = this.suggested === "";
+      const badge2 = el("demo-trang-thai-badge");
+      badge2.textContent = draft === null ? "Chưa phân tích" : draft.nguonTraLoi === "agent" ? "AI đã phân tích" : "Máy luật phân tích";
+      badge2.className = `badge ${draft === null ? "amber" : draft.nguonTraLoi === "agent" ? "green" : "blue"}`;
+      const facts = el("demo-du-kien");
+      clear(facts);
+      const fact2 = (label, value) => h("div", { class: "profile-fact" }, h("span", null, label), h("strong", null, value || "chưa rõ"));
+      facts.append(fact2("Size", str(draft?.duKien["size"])), fact2("Mã", str(draft?.duKien["ma"])), fact2("Nhu cầu", str(draft?.y)), fact2("Hành động", str(draft?.hanhDong)));
+      const result = el("demo-ket-qua");
+      clear(result);
+      result.hidden = draft === null;
+      if (draft !== null) {
+        result.append(
+          h("h3", null, "Kết quả phân tích"),
+          h("div", { class: "thread-meta" }, h("span", { class: "badge blue" }, draft.nguonTraLoi || "—"), h("span", { class: "badge amber" }, "chờ duyệt")),
+          h("p", { class: "subtle" }, draft.lyDo),
+          h("div", { class: "workflow" }, ...draft.dauVet.map((s) => h(
+            "div",
+            { class: "step" },
+            h("div", { class: "step-index" }, String(s.buoc)),
+            h("div", null, h("h4", null, s.ten), h("p", null, s.chiTiet)),
+            h("span", { class: "badge blue" }, s.loai)
+          )))
+        );
+      }
+      const proposals = el("demo-de-xuat");
+      clear(proposals);
+      const rows = draft === null ? [] : [...draft.canXacNhan.map((c) => ["amber", "Cần xác nhận", c, "Rule"]), ...draft.traLoi ? [["green", draft.y || "Trả lời", this.lastCustomer, "Đề xuất"]] : []];
+      if (rows.length === 0) rows.push(["amber", "Chưa có phân tích", "Nhập hội thoại mẫu rồi bấm Gửi sang AI gợi ý.", "Chờ dữ liệu"]);
+      for (const [color, title, detail, tag] of rows) {
+        proposals.appendChild(h("div", { class: "alert-row" }, h("div", { class: `alert-bar ${color}` }), h("div", null, h("div", { class: "product-title" }, title ?? ""), h("div", { class: "subtle" }, detail ?? "")), h("span", { class: `badge ${color === "green" ? "green" : "amber"}` }, tag ?? "")));
+      }
+      this.paintCompare();
+    }
+    paintCompare() {
+      const box = el("demo-so-sanh");
+      clear(box);
+      box.hidden = this.suggested === "";
+      if (this.suggested === "") return;
+      box.append(
+        h("h3", null, "So sánh trước khi ghi nhận"),
+        h(
+          "div",
+          { class: "demo-reply-compare" },
+          h("div", null, h("strong", null, "AI gợi ý"), h("p", null, this.suggested)),
+          h("div", null, h("strong", null, "Anh sửa"), h("p", null, el("demoEditedReply").value || this.suggested))
+        )
+      );
+    }
+    async saveStyle() {
+      const line = el("demo-trang-thai");
+      const reply = el("demoEditedReply").value.trim();
+      if (this.lastCustomer === "" || reply === "") {
+        status(line, "Cần có tin nhắn khách và câu trả lời đã sửa trước khi ghi nhận.", "bad");
+        return;
+      }
+      const r = await this.ctx.gateway.landing("ai.cau-mau.ghi", {
+        ...this.styleId ? { ma: this.styleId } : {},
+        cauKhach: this.lastCustomer,
+        traLoiAi: this.suggested,
+        traLoiDuyet: reply,
+        lyDo: el("demoReplyRationale").value.trim(),
+        nguCanh: this.chat.filter((m) => m.from !== "system").slice(-12).map((m) => ({ vai: m.from === "customer" ? "khach" : "shop", chu: m.text }))
+      });
+      if (!r.ok || !r.than?.cauMau) {
+        status(line, r.viSao || "Không ghi nhận được.", "bad");
+        return;
+      }
+      const updating = this.styleId !== "";
+      this.styleId = r.than.cauMau.id;
+      const existing = this.chat.find((m) => m.accepted);
+      if (existing) existing.text = reply;
+      else this.chat.push({ from: "ai", text: reply, accepted: true });
+      this.paintChat();
+      this.paintDraft();
+      status(line, updating ? "Đã cập nhật câu trả lời đã duyệt." : "Đã ghi nhận phong cách và đưa vào hàng đợi huấn luyện (chờ duyệt).", "good");
+      await this.loadStyles();
+    }
+    async loadStyles() {
+      const r = await this.ctx.gateway.landing("ai.cau-mau");
+      if (!r.ok) return;
+      this.styles = r.than?.cauMau ?? [];
+      el("demo-so-vi-du").textContent = `${this.styles.length} ví dụ phong cách`;
+      const box = el("demo-vi-du");
+      clear(box);
+      box.hidden = this.styles.length === 0;
+      if (this.styles.length === 0) return;
+      box.append(
+        h("h3", null, "Ví dụ phong cách đã ghi nhận gần nhất"),
+        h("div", { class: "qa-list" }, ...this.styles.slice(0, 3).map((s) => h(
+          "div",
+          { class: "qa-card" },
+          h("div", { class: "qa-head" }, h("strong", null, s.cauKhach || "Tin nhắn khách"), h("span", { class: "badge green" }, "style")),
+          h("p", null, s.traLoiDuyet),
+          s.lyDo ? h("div", { class: "subtle" }, `Lý do: ${s.lyDo}`) : null,
+          h("div", { class: "subtle" }, s.capNhatLuc ? dayClock(s.capNhatLuc) : "Vừa ghi nhận")
+        )))
+      );
+    }
+    // ------------------------------------------------------------------ sample threads
+    paintSamples() {
+      const list = el("demo-mau-ds");
+      clear(list);
+      for (const t of SAMPLE_THREADS) {
+        list.appendChild(h(
+          "button",
+          { class: `thread-card${t.id === this.sample ? " active" : ""}`, type: "button", onclick: () => {
+            this.sample = t.id;
+            this.paintSamples();
+          } },
+          h("strong", null, t.customer),
+          h("span", { class: "subtle" }, t.need)
+        ));
+      }
+      const thread = SAMPLE_THREADS.find((t) => t.id === this.sample);
+      el("demo-mau-ten").textContent = thread.customer;
+      el("demo-mau-nhu-cau").textContent = thread.need;
+      const box = el("demo-mau-chat");
+      clear(box);
+      for (const m of this.sampleChats.get(thread.id) ?? []) box.appendChild(h("div", { class: `message ${m.from}` }, m.text));
+      box.appendChild(h("div", { class: "message system" }, "Hội thoại mẫu — không có khách thật nhận tin."));
+    }
+    async draftSample() {
+      const chat = this.sampleChats.get(this.sample) ?? [];
+      const last = [...chat].reverse().find((m) => m.from === "customer");
+      const line = el("demo-mau-trang-thai");
+      if (!last) return;
+      status(line, "AI đang soạn nháp trong hộp cát…");
+      const history2 = chat.slice(0, chat.lastIndexOf(last)).map((m) => ({ ai: m.from === "customer" ? "khach" : "shop", chu: m.text }));
+      const r = await this.ctx.gateway.landing("ai.hop-cat", { lichSu: history2, chu: last.text });
+      if (!r.ok || !r.than?.goiY) {
+        status(line, r.viSao, "bad");
+        return;
+      }
+      el("ai-draft").value = r.than.goiY.traLoi;
+      status(line, "Đã có nháp.", "good");
+    }
+    sendSampleReply() {
+      const draft = el("ai-draft").value.trim();
+      if (draft === "") {
+        status(el("demo-mau-trang-thai"), "Chưa có nháp để gửi.", "bad");
+        return;
+      }
+      this.sampleChats.get(this.sample)?.push({ from: "ai", text: draft });
+      el("ai-draft").value = "";
+      this.paintSamples();
+      status(el("demo-mau-trang-thai"), "Đã gửi nháp vào hội thoại mẫu (không có khách thật).", "good");
+    }
+    confirmSampleOrder() {
+      const value = (id) => el(id).value.trim();
+      const product = value("demo-don-ma");
+      const line = el("demo-mau-trang-thai");
+      if (product === "") {
+        status(line, "Hãy chọn sản phẩm vào giỏ trước khi gửi thẻ xác nhận.", "bad");
+        return;
+      }
+      const price = Number(value("demo-don-gia").replace(/[^\d]/g, "")) || 0;
+      this.sampleChats.get(this.sample)?.push({
+        from: "ai",
+        text: `Em gửi thẻ đặt hàng cho ${product}, size ${value("demo-don-size") || "?"}, số lượng ${value("demo-don-sl") || "1"}${price ? `, giá ${money(price)}` : ""}. Bác kiểm tra SĐT ${value("demo-don-sdt") || "bác cần nhập SĐT"}, địa chỉ ${value("demo-don-dia-chi") || "bác cần nhập địa chỉ"}; nếu cần bác sửa trực tiếp trong thẻ giúp em nhé.`
+      });
+      this.paintSamples();
+      status(line, "Đã gửi thẻ xác nhận vào hội thoại mẫu.", "good");
+    }
+  };
+
+  // ../omi/packages/omi-ui/src/views/training.ts
+  var APPLICATION_LABEL = { static_qa: "Q&A tĩnh", intent_rule: "nhận diện", dynamic_rule: "catalog động", clarification_rule: "hỏi lại", handoff_rule: "chuyển người", knowledge_rule: "kiến thức" };
+  var APPROVE_LABEL = { static_qa: "Duyệt thành Q&A", dynamic_rule: "Duyệt thành rule catalog động", clarification_rule: "Duyệt thành rule hỏi lại", handoff_rule: "Duyệt thành rule chuyển người", knowledge_rule: "Duyệt thành kiến thức", intent_rule: "Duyệt thành rule nhận diện" };
+  var EDIT_REASON_LABEL = { correct: "Đúng, chỉ chỉnh cách nói", wrong_product: "AI hiểu sai sản phẩm", wrong_context: "AI thiếu/sai ngữ cảnh", wrong_stock: "Sai dữ liệu giá/tồn", missing_question: "Thiếu câu hỏi xác nhận", handoff: "Đáng lẽ chuyển người thật" };
+  var STATUS_LABEL2 = { "chua-chay": "Chưa chạy", "dang-chay": "Đang chạy", "dang-dung": "Đang dừng an toàn", "da-dung": "Đã tạm dừng", xong: "Hoàn tất", loi: "Cần tiếp tục" };
+  var fact = (label, value) => h("div", { class: "profile-fact" }, h("span", null, label), h("strong", null, value || "chưa rõ"));
+  var step = (index, title, detail, tag) => h("div", { class: "step" }, h("div", { class: "step-index" }, String(index)), h("div", null, h("h4", null, title), h("p", null, detail)), h("span", { class: "badge blue" }, tag));
+  var launchStep = (index, title, detail, tag) => h("div", { class: "launch-step" }, h("div", { class: "launch-step-index" }, index), h("div", null, h("strong", null, title), h("p", null, detail)), h("span", null, tag));
+  var opsCheck = (title, ok, detail) => h("div", { class: `ops-check${ok ? " ready" : ""}` }, h("span", null, ok ? "✓" : "!"), h("div", null, h("strong", null, title), h("p", null, detail)));
+  var costRule = (title, detail) => h("div", { class: "cost-rule" }, h("strong", null, title), h("p", null, detail));
+  var input = (id, label, value = "") => h("div", { class: "field" }, h("label", { for: id }, label), h("input", { id, value }));
+  var textarea = (id, label, placeholder = "", value = "") => h("div", { class: "field" }, h("label", { for: id }, label), h("textarea", { id, placeholder, value }));
+  var bar = (percent, indeterminate = false) => h("div", { class: `training-progress${indeterminate ? " is-indeterminate" : ""}` }, h("i", { class: `omi-w-${Math.max(0, Math.min(100, Math.round(percent / 10) * 10))}` }));
+  var TrainingView = class extends View {
+    id = "training";
+    label = "Training AI";
+    title = "Training AI";
+    workspace = "common";
+    glyph = "◆";
+    tab = "launch";
+    visible = 30;
+    data = null;
+    archive = null;
+    proposal = null;
+    actions = {
+      "set-ai-reply-mode": () => this.saveOps({ cheDoTraLoi: "suggest", nguoiTruc: true }, "AI đang ở chế độ tạo nháp, chờ người trực duyệt."),
+      "open-training-review": () => {
+        this.visible = 30;
+        this.setTab("review");
+      },
+      "save-training-ops": () => this.saveOps({
+        cheDoTraLoi: el("aiReplyMode").value === "auto" ? "auto" : "suggest",
+        tuPhanTich: el("aiAutoAnalyze").value !== "off",
+        nguoiTruc: el("toolHumanMode").value === "on",
+        nguongTinCay: Number(el("chatbotConfidenceThreshold").value) || 85
+      }, "Đã lưu cấu hình vận hành chatbot/AI."),
+      "start-facebook-archive-backfill": () => this.archiveStart(false),
+      "restart-facebook-archive-backfill": () => this.archiveStart(true),
+      "pause-facebook-archive-backfill": () => this.archiveStop(),
+      "start-facebook-training-analysis": () => this.analysisStart(false),
+      "restart-facebook-training-analysis": (b) => this.analysisRestart(b),
+      "import-facebook-training-results": () => this.importResults(),
+      "load-more-training-reviews": () => {
+        this.visible += 30;
+        return this.reload();
+      },
+      "approve-review": (b) => this.review(str(b.dataset["reviewId"]), "ai.hang-duyet.duyet", "Đã duyệt. Bộ não sẽ đọc mục này ở lượt soạn sau."),
+      "block-review": (b) => this.review(str(b.dataset["reviewId"]), "ai.hang-duyet.chan", "Đã chặn đề xuất này."),
+      "approve-qa": (b) => this.qaStatus(str(b.dataset["qaId"]), "approved"),
+      "retire-qa": (b) => this.qaStatus(str(b.dataset["qaId"]), "retired"),
+      "add-qa": () => this.addQa(),
+      "add-customer-profile": () => this.addProfile(),
+      "add-product-knowledge": () => this.addKnowledge(),
+      "propose-knowledge-library": () => this.propose(),
+      "clear-knowledge-proposal": () => {
+        this.proposal = null;
+        el("knowledgeTopicInput").value = "";
+        this.paint();
+      },
+      "refresh-knowledge-content": () => this.refreshProposal(),
+      "create-knowledge-library": () => this.createLibrary()
+    };
+    build(root) {
+      root.append(
+        h(
+          "div",
+          { class: "grid three" },
+          this.metric("Kịch bản bot", "tr-kich-ban", "Được dùng khi intent đủ chắc"),
+          this.metric("Cần huấn luyện", "tr-can-duyet", "Câu AI/người thật cần biến thành kịch bản"),
+          this.metric("Trạng thái bot", "tr-trang-thai", "—")
+        ),
+        h(
+          "section",
+          { class: "panel omi-section-gap" },
+          h(
+            "div",
+            { class: "panel-header" },
+            h("div", null, h("h3", null, "Trung tâm vận hành Chatbot + AI"), h("p", null, "Bot kịch bản, AI tạo nháp, người thật duyệt và gom dữ liệu để huấn luyện. AI chạy trên Xeon; landing giữ dữ liệu.")),
+            h(
+              "div",
+              { class: "split-actions" },
+              h("button", { class: "secondary-button", type: "button", "data-action": "set-ai-reply-mode", "data-mode": "draft" }, "AI tạo nháp"),
+              h("button", { class: "primary-button", type: "button", "data-action": "open-training-review" }, "Mở hàng đợi huấn luyện")
+            )
+          ),
+          h(
+            "div",
+            { class: "panel-body" },
+            h(
+              "div",
+              { class: "training-tabs", role: "tablist", "aria-label": "Training AI" },
+              ...[["launch", "Ngày đầu vận hành"], ["qa", "Kịch bản chatbot"], ["review", "Hàng đợi huấn luyện"], ["knowledge", "Kho kiến thức AI"], ["customers", "Hồ sơ khách"]].map(([id, label]) => h("button", { class: `training-tab${id === this.tab ? " active" : ""}`, type: "button", "data-training-tab": id, onclick: () => this.setTab(id) }, label))
+            ),
+            h("p", { class: "status-line", id: "tr-thong-bao" }),
+            h("div", { class: "training-content", id: "tr-noi-dung" })
+          )
+        )
+      );
+    }
+    metric(label, id, hint) {
+      return h("section", { class: "panel metric" }, h("div", { class: "label" }, label), h("div", { class: "value", id }, "—"), h("div", { class: "hint" }, hint));
+    }
+    load() {
+      void this.reload();
+    }
+    receive(params) {
+      const tab = str(params["tab"]);
+      if (["launch", "qa", "review", "knowledge", "customers"].includes(tab)) this.setTab(tab);
+    }
+    say(text2, tone = "") {
+      status(el("tr-thong-bao"), text2, tone);
+    }
+    setTab(tab) {
+      this.tab = tab;
+      for (const b of this.root.querySelectorAll("[data-training-tab]")) b.classList.toggle("active", b.dataset["trainingTab"] === tab);
+      this.paint();
+    }
+    async reload() {
+      const [r, a] = await Promise.all([
+        this.ctx.gateway.landing("ai.huan-luyen", { gioiHan: this.visible }),
+        this.ctx.gateway.landing("hop-thu.luu-tru")
+      ]);
+      if (!r.ok || !r.than) {
+        this.say(r.viSao, "bad");
+        return;
+      }
+      this.data = r.than;
+      this.archive = a.ok ? a.than?.luuTru ?? null : null;
+      this.paint();
+    }
+    paint() {
+      const d = this.data;
+      if (d === null) return;
+      const ops = d.vanHanh;
+      el("tr-kich-ban").textContent = String(d.dem.kichBan);
+      el("tr-can-duyet").textContent = String(d.dem.canDuyet);
+      const mode = ops.epNguoi ? "Ép người" : ops.nguoiTruc ? "Người trực" : ops.cheDoTraLoi === "auto" ? "Tự động" : ops.cheDoTraLoi === "off" ? "Tắt" : "Nháp";
+      el("tr-trang-thai").textContent = mode;
+      (el("tr-trang-thai").nextElementSibling ?? el("tr-trang-thai")).textContent = ops.nguoiTruc || ops.cheDoTraLoi === "suggest" ? "AI soạn, người duyệt gửi" : ops.cheDoTraLoi === "auto" ? "AI được phép gửi khi qua kiểm tra" : "Bot không trả lời";
+      const box = el("tr-noi-dung");
+      clear(box);
+      if (this.tab === "launch") box.append(this.pipeline(d), this.analysisResult(d.phanTich), this.launch(d));
+      if (this.tab === "qa") box.append(this.qaBank(d));
+      if (this.tab === "review") box.append(this.reviewQueue(d));
+      if (this.tab === "knowledge") box.append(...this.knowledge(d));
+      if (this.tab === "customers") box.append(this.customers(d));
+    }
+    // ------------------------------------------------------------------ launch
+    pipeline(d) {
+      const archive = this.archive;
+      const a = d.phanTich;
+      const pages = Object.values(archive?.trang ?? {});
+      const archiveRunning = archive?.trangThai === "dang-chay" || archive?.trangThai === "dang-dung";
+      const analysisRunning = a.trangThai === "dang-chay" || a.dangChayVong;
+      const stale = a.trangThai === "xong" && archive !== null && a.trongKhoLucChay > 0 && archive.tong.trongKho !== a.trongKhoLucChay;
+      const done = a.trangThai === "xong" && !stale;
+      const inStore = archive?.tong.trongKho ?? 0;
+      const percent = inStore > 0 ? a.soHoiThoai * 100 / Math.max(1, archive?.tong.soHoiThoai ?? 1) : 0;
+      return h(
+        "section",
+        { class: "inline-panel training-pipeline" },
+        h(
+          "div",
+          { class: "section-title-row" },
+          h("div", null, h("h3", null, "Từ lịch sử Fanpage thành kịch bản AI"), h("p", { class: "subtle" }, "Kho chat gốc được giữ nguyên trên landing. AI chỉ tạo đề xuất; bộ não chỉ dùng mục đã được người quản lý duyệt.")),
+          h("span", { class: `badge ${done ? "green" : a.trangThai === "loi" || archive?.trangThai === "loi" ? "red" : "amber"}` }, STATUS_LABEL2[done ? "xong" : a.trangThai] ?? a.trangThai)
+        ),
+        h(
+          "div",
+          { class: "training-pipeline-grid" },
+          h(
+            "article",
+            { class: "training-pipeline-stage" },
+            h("div", { class: "training-pipeline-stage-head" }, h("div", null, h("span", null, "1"), h("strong", null, "Tải lịch sử từ năm 2023")), h("small", null, STATUS_LABEL2[archive?.trangThai ?? "chua-chay"] ?? "")),
+            h(
+              "div",
+              { class: "training-pipeline-metrics" },
+              h("span", null, h("strong", null, String(archive?.tong.soHoiThoai ?? 0)), " hội thoại đã xét"),
+              h("span", null, h("strong", null, String(archive?.tong.soTin ?? 0)), " tin chữ"),
+              h("span", null, h("strong", null, String(inStore)), " tin trong kho")
+            ),
+            bar(archive?.trangThai === "xong" ? 100 : 0, archiveRunning),
+            pages.length > 0 ? h("div", { class: "training-page-progress" }, ...pages.map((p) => h("div", null, h("span", null, p.ten || p.ma), h("strong", null, `${p.soHoiThoai} thoại · ${p.soTin} tin chữ`), h("small", null, `${p.soTrangHoiThoai} trang hội thoại · ${p.xong ? "Hoàn tất" : p.loi || "đang tải"}`)))) : h("p", { class: "subtle" }, "Kết nối Fanpage trước, sau đó bấm tải để landing đi từ cuộc chat mới nhất về mốc 01/01/2023."),
+            archive?.loiCuoi ? h("p", { class: "training-pipeline-error" }, archive.loiCuoi) : null,
+            h(
+              "div",
+              { class: "split-actions" },
+              archiveRunning ? h("button", { class: "secondary-button", type: "button", "data-action": "pause-facebook-archive-backfill", disabled: archive?.trangThai === "dang-dung" }, archive?.trangThai === "dang-dung" ? "Đang dừng an toàn..." : "Dừng tải") : h("button", { class: "secondary-button", type: "button", "data-action": "start-facebook-archive-backfill" }, ["loi", "da-dung"].includes(archive?.trangThai ?? "") ? "Tiếp tục tải" : "Tải/tiếp tục từ năm 2023"),
+              h("button", { class: "ghost-button", type: "button", "data-action": "restart-facebook-archive-backfill", disabled: archiveRunning }, "Quét lại từ đầu đến 2023")
+            )
+          ),
+          h(
+            "article",
+            { class: "training-pipeline-stage" },
+            h("div", { class: "training-pipeline-stage-head" }, h("div", null, h("span", null, "2"), h("strong", null, "Làm sạch + AI phân tích theo lô")), h("small", null, stale ? "Kho chat đã thay đổi" : STATUS_LABEL2[a.trangThai] ?? a.trangThai)),
+            h(
+              "div",
+              { class: "training-pipeline-metrics" },
+              h("span", null, h("strong", null, String(a.soHoiThoai)), " đã quét"),
+              h("span", null, h("strong", null, String(a.cauHoi.length)), " câu hỏi đề xuất"),
+              h("span", null, h("strong", null, String(a.soLo)), " lô")
+            ),
+            bar(a.trangThai === "xong" ? 100 : percent, analysisRunning),
+            h("p", { class: "subtle" }, "Tên, số điện thoại, email, địa chỉ, số tài khoản được ẩn TRÊN LANDING trước khi gửi Xeon; mỗi lô 20 hội thoại, điểm dừng lưu sau mỗi lô."),
+            stale ? h("p", { class: "training-pipeline-error" }, "Kho chat đã có thêm dữ liệu sau lần phân tích trước. Hãy phân tích lại để kết quả bao phủ toàn bộ lịch sử hiện tại.") : null,
+            a.loiCuoi ? h("p", { class: "training-pipeline-error" }, a.loiCuoi) : null,
+            h(
+              "div",
+              { class: "split-actions" },
+              h(
+                "button",
+                { class: "primary-button", type: "button", "data-action": stale ? "restart-facebook-training-analysis" : "start-facebook-training-analysis", disabled: analysisRunning || inStore === 0 },
+                stale ? "Kho đã đổi - phân tích lại" : a.trangThai === "loi" || a.trangThai === "dang-chay" ? "Tiếp tục phân tích" : "Phân tích toàn bộ kho chat"
+              ),
+              h("button", { class: "ghost-button", type: "button", "data-action": "restart-facebook-training-analysis", disabled: analysisRunning || inStore === 0 }, "Phân tích lại từ đầu")
+            )
+          ),
+          h(
+            "article",
+            { class: "training-pipeline-stage" },
+            h("div", { class: "training-pipeline-stage-head" }, h("div", null, h("span", null, "3"), h("strong", null, "Duyệt trước khi bộ não dùng")), h("small", null, done ? `${a.cauHoi.length + a.nguyenTac.length} đề xuất` : "Chờ phân tích xong")),
+            h(
+              "div",
+              { class: "training-pipeline-metrics" },
+              h("span", null, h("strong", null, String(a.cauHoi.length + a.nguyenTac.length)), " đề xuất AI"),
+              h("span", null, h("strong", null, String(d.dem.canDuyet)), " đang chờ duyệt"),
+              h("span", null, h("strong", null, String(d.dem.daDuyet)), " đã duyệt")
+            ),
+            h("p", { class: "subtle" }, `Bấm đưa kết quả vào hàng đợi sau khi phân tích xong. Chống trùng theo intent + câu hỏi + câu trả lời và KHÔNG tự duyệt.${a.daNhapLuc ? ` Lần đưa gần nhất: ${dayClock(a.daNhapLuc)}.` : ""}`),
+            h(
+              "div",
+              { class: "split-actions" },
+              h("button", { class: "primary-button", type: "button", "data-action": "import-facebook-training-results", disabled: !done }, "Đưa vào Hàng đợi huấn luyện"),
+              h("button", { class: "secondary-button", type: "button", "data-action": "open-training-review" }, "Mở hàng đợi")
+            )
+          )
+        )
+      );
+    }
+    analysisResult(a) {
+      if (a.tomTat.length === 0 && a.nguyenTac.length === 0) return "";
+      return h(
+        "section",
+        { class: "inline-panel omi-section-gap" },
+        h(
+          "div",
+          { class: "section-title-row" },
+          h("div", null, h("h3", null, "Tổng kết AI phân tích gần nhất"), h("p", { class: "subtle" }, a.tomTat.at(-1) ?? "AI đã đọc hội thoại và tạo đề xuất huấn luyện.")),
+          h("span", { class: "badge green" }, "Xeon")
+        ),
+        h(
+          "div",
+          { class: "grid three" },
+          this.staticMetric("Nguyên tắc mới", a.nguyenTac.length, "Đưa vào bộ tài liệu chuẩn"),
+          this.staticMetric("Câu hỏi mẫu", a.cauHoi.length, "Đưa vào hàng đợi duyệt"),
+          this.staticMetric("Hội thoại đã đọc", a.soHoiThoai, `${a.soLo} lô`)
+        ),
+        h("div", { class: "workflow omi-actions-top" }, ...a.nguyenTac.slice(0, 5).map((p, i) => step(i + 1, p.tieuDe, p.chiTiet, p.loai || "Rule")))
+      );
+    }
+    staticMetric(label, value, hint) {
+      return h("section", { class: "panel metric" }, h("div", { class: "label" }, label), h("div", { class: "value" }, String(value)), h("div", { class: "hint" }, hint));
+    }
+    launch(d) {
+      const ops = d.vanHanh;
+      const select = (id, options2, value) => h("select", { id }, ...options2.map(([v, label]) => h("option", { value: v, selected: v === value }, label)));
+      return h(
+        "div",
+        { class: "omi-stack omi-section-gap" },
+        h(
+          "div",
+          { class: "launch-layout" },
+          h(
+            "section",
+            { class: "inline-panel" },
+            h(
+              "div",
+              { class: "section-title-row" },
+              h("div", null, h("h3", null, "Luồng xử lý tin nhắn"), h("p", { class: "subtle" }, "Giai đoạn chưa đủ kiến thức: bot chỉ tự trả lời câu chắc, AI chỉ soạn nháp.")),
+              h("span", { class: "badge green" }, ops.nguoiTruc ? "Người trực + AI gợi ý" : ops.cheDoTraLoi === "auto" ? "Tự động có kiểm tra" : "AI tạo nháp, người duyệt")
+            ),
+            h(
+              "div",
+              { class: "launch-flow" },
+              launchStep("1", "Tin nhắn mới", "Landing lưu hội thoại, fanpage, khách, câu hỏi gốc.", "Meta/Zalo"),
+              launchStep("2", "Bot kịch bản", `Nếu intent >= ${ops.nguongTinCay}% và đủ dữ liệu thì trả lời bằng kịch bản.`, "Không gọi AI"),
+              launchStep("3", "AI trên Xeon", "Không có kịch bản hoặc câu phức tạp thì AI soạn nháp có dẫn nguồn dữ liệu.", "Có kiểm soát"),
+              launchStep("4", "Người duyệt", "Nhân viên sửa/gửi, hệ thống lưu bản cuối để học.", "An toàn"),
+              launchStep("5", "Training loop", "Câu AI bị sửa được đưa vào hàng đợi huấn luyện.", "Rẻ dần")
+            )
+          ),
+          h(
+            "section",
+            { class: "inline-panel" },
+            h("h3", null, "Cấu hình vận hành"),
+            h(
+              "div",
+              { class: "ops-checklist" },
+              opsCheck("Người trực ưu tiên", ops.nguoiTruc, "Người thật gửi, AI theo dõi và gợi ý training."),
+              opsCheck("AI tạo nháp khi có người", ops.nguoiTruc || ops.cheDoTraLoi === "suggest", "Không cho AI tự gửi khi người đang trực."),
+              opsCheck("Bot tự trả lời câu chắc", d.dem.kichBan >= 5, `${d.dem.kichBan} kịch bản đã duyệt.`),
+              opsCheck("Ngưỡng confidence cao", ops.nguongTinCay >= 80, `Đang đặt ${ops.nguongTinCay}%.`),
+              opsCheck("Có queue review", d.dem.canDuyet > 0, `${d.dem.canDuyet} đề xuất đang chờ duyệt.`)
+            ),
+            h(
+              "div",
+              { class: "config-form omi-actions-top" },
+              h("div", { class: "field" }, h("label", { for: "aiReplyMode" }, "Chế độ AI"), select("aiReplyMode", [["draft", "AI tạo nháp, người duyệt gửi"], ["auto", "AI tự gửi khi đủ điều kiện"]], ops.cheDoTraLoi === "auto" ? "auto" : "draft")),
+              h("div", { class: "field" }, h("label", { for: "aiAutoAnalyze" }, "AI tự phân tích khi có tin khách mới"), select("aiAutoAnalyze", [["on", "Bật - tin khách đến là AI soạn nháp sẵn, người xem-sửa-gửi"], ["off", "Tắt - chỉ chạy khi bấm Soạn bot"]], ops.tuPhanTich ? "on" : "off")),
+              h("div", { class: "field" }, h("label", { for: "toolHumanMode" }, "Người trực trên tool"), select("toolHumanMode", [["on", "Bật - người ưu tiên, AI chỉ gợi ý"], ["off", "Tắt - cho phép AI tự trả lời nếu đủ điều kiện"]], ops.nguoiTruc ? "on" : "off")),
+              input("chatbotConfidenceThreshold", "Ngưỡng chatbot tự trả lời (%)", String(ops.nguongTinCay)),
+              h("button", { class: "primary-button", type: "button", "data-action": "save-training-ops" }, "Lưu cấu hình vận hành")
+            )
+          )
+        ),
+        h(
+          "div",
+          { class: "launch-layout" },
+          h(
+            "section",
+            { class: "inline-panel" },
+            h("h3", null, "Việc cần làm mỗi ngày"),
+            h(
+              "div",
+              { class: "workflow" },
+              step(1, "Đầu ngày", "Cập nhật tồn kho, giá, sản phẩm ẩn và chính sách đối tác.", "15 phút"),
+              step(2, "Trong ngày", "Bot trả lời câu chắc, AI soạn nháp cho câu mới, người thật duyệt gửi.", "Live"),
+              step(3, "Cuối ngày", "Duyệt câu hỏi lặp lại, câu AI bị sửa, ca chuyển người thật.", "30 phút"),
+              step(4, "Tạo kịch bản", "Biến nhóm lặp 3-5 lần thành intent/kịch bản mới.", "Training")
+            )
+          ),
+          h(
+            "section",
+            { class: "inline-panel" },
+            h("h3", null, "Quy tắc gọi AI để tiết kiệm chi phí"),
+            h(
+              "div",
+              { class: "cost-rule-list" },
+              costRule("Không gọi AI", "Địa chỉ, giờ mở cửa, phí ship, đổi trả cơ bản, hỏi giá/tồn có đủ mã và size."),
+              costRule("Gọi AI nháp", "Tư vấn chọn giày, so sánh mẫu, chân bè/đau, câu nhiều ý, khách gửi ảnh."),
+              costRule("Chuyển người thật", "Khiếu nại, đổi trả cụ thể, mặc cả mạnh, hàng đối tác chưa xác nhận tồn.")
+            )
+          )
+        )
+      );
+    }
+    async saveOps(body, done) {
+      const r = await this.ctx.gateway.landing("ai.van-hanh.ghi", body);
+      this.say(r.ok ? done : r.viSao, r.ok ? "good" : "bad");
+      if (r.ok) await this.reload();
+    }
+    async archiveStart(restart) {
+      const r = await this.ctx.gateway.landing("hop-thu.luu-tru.bat-dau", restart ? { lamLai: true } : {});
+      this.say(r.ok ? str(r.than?.message) || "Đã bắt đầu tải lịch sử." : r.viSao, r.ok ? "good" : "bad");
+      await this.reload();
+    }
+    async archiveStop() {
+      const r = await this.ctx.gateway.landing("hop-thu.luu-tru.dung", {});
+      this.say(r.ok ? "Đã yêu cầu dừng." : r.viSao, r.ok ? "good" : "bad");
+      await this.reload();
+    }
+    async analysisStart(restart) {
+      const r = await this.ctx.gateway.landing("ai.phan-tich.bat-dau", { lamLai: restart });
+      this.say(r.ok ? str(r.than?.message) || "Đã bắt đầu phân tích." : r.viSao, r.ok ? "good" : "bad");
+      await this.reload();
+    }
+    /** "Phân tích lại từ đầu" makes a new checkpoint from the whole archive — two clicks. */
+    async analysisRestart(button) {
+      if (button.dataset["armed"] !== "1") {
+        button.dataset["armed"] = "1";
+        const label = button.textContent ?? "";
+        button.textContent = "Bấm lần nữa để phân tích lại";
+        setTimeout(() => {
+          delete button.dataset["armed"];
+          button.textContent = label;
+        }, 6e3);
+        return;
+      }
+      delete button.dataset["armed"];
+      await this.analysisStart(true);
+    }
+    async importResults() {
+      const r = await this.ctx.gateway.landing("ai.phan-tich.nhap", {});
+      this.say(r.ok ? str(r.than?.message) : r.viSao, r.ok ? "good" : "bad");
+      if (r.ok) {
+        this.tab = "review";
+        await this.reload();
+        this.setTab("review");
+      }
+    }
+    // ------------------------------------------------------------------ Q&A + queue
+    qaBank(d) {
+      return h(
+        "div",
+        { class: "grid two" },
+        h(
+          "section",
+          null,
+          h("div", { class: "section-title-row" }, h("div", null, h("h3", null, "Kịch bản chatbot"), h("p", { class: "subtle" }, "Các intent đã duyệt; bộ não đọc câu liên quan khi soạn, giá/tồn/size vẫn tra dữ liệu hiện tại."))),
+          h("div", { class: "qa-list" }, ...d.hoiDap.length ? d.hoiDap.map((q2) => this.qaCard(q2)) : [h("p", { class: "subtle" }, "Chưa có kịch bản nào.")])
+        ),
+        h(
+          "section",
+          { class: "inline-panel" },
+          h("h3", null, "Thêm kịch bản nhanh"),
+          h(
+            "div",
+            { class: "config-form" },
+            input("newQaIntent", "Intent"),
+            input("newQaQuestion", "Câu hỏi mẫu"),
+            textarea("newQaAnswer", "Template trả lời", "Dùng biến như {product}, {size}, {price}, {stock_status}; tránh ghi giá/tồn cố định."),
+            h("button", { class: "primary-button", type: "button", "data-action": "add-qa" }, "Thêm vào kịch bản")
+          )
+        )
+      );
+    }
+    qaCard(q2) {
+      return h(
+        "div",
+        { class: "knowledge-card" },
+        h("div", { class: "knowledge-card-header" }, h("div", null, h("div", { class: "product-title" }, q2.intent), h("div", { class: "subtle" }, q2.cauHoi)), h("span", { class: `badge ${q2.trangThai === "approved" ? "green" : "red"}` }, q2.trangThai)),
+        h("div", null, q2.traLoi),
+        h("div", { class: "script-rule-row" }, h("span", null, "Bot dùng khi intent đủ chắc và đủ biến dữ liệu."), h("span", null, "Thiếu sản phẩm, size, giá hoặc tồn thì AI tra lại.")),
+        h("div", { class: "thread-meta" }, h("span", { class: "badge blue" }, q2.nguon), h("span", { class: "badge violet" }, `${q2.soLanDung} lần dùng`), h("span", { class: "badge green" }, dayClock(q2.capNhatLuc))),
+        h(
+          "div",
+          { class: "split-actions" },
+          h("button", { class: "primary-button", type: "button", "data-action": "approve-qa", "data-qa-id": q2.id }, "Duyệt dùng"),
+          h("button", { class: "ghost-button", type: "button", "data-action": "retire-qa", "data-qa-id": q2.id }, "Tạm ngưng")
+        )
+      );
+    }
+    reviewQueue(d) {
+      return h(
+        "div",
+        { class: "grid two" },
+        h(
+          "section",
+          null,
+          h("div", { class: "section-title-row" }, h("div", null, h("h3", null, "Hàng đợi huấn luyện"), h("p", { class: "subtle" }, "Câu AI phải xử lý, câu người thật sửa, hoặc nhóm câu lặp lại sẽ vào đây. Không mục nào tự duyệt."))),
+          h("div", { class: "qa-list" }, ...d.hangDuyet.length ? d.hangDuyet.map((r) => this.reviewCard(r)) : [h("p", { class: "subtle" }, "Hàng đợi trống.")]),
+          d.hangDuyet.length < d.tongHangDuyet ? h("div", { class: "center-actions" }, h("button", { class: "secondary-button", type: "button", "data-action": "load-more-training-reviews" }, `Xem thêm 30 mục (${d.hangDuyet.length}/${d.tongHangDuyet})`)) : null
+        ),
+        h(
+          "section",
+          { class: "inline-panel" },
+          h("h3", null, "Luồng biến AI thành chatbot"),
+          h(
+            "div",
+            { class: "workflow" },
+            step(1, "Lưu hội thoại", "Tin nhắn khách, câu AI, câu người thật sửa, kết quả đơn.", "Raw"),
+            step(2, "Gom nhóm", "AI trên Xeon đọc kho chat đã ẩn thông tin cá nhân, theo lô.", "Batch"),
+            step(3, "Chọn cách áp dụng", "Q&A, rule nhận diện, rule hỏi lại, catalog động, kiến thức hoặc chuyển người.", "Policy"),
+            step(4, "Bạn duyệt", "Chỉ bản ghi đã duyệt mới được bộ não đọc ở lượt soạn sau.", "Human"),
+            step(5, "Dùng lại", "Rule chỉ áp khi câu mới đủ giống; giá/tồn/size luôn tra dữ liệu hiện tại.", "Safe")
+          )
+        )
+      );
+    }
+    reviewCard(r) {
+      const color = r.trangThai === "candidate" ? "amber" : r.trangThai.startsWith("approved") ? "green" : "red";
+      const entities = (m) => Object.entries(m).map(([k, v]) => `${k}=${v}`).join(" · ") || "Chưa có dữ kiện";
+      return h(
+        "div",
+        { class: "knowledge-card" },
+        h(
+          "div",
+          { class: "knowledge-card-header" },
+          h("div", null, h("div", { class: "product-title" }, r.tieuDe), h("div", { class: "subtle" }, `Intent đề xuất: ${r.intent}`)),
+          h("div", { class: "policy-card-actions" }, h("span", { class: "badge blue" }, APPLICATION_LABEL[r.cachApDung] ?? r.cachApDung), h("span", { class: `badge ${color}` }, r.trangThai))
+        ),
+        h("div", null, h("div", { class: "subtle" }, "Câu khách hỏi"), h("div", null, r.cauKhach)),
+        r.nguCanh.length ? h(
+          "div",
+          null,
+          h("div", { class: "subtle" }, "Ngữ cảnh hội thoại đã lưu"),
+          h("div", { class: "conversation-context-preview" }, ...r.nguCanh.slice(-6).map((m) => h("div", null, h("strong", null, m.vai === "khach" ? "Khách" : "Shop"), h("span", null, m.chu))))
+        ) : null,
+        h("div", null, h("div", { class: "subtle" }, r.cachApDung === "static_qa" ? "Câu trả lời đề xuất" : "Câu trả lời shop đã dùng"), h("div", null, r.traLoiDeXuat)),
+        r.traLoiAiGoc ? h("div", { class: "training-before-after" }, h("div", null, h("span", null, "AI ban đầu"), h("p", null, r.traLoiAiGoc)), h("div", null, h("span", null, "Người trực sửa"), h("p", null, r.traLoiDeXuat))) : null,
+        Object.keys(r.duKienAi).length || Object.keys(r.duKienSua).length ? h("div", { class: "training-before-after compact" }, h("div", null, h("span", null, "AI nhận diện"), h("p", null, entities(r.duKienAi))), h("div", null, h("span", null, "Đã sửa"), h("p", null, entities(r.duKienSua)))) : null,
+        r.cachApDung === "static_qa" ? null : h("div", { class: "script-rule-row" }, h("strong", null, "Không lưu thành câu trả lời cố định"), h("span", null, "Bộ não đọc như quy tắc; giá/tồn/size tra lại mỗi lần.")),
+        r.lyDoSua ? h("div", { class: "subtle" }, `Lý do sửa: ${EDIT_REASON_LABEL[r.lyDoSua] ?? r.lyDoSua}`) : null,
+        h("div", { class: "subtle" }, r.lyDo),
+        h(
+          "div",
+          { class: "split-actions" },
+          r.trangThai === "candidate" ? h("button", { class: "primary-button", type: "button", "data-action": "approve-review", "data-review-id": r.id }, APPROVE_LABEL[r.cachApDung] ?? "Duyệt") : h("span", { class: "badge green" }, `Đã áp dụng: ${APPLICATION_LABEL[r.cachApDung] ?? r.cachApDung}`),
+          h("button", { class: "danger-button", type: "button", "data-action": "block-review", "data-review-id": r.id }, "Không dùng")
+        )
+      );
+    }
+    async review(id, job, done) {
+      const r = await this.ctx.gateway.landing(job, { ma: id });
+      this.say(r.ok ? done : r.viSao, r.ok ? "good" : "bad");
+      await this.reload();
+    }
+    async qaStatus(id, trangThai) {
+      const r = await this.ctx.gateway.landing("ai.hoi-dap.trang-thai", { ma: id, trangThai });
+      this.say(r.ok ? trangThai === "approved" ? "Đã duyệt Q&A." : "Đã tạm ngưng Q&A." : r.viSao, r.ok ? "good" : "bad");
+      await this.reload();
+    }
+    async addQa() {
+      const v = (id) => el(id).value.trim();
+      if (!v("newQaIntent") || !v("newQaQuestion") || !v("newQaAnswer")) {
+        this.say("Cần nhập intent, câu hỏi và câu trả lời.", "bad");
+        return;
+      }
+      const r = await this.ctx.gateway.landing("ai.hoi-dap.them", { intent: v("newQaIntent"), cauHoi: v("newQaQuestion"), traLoi: v("newQaAnswer") });
+      this.say(r.ok ? "Đã thêm kịch bản chatbot." : r.viSao, r.ok ? "good" : "bad");
+      if (r.ok) await this.reload();
+    }
+    // ------------------------------------------------------------------ knowledge + customers
+    knowledge(d) {
+      const p = this.proposal;
+      const builder = h(
+        "div",
+        { class: "knowledge-builder" },
+        h(
+          "div",
+          { class: "config-form" },
+          h(
+            "div",
+            { class: "field" },
+            h("label", { for: "knowledgeTopicInput" }, "Chủ đề kho kiến thức"),
+            h("textarea", { id: "knowledgeTopicInput", placeholder: "Ví dụ: Quy tắc tư vấn giày tennis cho người mới chơi, hoặc cách xử lý khách hỏi đổi size sau khi nhận hàng." })
+          ),
+          h(
+            "div",
+            { class: "split-actions" },
+            h("button", { class: "primary-button", type: "button", "data-action": "propose-knowledge-library" }, "AI đề xuất cấu trúc"),
+            h("button", { class: "secondary-button", type: "button", "data-action": "clear-knowledge-proposal" }, "Làm mới")
+          )
+        ),
+        p === null ? h("div", { class: "inline-panel knowledge-proposal-empty" }, h("h3", null, "Chưa có đề xuất"), h("p", { class: "subtle" }, "Sau khi AI đề xuất, anh sửa lại id, tên, mô tả, useWhen và nội dung trước khi đưa vào hệ thống.")) : h(
+          "div",
+          { class: "inline-panel knowledge-proposal-panel" },
+          h("div", { class: "section-title-row" }, h("div", null, h("h3", null, "Đề xuất kho kiến thức"), h("p", { class: "subtle" }, "AI trên Xeon")), h("span", { class: "badge green" }, p.id || "new_knowledge")),
+          h(
+            "div",
+            { class: "grid two" },
+            input("knowledgeProposalId", "ID manifest", p.id),
+            input("knowledgeProposalName", "Tên hiển thị", p.name),
+            input("knowledgeProposalPath", "Đường dẫn file", p.path),
+            input("knowledgeProposalPriority", "Priority", String(p.priority || 80))
+          ),
+          input("knowledgeProposalUseWhen", "UseWhen, cách nhau bằng dấu phẩy", p.useWhen.join(", ")),
+          textarea("knowledgeProposalDescription", "Mô tả để hệ thống hiểu", "", p.description),
+          h("div", { class: "field" }, h("label", { for: "knowledgeProposalContent" }, "Nội dung file knowledge"), h("textarea", { id: "knowledgeProposalContent", class: "code-textarea", value: p.content })),
+          h(
+            "div",
+            { class: "split-actions" },
+            h("button", { class: "primary-button", type: "button", "data-action": "create-knowledge-library" }, "Đưa vào hệ thống"),
+            h("button", { class: "secondary-button", type: "button", "data-action": "refresh-knowledge-content" }, "Tạo lại nội dung từ mô tả")
+          )
+        )
+      );
+      return [
+        h(
+          "section",
+          { class: "inline-panel" },
+          h(
+            "div",
+            { class: "section-title-row" },
+            h("div", null, h("h3", null, "Kho kiến thức AI"), h("p", { class: "subtle" }, "Thư viện bộ não đọc khi tư vấn. Khi chat, chỉ nhóm có useWhen khớp câu khách mới được đọc.")),
+            h("span", { class: "badge green" }, `${d.thuVien.length} thư viện`)
+          ),
+          h("div", { class: "qa-list" }, ...d.thuVien.length ? d.thuVien.map((l) => h(
+            "div",
+            { class: "knowledge-card" },
+            h("div", { class: "knowledge-card-header" }, h("div", null, h("div", { class: "product-title" }, l.ten), h("div", { class: "subtle" }, l.duongDan)), h("span", { class: "badge blue" }, `ưu tiên ${l.uuTien}`)),
+            h("div", { class: "profile-grid" }, fact("Khi dùng", l.dungKhi.join(", ")), fact("Mô tả", l.moTa), fact("ID", l.id), fact("Độ dài", `${l.noiDung.length} ký tự`))
+          )) : [h("p", { class: "subtle" }, "Chưa có thư viện nào — tạo ở khung bên dưới.")])
+        ),
+        h(
+          "section",
+          { class: "inline-panel" },
+          h("div", { class: "section-title-row" }, h("div", null, h("h3", null, "Tạo kho kiến thức mới"), h("p", { class: "subtle" }, "Nhập chủ đề thô. AI đề xuất id, mô tả, useWhen, priority và khung nội dung.")), h("span", { class: "badge blue" }, "Knowledge builder")),
+          builder
+        ),
+        h(
+          "div",
+          { class: "grid two" },
+          h(
+            "section",
+            null,
+            h("div", { class: "section-title-row" }, h("div", null, h("h3", null, "Ghi chú fit theo sản phẩm"), h("p", { class: "subtle" }, "Feedback thực tế của shop cho từng model. Giá, size và tồn kho vẫn lấy từ catalog."))),
+            h("div", { class: "qa-list" }, ...d.kienThuc.map((f) => h(
+              "div",
+              { class: "knowledge-card" },
+              h("div", { class: "knowledge-card-header" }, h("div", null, h("div", { class: "product-title" }, f.tenSp), h("div", { class: "subtle" }, f.maSp)), h("span", { class: "badge green" }, "Fit note")),
+              h("div", { class: "profile-grid" }, fact("Form", f.form), fact("Phù hợp", f.phuHop), fact("Tư vấn size", f.tuVanSize), fact("Lưu ý", f.luuY)),
+              h("div", null, h("div", { class: "subtle" }, "Bằng chứng/feedback"), h("div", null, f.bangChung))
+            )))
+          ),
+          h(
+            "section",
+            { class: "inline-panel" },
+            h("h3", null, "Thêm ghi chú fit theo model"),
+            h(
+              "div",
+              { class: "config-form" },
+              input("fitProductCode", "Mã sản phẩm"),
+              input("fitProductName", "Tên sản phẩm"),
+              input("fitForm", "Form/độ rộng"),
+              input("fitBestFor", "Phù hợp"),
+              input("fitSizeAdvice", "Tư vấn size"),
+              textarea("fitEvidence", "Bằng chứng/feedback", "Tổng hợp phản hồi khách đã mua, đổi size, mức hài lòng..."),
+              h("button", { class: "primary-button", type: "button", "data-action": "add-product-knowledge" }, "Thêm kiến thức fit")
+            )
+          )
+        )
+      ];
+    }
+    customers(d) {
+      return h(
+        "div",
+        { class: "grid two" },
+        h(
+          "section",
+          null,
+          h("div", { class: "section-title-row" }, h("div", null, h("h3", null, "Hồ sơ khách mẫu"), h("p", { class: "subtle" }, "Kiểu khách của shop để AI hiểu nhu cầu thường gặp. KHÔNG phải khách đang chat; hồ sơ khách thật ở màn Khách hàng."))),
+          h("div", { class: "qa-list" }, ...d.hoSoMau.length ? d.hoSoMau.map((p) => h(
+            "div",
+            { class: "knowledge-card" },
+            h("div", { class: "knowledge-card-header" }, h("div", null, h("div", { class: "product-title" }, p.ten), h("div", { class: "subtle" }, p.kenh)), h("span", { class: "badge blue" }, "Customer memory")),
+            h("div", { class: "profile-grid" }, fact("Size thường đi", p.sizeQuen), fact("Form chân", p.formChan), fact("Môn chơi", p.monChoi), fact("Brand thích", p.brandThich.join(", ")), fact("Đã mua", p.daMua.join(", "))),
+            h("div", null, h("div", { class: "subtle" }, "Tóm tắt gửi vào AI"), h("div", null, p.tomTat))
+          )) : [h("p", { class: "subtle" }, "Chưa có hồ sơ mẫu.")])
+        ),
+        h(
+          "section",
+          { class: "inline-panel" },
+          h("h3", null, "Bổ sung thông số khách"),
+          h(
+            "div",
+            { class: "config-form" },
+            input("profileName", "Tên khách"),
+            input("profileUsualSize", "Size thường đi"),
+            input("profileFootForm", "Form chân"),
+            input("profileSportsUse", "Môn chơi/mục đích"),
+            input("profilePreferredBrands", "Brand thích"),
+            input("profilePurchasedProducts", "Sản phẩm đã mua"),
+            textarea("profileSummary", "Tóm tắt fit", "Ví dụ: chân bè nhẹ, chạy 10K, từng đau gan bàn chân..."),
+            h("button", { class: "primary-button", type: "button", "data-action": "add-customer-profile" }, "Thêm hồ sơ khách"),
+            h("p", { class: "subtle" }, "Không nhập SĐT/địa chỉ ở đây — hồ sơ mẫu được đọc bởi AI. Không nhập suy đoán của AI.")
+          )
+        )
+      );
+    }
+    async addProfile() {
+      const v = (id) => el(id).value.trim();
+      if (!v("profileName")) {
+        this.say("Cần nhập tên khách.", "bad");
+        return;
+      }
+      const r = await this.ctx.gateway.landing("ai.ho-so-mau.them", {
+        ten: v("profileName"),
+        sizeQuen: v("profileUsualSize"),
+        formChan: v("profileFootForm"),
+        monChoi: v("profileSportsUse"),
+        brandThich: v("profilePreferredBrands"),
+        daMua: v("profilePurchasedProducts"),
+        tomTat: v("profileSummary")
+      });
+      this.say(r.ok ? "Đã thêm hồ sơ khách." : r.viSao, r.ok ? "good" : "bad");
+      if (r.ok) await this.reload();
+    }
+    async addKnowledge() {
+      const v = (id) => el(id).value.trim();
+      if (!v("fitProductCode") || !v("fitProductName")) {
+        this.say("Cần nhập mã và tên sản phẩm.", "bad");
+        return;
+      }
+      const r = await this.ctx.gateway.landing("ai.kien-thuc.them", { maSp: v("fitProductCode"), tenSp: v("fitProductName"), form: v("fitForm"), phuHop: v("fitBestFor"), tuVanSize: v("fitSizeAdvice"), bangChung: v("fitEvidence") });
+      this.say(r.ok ? "Đã thêm kiến thức fit sản phẩm." : r.viSao, r.ok ? "good" : "bad");
+      if (r.ok) await this.reload();
+    }
+    async propose() {
+      const topic = el("knowledgeTopicInput").value.trim();
+      if (topic === "") {
+        this.say("Nhập chủ đề kho kiến thức trước.", "bad");
+        return;
+      }
+      this.say("AI đang đề xuất cấu trúc kho kiến thức…");
+      const r = await this.ctx.gateway.landing("ai.thu-vien.de-xuat", { chuDe: topic });
+      if (!r.ok || !r.than?.deXuat) {
+        this.say(r.viSao || "AI chưa sẵn sàng.", "bad");
+        return;
+      }
+      this.proposal = r.than.deXuat;
+      this.paint();
+      el("knowledgeTopicInput").value = topic;
+      this.say("Đã tạo đề xuất kho kiến thức. Anh có thể sửa trước khi đưa vào hệ thống.", "good");
+    }
+    readProposal() {
+      const v = (id) => el(id).value.trim();
+      return {
+        id: v("knowledgeProposalId"),
+        name: v("knowledgeProposalName"),
+        path: v("knowledgeProposalPath"),
+        priority: Number(v("knowledgeProposalPriority")) || 80,
+        useWhen: v("knowledgeProposalUseWhen").split(",").map((s) => s.trim()).filter(Boolean),
+        description: v("knowledgeProposalDescription"),
+        content: v("knowledgeProposalContent")
+      };
+    }
+    async refreshProposal() {
+      if (this.proposal === null) return;
+      const p = this.readProposal();
+      const r = await this.ctx.gateway.landing("ai.thu-vien.noi-dung", { ten: p.name, moTa: p.description, dungKhi: p.useWhen.join(", ") });
+      if (!r.ok) {
+        this.say(r.viSao, "bad");
+        return;
+      }
+      this.proposal = { ...p, content: str(r.than?.noiDung) };
+      this.paint();
+    }
+    async createLibrary() {
+      if (this.proposal === null) return;
+      const p = this.readProposal();
+      if (!p.id || !p.name || !p.path || !p.content) {
+        this.say("Cần đủ ID, tên, đường dẫn và nội dung knowledge.", "bad");
+        return;
+      }
+      const r = await this.ctx.gateway.landing("ai.thu-vien.tao", { id: p.id, ten: p.name, duongDan: p.path, uuTien: p.priority, dungKhi: p.useWhen.join(", "), moTa: p.description, noiDung: p.content });
+      if (!r.ok) {
+        this.say(r.viSao, "bad");
+        return;
+      }
+      this.proposal = null;
+      this.say(`Đã tạo kho kiến thức ${p.id}.`, "good");
+      await this.reload();
+    }
+  };
+
+  // ../omi/packages/omi-ui/src/views/token-ai.ts
+  var GROUP_ORDER = ["tra_loi_khach", "content", "kho", "training", "video", "khac"];
+  var GROUP_COLORS = { tra_loi_khach: "#23785b", content: "#6a578b", kho: "#ad6a1f", training: "#315d8a", video: "#c9a23f", khac: "#9aa396" };
+  var GROUP_LABELS = { tra_loi_khach: "Trả lời khách", content: "Content", kho: "Kho và quét tem", training: "Training AI", video: "Video Studio", khac: "Khác" };
+  var CHANNEL_LABELS = { fanpage: "Fanpage", zalo: "Zalo nhóm", personal: "FB cá nhân", comment: "Bình luận", demo: "Demo AI" };
+  var nf = (n) => Math.round(n).toLocaleString("vi-VN");
+  function tokens(value) {
+    if (value === null || value === void 0) return "—";
+    const n = Number(value) || 0;
+    if (n >= 1e6) return `${(n / 1e6).toLocaleString("vi-VN", { maximumFractionDigits: 2 })}M`;
+    if (n >= 1e3) return `${(n / 1e3).toLocaleString("vi-VN", { maximumFractionDigits: 1 })}k`;
+    return nf(n);
+  }
+  function vnd(value) {
+    if (value === null || value === void 0) return "—";
+    const n = Math.round(Number(value) || 0);
+    if (n >= 1e6) return `${(n / 1e6).toLocaleString("vi-VN", { maximumFractionDigits: 2 })} tr đ`;
+    if (n >= 1e4) return `${(n / 1e3).toLocaleString("vi-VN", { maximumFractionDigits: 1 })}k đ`;
+    return `${nf(n)} đ`;
+  }
+  function trend(current, previous) {
+    if (!previous) return "";
+    const pct = Math.round((current - previous) / previous * 100);
+    if (!pct) return h("span", { class: "tokenai-trend" }, "bằng kỳ trước");
+    return h("span", null, h("span", { class: `tokenai-trend ${pct > 0 ? "up" : "down"}` }, `${pct > 0 ? "+" : ""}${pct}%`), " so với kỳ trước");
+  }
+  var TokenAiView = class extends View {
+    id = "token-ai";
+    label = "Token AI";
+    title = "Token AI";
+    workspace = "common";
+    glyph = "◇";
+    days = 7;
+    channel = "";
+    model = "";
+    chart = "cost";
+    openGroups = { tra_loi_khach: true, content: true };
+    data = null;
+    loading = false;
+    error = "";
+    actions = {
+      "tokenai-range": (b) => {
+        const d = Number(b.dataset["days"]);
+        this.days = [1, 7, 30].includes(d) ? d : 7;
+        return this.reload();
+      },
+      "tokenai-refresh": () => this.reload(),
+      "tokenai-chart": (b) => {
+        this.chart = b.dataset["mode"] === "tokens" ? "tokens" : "cost";
+        this.paint();
+      },
+      "tokenai-toggle-group": (b) => {
+        const g = str(b.dataset["group"]);
+        this.openGroups = { ...this.openGroups, [g]: !this.openGroups[g] };
+        this.paint();
+      }
+    };
+    build(root) {
+      root.appendChild(h("div", { class: "tokenai-view", id: "tokenai-khung" }));
+      this.paint();
+    }
+    load() {
+      void this.reload();
+    }
+    async reload() {
+      this.loading = true;
+      this.paint();
+      const r = await this.ctx.gateway.landing("ai.token", { soNgay: this.days, kenh: this.channel, model: this.model });
+      this.loading = false;
+      this.error = r.ok ? "" : r.viSao;
+      if (r.ok && r.than?.soToken) this.data = r.than.soToken;
+      this.paint();
+    }
+    paint() {
+      const view = el("tokenai-khung");
+      clear(view);
+      const data = this.data;
+      const channelSelect = h(
+        "select",
+        { id: "tokenai-channel", "aria-label": "Lọc kênh", onchange: () => {
+          this.channel = el("tokenai-channel").value;
+          void this.reload();
+        } },
+        h("option", { value: "" }, "Mọi kênh"),
+        ...(data?.channelOptions ?? []).map((o) => h("option", { value: o.channel, selected: o.channel === this.channel }, o.label || CHANNEL_LABELS[o.channel] || o.channel))
+      );
+      const modelSelect = h(
+        "select",
+        { id: "tokenai-model", "aria-label": "Lọc model", onchange: () => {
+          this.model = el("tokenai-model").value;
+          void this.reload();
+        } },
+        h("option", { value: "" }, "Mọi model"),
+        ...(data?.modelOptions ?? []).map((m) => h("option", { value: m, selected: m === this.model }, m))
+      );
+      view.appendChild(h(
+        "section",
+        { class: "panel" },
+        h(
+          "div",
+          { class: "panel-header" },
+          h(
+            "div",
+            null,
+            h("h3", null, "Sổ token AI"),
+            h("p", null, `Mọi tác nhân AI chạy trên Xeon cho shop này. Tiền là ước tính theo giá niêm yết của hãng${data ? ` (tỉ giá ${nf(data.rateVndPerUsd)} đ/USD)` : ""}, không phải hoá đơn cổng AI.${data?.firstLedgerDay ? ` Sổ có số từ ${data.firstLedgerDay}.` : ""}`)
+          ),
+          h(
+            "div",
+            { class: "tokenai-filters" },
+            h("div", { class: "training-tabs" }, ...[[1, "Hôm nay"], [7, "7 ngày"], [30, "30 ngày"]].map(([d, label]) => h("button", { class: `training-tab${this.days === d ? " active" : ""}`, type: "button", "data-action": "tokenai-range", "data-days": String(d) }, label))),
+            channelSelect,
+            modelSelect,
+            h("button", { class: "secondary-button", type: "button", "data-action": "tokenai-refresh" }, this.loading ? "Đang tải…" : "Tải lại")
+          )
+        )
+      ));
+      if (data === null) {
+        view.appendChild(h("section", { class: "panel" }, h("div", { class: "panel-body" }, h("p", { class: "subtle", id: "tokenai-trang-thai" }, this.error || "Đang tải sổ token AI…"))));
+        return;
+      }
+      if (this.error) view.appendChild(h("p", { class: "subtle", id: "tokenai-trang-thai" }, this.error));
+      const t = data.totals;
+      const p = data.previous.totals;
+      const total = t.inputTokens + t.outputTokens;
+      const wastePct = t.costVnd > 0 ? Math.round(t.wasteCostVnd / t.costVnd * 1e3) / 10 : 0;
+      const metric2 = (label, value, hint, id) => h("section", { class: "panel metric tokenai-metric" }, h("div", { class: "label" }, label), h("div", { class: "value", id }, value), h("div", { class: "hint" }, hint));
+      const topPost = data.content.posts[0];
+      view.appendChild(h(
+        "div",
+        { class: "grid five tokenai-metrics" },
+        metric2(
+          `Tiền ước tính ${data.days === 1 ? "hôm nay" : `${data.days} ngày`}`,
+          vnd(t.costVnd),
+          data.days > 1 ? h("span", null, trend(t.costVnd, p.costVnd) || "chưa có kỳ trước", ` · ≈ ${vnd(t.costVnd / Math.max(1, data.activeDays) * 30)} / 30 ngày (theo ${data.activeDays} ngày có số)`) : "Tính đến lúc này",
+          "tokenai-tien"
+        ),
+        metric2("Tổng token", tokens(total), h("span", null, `${nf(t.calls)} lượt AI`, data.days > 1 ? h("span", null, " · ", trend(total, p.inputTokens + p.outputTokens) || "chưa có kỳ trước") : ""), "tokenai-token"),
+        metric2("Mỗi đơn chốt (trung vị)", "—", "Landing chưa nối đơn chốt với sổ token — xem theo hội thoại bên dưới.", "tokenai-don"),
+        metric2("Bài content tốn nhất", topPost ? tokens(topPost.inputTokens + topPost.outputTokens) : "—", topPost ? `≈ ${vnd(topPost.costVnd)} · ${data.content.posts.length} bài có sổ` : "Chưa có bài content nào trong khoảng này", "tokenai-bai"),
+        metric2("Lãng phí", `${String(wastePct).replace(".", ",")}%`, `≈ ${vnd(t.wasteCostVnd)} · lỗi ${nf(t.failedCalls)}${t.unpricedCalls ? ` · ${nf(t.unpricedCalls)} lượt chưa có giá` : ""}`, "tokenai-lang-phi")
+      ));
+      view.appendChild(h(
+        "div",
+        { class: "tokenai-row" },
+        h(
+          "section",
+          { class: "panel" },
+          h(
+            "div",
+            { class: "panel-header" },
+            h("div", null, h("h3", null, "Theo ngày"), h("p", null, "Xếp chồng theo nhóm tác nhân.")),
+            h(
+              "div",
+              { class: "training-tabs" },
+              h("button", { class: `training-tab${this.chart === "cost" ? " active" : ""}`, type: "button", "data-action": "tokenai-chart", "data-mode": "cost" }, "Tiền"),
+              h("button", { class: `training-tab${this.chart === "tokens" ? " active" : ""}`, type: "button", "data-action": "tokenai-chart", "data-mode": "tokens" }, "Token")
+            )
+          ),
+          h(
+            "div",
+            { class: "panel-body tokenai-chart" },
+            this.dayChart(data),
+            h("div", { class: "tokenai-legend" }, ...GROUP_ORDER.map((g) => h("span", null, this.dot(g), GROUP_LABELS[g] ?? g)))
+          )
+        ),
+        h(
+          "section",
+          { class: "panel" },
+          h("div", { class: "panel-header" }, h("div", null, h("h3", null, "Chia theo nhóm"), h("p", null, "Nhóm ít token vẫn có thể đắt vì model đắt hơn."))),
+          h("div", { class: "panel-body" }, ...this.share(data))
+        )
+      ));
+      view.appendChild(h(
+        "section",
+        { class: "panel" },
+        h("div", { class: "panel-header" }, h("div", null, h("h3", null, "Theo tác nhân"), h("p", null, "Bấm tên nhóm để mở / gập. Lãng phí = lượt lỗi."))),
+        h("div", { class: "panel-body" }, this.agentTable(data))
+      ));
+      const list = (title, hint, rows, empty) => h(
+        "section",
+        { class: "panel" },
+        h("div", { class: "panel-header" }, h("div", null, h("h3", null, title), h("p", null, hint))),
+        h("div", { class: "panel-body tokenai-list" }, ...rows.length ? rows : [h("p", { class: "subtle" }, empty)])
+      );
+      view.appendChild(h(
+        "div",
+        { class: "tokenai-row even" },
+        list("Hội thoại tốn nhất", "Không tính Demo AI.", data.topConversations.map((c) => h(
+          "div",
+          { class: "item" },
+          h("b", null, `${CHANNEL_LABELS[c.channelGroup] ?? "Hội thoại"} · …${c.conversationId.slice(-8)}`),
+          h("span", { class: "tokenai-num" }, h("b", null, vnd(c.costVnd))),
+          h("small", null, `${nf(c.calls)} lượt AI`),
+          h("small", { class: "tokenai-num" }, `${tokens(c.inputTokens + c.outputTokens)} token`)
+        )), "Chưa có hội thoại nào."),
+        list("Đơn chốt gần đây", "Cần landing ghi đơn gắn hội thoại vào sổ — chưa có ở bản này.", [], "Chưa có đơn chốt nào có liên kết sổ token."),
+        list("Bài content tốn nhất", "Gồm viết bài qua Xeon.", data.content.posts.map((post) => h(
+          "div",
+          { class: "item" },
+          h("b", null, post.title || post.postId),
+          h("span", { class: "tokenai-num" }, h("b", null, vnd(post.costVnd))),
+          h("small", null, `${nf(post.calls)} lượt`),
+          h("small", { class: "tokenai-num" }, `${tokens(post.inputTokens + post.outputTokens)} token`)
+        )), "Chưa có bài content nào trong khoảng này.")
+      ));
+      view.appendChild(h(
+        "section",
+        { class: "panel" },
+        h("div", { class: "panel-header" }, h("div", null, h("h3", null, "Theo model"), h("p", null, "Giá lấy từ Bảng giá AI trên Xeon (xem ở Cấu hình)."))),
+        h(
+          "div",
+          { class: "panel-body" },
+          h(
+            "div",
+            { class: "table-wrap" },
+            h(
+              "table",
+              { class: "tokenai-table" },
+              h("thead", null, h("tr", null, h("th", null, "Model"), h("th", { class: "tokenai-num" }, "Lượt"), h("th", { class: "tokenai-num" }, "Vào"), h("th", { class: "tokenai-num" }, "Ra"), h("th", { class: "tokenai-num" }, "Tiền ước tính"))),
+              h("tbody", { id: "tokenai-model-bang" }, ...data.byModel.map((m) => h(
+                "tr",
+                null,
+                h("td", null, m.model || "(không rõ)"),
+                h("td", { class: "tokenai-num" }, nf(m.calls)),
+                h("td", { class: "tokenai-num" }, tokens(m.inputTokens)),
+                h("td", { class: "tokenai-num" }, tokens(m.outputTokens)),
+                h("td", { class: "tokenai-num" }, vnd(m.costVnd), m.unpricedCalls ? h("span", { class: "badge amber" }, " chưa có giá") : "")
+              )))
+            )
+          )
+        )
+      ));
+    }
+    dot(group) {
+      return svg("svg", { class: "tokenai-dot-svg", width: 10, height: 10, viewBox: "0 0 10 10", "aria-hidden": "true" }, svg("circle", { cx: 5, cy: 5, r: 5, fill: GROUP_COLORS[group] ?? "#9aa396" }));
+    }
+    dayChart(data) {
+      const days = data.byDay;
+      if (days.length === 0) return h("p", { class: "subtle" }, "Chưa có số.");
+      const valueOf = (cell) => this.chart === "tokens" ? cell.tokens : cell.costVnd;
+      const totals = days.map((d) => GROUP_ORDER.reduce((sum, g) => sum + (d.groups[g] ? valueOf(d.groups[g]) : 0), 0));
+      const rawMax = Math.max(...totals, 0);
+      const stepSize = rawMax > 0 ? Math.pow(10, Math.floor(Math.log10(rawMax))) : 1;
+      const max = rawMax > 0 ? Math.ceil(rawMax / stepSize) * stepSize : 1;
+      const width = 640, height = 230, left = 54, bottom = 26, top = 12;
+      const plot = height - top - bottom;
+      const band = (width - left - 8) / days.length;
+      const barWidth = Math.max(6, Math.min(40, band * 0.6));
+      const label = (v) => this.chart === "tokens" ? tokens(v) : vnd(v);
+      const chart = svg("svg", { viewBox: `0 0 ${width} ${height}`, role: "img", "aria-label": this.chart === "tokens" ? "Token theo ngày" : "Tiền ước tính theo ngày", id: "tokenai-bieu-do" });
+      for (const share of [0, 0.5, 1]) {
+        const y = top + plot - share * plot;
+        chart.append(svg("line", { x1: left, x2: width - 8, y1: y, y2: y, stroke: "#dfe4dc" }), svg("text", { x: left - 6, y: y + 4, "text-anchor": "end" }, label(max * share)));
+      }
+      const every = Math.ceil(days.length / 10);
+      days.forEach((d, i) => {
+        const x = left + i * band + (band - barWidth) / 2;
+        let stacked = 0;
+        for (const g of GROUP_ORDER) {
+          const value = d.groups[g] ? valueOf(d.groups[g]) : 0;
+          if (!value) continue;
+          const hgt = value / max * plot;
+          const y = top + plot - (stacked + value) / max * plot;
+          stacked += value;
+          chart.append(svg("rect", { x, y, width: barWidth, height: Math.max(hgt - 0.6, 0.6), fill: GROUP_COLORS[g] ?? "#9aa396" }, svg("title", {}, `${d.day} · ${GROUP_LABELS[g] ?? g}: ${label(value)}`)));
+        }
+        if (i % every === 0) chart.append(svg("text", { x: x + barWidth / 2, y: height - 8, "text-anchor": "middle" }, `${d.day.slice(8, 10)}/${d.day.slice(5, 7)}`));
+      });
+      return chart;
+    }
+    /** Desk `tokenAIShare`: two stacked bars (token, money) and the percentages per group. */
+    share(data) {
+      const groups = [...data.byGroup].sort((a, b) => GROUP_ORDER.indexOf(a.group) - GROUP_ORDER.indexOf(b.group));
+      const totalTokens = groups.reduce((s, g) => s + g.inputTokens + g.outputTokens, 0);
+      const totalCost = groups.reduce((s, g) => s + g.costVnd, 0);
+      const shareBar = (valueOf, total) => {
+        const bar2 = svg("svg", { class: "tokenai-sharebar-svg", viewBox: "0 0 100 10", preserveAspectRatio: "none", width: "100%", height: 12 });
+        let x = 0;
+        for (const g of groups) {
+          const w = total > 0 ? valueOf(g) / total * 100 : 0;
+          if (w <= 0) continue;
+          bar2.append(svg("rect", { x, y: 0, width: w, height: 10, fill: GROUP_COLORS[g.group] ?? "#9aa396" }, svg("title", {}, g.label)));
+          x += w;
+        }
+        return bar2;
+      };
+      const pct = (v, total) => total > 0 ? `${Math.round(v / total * 1e3) / 10}%` : "—";
+      return [
+        h("div", { class: "subtle" }, "Token"),
+        shareBar((g) => g.inputTokens + g.outputTokens, totalTokens),
+        h("div", { class: "subtle" }, "Tiền ước tính"),
+        shareBar((g) => g.costVnd, totalCost),
+        h(
+          "div",
+          { class: "tokenai-sharelist" },
+          h("div", { class: "subtle" }, h("span", null, "Nhóm"), h("span", { class: "tokenai-num" }, "Token"), h("span", { class: "tokenai-num" }, "Tiền")),
+          ...groups.map((g) => h("div", null, h("span", null, this.dot(g.group), g.label), h("span", { class: "tokenai-num" }, pct(g.inputTokens + g.outputTokens, totalTokens)), h("span", { class: "tokenai-num" }, pct(g.costVnd, totalCost))))
+        )
+      ];
+    }
+    agentTable(data) {
+      if (data.byGroup.length === 0) return h("p", { class: "subtle" }, "Chưa có lượt gọi AI nào trong khoảng này.");
+      const cells = (row) => {
+        const all = row.inputTokens + row.outputTokens;
+        const waste = row.costVnd > 0 ? Math.round(row.wasteCostVnd / row.costVnd * 100) : 0;
+        return [
+          h("td", { class: "tokenai-num" }, nf(row.calls)),
+          h("td", { class: "tokenai-num" }, tokens(row.inputTokens)),
+          h("td", { class: "tokenai-num" }, tokens(row.outputTokens)),
+          h("td", { class: "tokenai-num" }, row.reasoningTokens ? tokens(row.reasoningTokens) : "—"),
+          h("td", { class: "tokenai-num" }, tokens(row.calls ? all / row.calls : 0)),
+          h("td", { class: "tokenai-num" }, h("b", null, vnd(row.costVnd)), row.unpricedCalls ? h("span", { class: "subtle" }, ` · ${nf(row.unpricedCalls)} lượt chưa có giá`) : ""),
+          h("td", { class: "tokenai-num" }, waste ? h("span", { class: `badge ${waste >= 15 ? "red" : "amber"}` }, `${waste}%`) : "—")
+        ];
+      };
+      const rows = [];
+      for (const g of [...data.byGroup].sort((a, b) => GROUP_ORDER.indexOf(a.group) - GROUP_ORDER.indexOf(b.group))) {
+        const open = this.openGroups[g.group] === true;
+        rows.push(h(
+          "tr",
+          { class: "tokenai-group" },
+          h("td", null, h("button", { type: "button", class: "tokenai-group-toggle", "data-action": "tokenai-toggle-group", "data-group": g.group }, `${open ? "▾" : "▸"} ${g.label}`)),
+          ...cells(g)
+        ));
+        if (open) for (const a of data.byAgent.filter((x) => x.group === g.group)) rows.push(h("tr", null, h("td", { class: "tokenai-indent" }, a.label), ...cells(a)));
+      }
+      return h(
+        "div",
+        { class: "table-wrap" },
+        h(
+          "table",
+          { class: "tokenai-table" },
+          h("thead", null, h("tr", null, ...["Tác nhân", "Lượt", "Vào", "Ra", "Trong đó suy luận", "TB / lượt", "Tiền ước tính", "Lãng phí"].map((c, i) => h("th", i ? { class: "tokenai-num" } : null, c)))),
+          h("tbody", { id: "tokenai-tac-nhan" }, ...rows)
+        )
+      );
+    }
+  };
+
+  // ../omi/packages/omi-ui/src/views/knowledge/kit.ts
+  function metricCard(label, value, hint, id = "") {
+    return h(
+      "section",
+      { class: "panel metric" },
+      h("div", { class: "label" }, label),
+      h("div", { class: "value", ...id ? { id } : {} }, value),
+      h("div", { class: "hint" }, hint)
+    );
+  }
+  function workflowStep(index, title, detail, tag) {
+    return h(
+      "div",
+      { class: "step" },
+      h("div", { class: "step-index" }, String(index)),
+      h("div", null, h("h4", null, title), h("p", null, detail)),
+      h("span", { class: "badge blue" }, tag)
+    );
+  }
+  function helpLabel(text2, help, forId = "") {
+    return h(
+      "label",
+      { class: "label-with-help", ...forId ? { for: forId } : {} },
+      h("span", null, text2),
+      h("span", { class: "help-tip", tabindex: "0", title: help }, "?")
+    );
+  }
+  function inputField(id, label, value, helpText = "") {
+    return h(
+      "div",
+      { class: "field" },
+      h("label", { for: id }, label),
+      h("input", { id, value: str(value) }),
+      helpText ? h("div", { class: "subtle" }, helpText) : null
+    );
+  }
+  function areaField(id, label, value, rows = 3, placeholder = "") {
+    return h(
+      "div",
+      { class: "field" },
+      h("label", { for: id }, label),
+      h("textarea", { id, rows: String(rows), ...placeholder ? { placeholder } : {}, value: str(value) })
+    );
+  }
+  function profileFact(label, value) {
+    return h("div", { class: "profile-fact" }, h("span", null, label), h("strong", null, value || "chưa rõ"));
+  }
+  function panelHead(title, note, ...actions) {
+    return h(
+      "div",
+      { class: "panel-header" },
+      h("div", null, h("h3", null, title), note ? h("p", null, note) : null),
+      actions.length ? h("div", { class: "split-actions" }, ...actions) : null
+    );
+  }
+  var linesOf = (value) => Array.isArray(value) ? value.map(str).filter(Boolean).join("\n") : str(value);
+  var splitLines2 = (value) => value.split(/\r?\n/).map((s) => s.trim()).filter(Boolean);
+  function armed2(button, askText) {
+    if (button.dataset["armed"] === "1") {
+      button.dataset["armed"] = "0";
+      if (button.dataset["label"]) button.textContent = button.dataset["label"];
+      return true;
+    }
+    button.dataset["label"] = button.textContent ?? "";
+    button.dataset["armed"] = "1";
+    button.textContent = askText;
+    setTimeout(() => {
+      if (button.dataset["armed"] === "1") {
+        button.dataset["armed"] = "0";
+        button.textContent = button.dataset["label"] ?? "";
+      }
+    }, 6e3);
+    return false;
+  }
+
+  // ../omi/packages/omi-ui/src/views/fit-finder.ts
+  var WEIGHTS = [
+    ["mucDich", "fitWeightUseCase", "Mục tiêu dùng", "Daily, race, tempo, walking, lifestyle..."],
+    ["banChan", "fitWeightFootFit", "Bàn chân / form", "Vòm chân, chân bè, mu cao, size đang đi."],
+    ["tocDoCuLy", "fitWeightPaceDistance", "Pace / cự ly", "Pace và cự ly sản phẩm xử lý tốt."],
+    ["ruiRo", "fitWeightRiskControl", "Rủi ro", "Đau chân, cần stability, cảnh báo không phù hợp."],
+    ["banDuoc", "fitWeightCommercial", "Bán được", "Còn size, giá, nguồn hàng, ưu tiên kho của shop."]
+  ];
+  var FitFinderView = class extends View {
+    id = "fit-finder";
+    label = "Fit Finder";
+    title = "Fit Finder";
+    workspace = "common";
+    glyph = "FF";
+    data = null;
+    actions = {
+      "save-fit-finder-config": () => this.save(),
+      "fit-calc-size": () => this.calc(),
+      "fit-suggest-lines": () => this.suggest()
+    };
+    build(root) {
+      root.append(h("span", { class: "status-line", id: "ff-trang-thai" }, "Đang tải…"), h("div", { id: "ff-khung" }));
+    }
+    load() {
+      void this.reload();
+    }
+    async reload() {
+      const r = await this.ctx.gateway.landing("tu-van-size.cau-hinh");
+      if (!r.ok || !r.than) {
+        status(el("ff-trang-thai"), r.viSao || "Không đọc được cấu hình Fit Finder.", "bad");
+        return;
+      }
+      this.data = r.than;
+      status(el("ff-trang-thai"), r.than.daLuu ? "" : "Chưa lưu lần nào — đang hiện cấu hình mặc định theo ngành của shop.");
+      this.paint();
+    }
+    paint() {
+      const data = this.data;
+      const box = el("ff-khung");
+      clear(box);
+      if (!data) return;
+      const c = data.cauHinh;
+      const lines2 = data.dong ?? [];
+      const ready2 = lines2.filter((l) => l.coDanhGia).length;
+      const status_ = h(
+        "select",
+        { id: "fitFinderStatus" },
+        ...[["foundation", "Foundation"], ["pilot", "Pilot"], ["live", "Live"]].map(([v, t]) => h("option", { value: v, selected: c.trangThai === v }, t))
+      );
+      const identity = h(
+        "div",
+        { class: "config-form" },
+        h("h4", null, "Định danh module"),
+        h("div", { class: "field" }, helpLabel("Mã module", "Tên kỹ thuật cố định của module.", "fitFinderModuleCode"), h("input", { id: "fitFinderModuleCode", value: c.maModule })),
+        h("div", { class: "field" }, helpLabel("Tên nội bộ", "Tên trong OMI để đội vận hành gọi nhanh.", "fitFinderModuleName"), h("input", { id: "fitFinderModuleName", value: c.tenNoiBo })),
+        h("div", { class: "field" }, helpLabel("Tên hiển thị trên web", "Tên khách hàng nhìn thấy ở website.", "fitFinderPublicName"), h("input", { id: "fitFinderPublicName", value: c.tenCongKhai })),
+        h("div", { class: "field" }, helpLabel("Mô tả ngắn", "Mô tả mục tiêu module, dùng làm ngữ cảnh cho các lần phát triển sau.", "fitFinderDescription"), h("textarea", { id: "fitFinderDescription", rows: "4", value: c.moTa })),
+        h("div", { class: "field" }, helpLabel("Trạng thái", "foundation: mới tạo nền; pilot: thử với ít sản phẩm; live: có thể mở cho khách dùng.", "fitFinderStatus"), status_)
+      );
+      const flow = h(
+        "div",
+        { class: "config-form" },
+        h("h4", null, "Luồng xử lý chuẩn"),
+        h(
+          "div",
+          { class: "workflow" },
+          workflowStep(1, "Khách nhập hồ sơ", "Vòm chân, chiều cao/cân nặng, pace, cự ly, vấn đề đang gặp, đôi đang đi vừa.", "Web"),
+          workflowStep(2, "Chuẩn hóa nhu cầu", "Chuyển câu trả lời thành nhóm mục tiêu: daily, tempo, race, stability, walking...", "Rules"),
+          workflowStep(3, "Chấm từng productLine", "So hồ sơ khách với profile của dòng sản phẩm, cộng/trừ điểm minh bạch.", "Scoring"),
+          workflowStep(4, "Lọc sản phẩm bán được", "Chỉ hiện mã còn size có thể mua, ưu tiên hàng của shop rồi đối tác phù hợp.", "Catalog"),
+          workflowStep(5, "Giải thích lý do", "Hiển thị điểm tổng, điểm mạnh, cảnh báo và câu hỏi cần kiểm tra thêm.", "Trust")
+        )
+      );
+      const lineRows = lines2.length ? lines2.map((l) => h(
+        "tr",
+        null,
+        h("td", null, h("strong", null, l.ten || l.id)),
+        h("td", null, l.hang),
+        h("td", null, l.loai),
+        h("td", null, h("span", { class: `badge ${l.coDanhGia ? "green" : "amber"}` }, l.coDanhGia ? "Đã có profile" : "Cần nhập profile")),
+        h("td", null, l.coDanhGia ? `Có thể dùng để test chấm điểm · ${l.soMa} mã` : "Bổ sung độ êm, ổn định, form, pace/cự ly phù hợp.")
+      )) : [h("tr", null, h("td", { colspan: "5", class: "subtle" }, "Chưa có productLine. Hãy áp Sản phẩm mẫu hoặc bật “Dùng sản phẩm này làm mẫu cho dòng” trong Hàng hoá."))];
+      const evaluated = lines2.filter((l) => l.danhGia);
+      const evalRows = evaluated.length ? evaluated.map((l) => {
+        const d = l.danhGia ?? {};
+        const s = d["diem"] ?? {};
+        const f = d["fitSize"] ?? {};
+        const loc = d["locNhanh"] ?? {};
+        const cls = d["phanLoai"] ?? {};
+        return h(
+          "tr",
+          null,
+          h("td", null, h("strong", null, l.ten), h("div", { class: "subtle" }, l.id)),
+          h("td", null, l.maMau || "", h("div", { class: "subtle" }, l.nguon)),
+          h("td", null, h("span", { class: "badge blue" }, cls.category || l.loai || "chưa rõ"), h("div", { class: "subtle" }, str(d["trangThai"]) || "draft")),
+          h("td", null, (cls.useCases ?? []).slice(0, 4).join(", "), h("div", { class: "subtle" }, [loc["paceBand"], loc["terrain"], loc["rideFeel"]].filter(Boolean).join(" · "))),
+          h("td", null, `daily ${s["daily"] ?? 0}/10 · speed ${s["speed"] ?? 0}/10 · stability ${s["stability"] ?? 0}/10 · comfort ${s["comfort"] ?? 0}/10`),
+          h("td", null, f["measurementStatus"] || "pending", h("div", { class: "subtle" }, f["sizingNote"] || "Chờ đo lòng giày"))
+        );
+      }) : [h("tr", null, h("td", { colspan: "6", class: "subtle" }, "Chưa có profile đánh giá dòng. Mở một sản phẩm mẫu trong Hàng hoá, điền nội dung web và bật “Dùng sản phẩm này làm mẫu cho dòng”."))];
+      const calcType = h("select", { id: "fitCalcType" }, h("option", { value: "running" }, "Giày chạy"), h("option", { value: "lifestyle" }, "Giày phố / thời trang"), h("option", { value: "court" }, "Giày sân (tennis/pickleball)"));
+      const level = h("select", { id: "fitSuggestLevel" }, h("option", { value: "" }, "Không rõ"), h("option", { value: "new" }, "Mới chạy"), h("option", { value: "regular" }, "Chạy đều"));
+      box.append(
+        h(
+          "div",
+          { class: "grid three" },
+          metricCard("Tên module", c.tenNoiBo, c.maModule),
+          metricCard("Dòng đã có profile", String(ready2), `${Math.max(lines2.length - ready2, 0)} dòng còn thiếu profile chấm điểm`),
+          metricCard("Tổng trọng số", String(data.tongTrongSo), data.tongTrongSo === 100 ? "Đủ 100 điểm" : "Nên chỉnh về 100 khi dùng live")
+        ),
+        h(
+          "section",
+          { class: "panel omi-section-gap" },
+          panelHead(
+            c.tenNoiBo || "Fit Finder",
+            "Module nền để khách tự nhập thông tin cơ thể, bàn chân, mục tiêu và nhận danh sách sản phẩm được chấm điểm phù hợp.",
+            h("button", { class: "primary-button", type: "button", "data-action": "save-fit-finder-config" }, "Lưu module Fit Finder")
+          ),
+          h("div", { class: "panel-body" }, h("div", { class: "grid two" }, identity, flow))
+        ),
+        h(
+          "section",
+          { class: "panel omi-section-gap" },
+          panelHead("Biến số khách cần điền", "Đây là bộ câu hỏi nền. Sau này website sẽ dùng để tạo form/wizard cho khách tự chọn."),
+          h(
+            "div",
+            { class: "panel-body grid two" },
+            h(
+              "div",
+              { class: "field" },
+              helpLabel("Trường thông tin khách hàng", "Mỗi dòng là một biến số cần hỏi khách. Các biến này dùng để chấm điểm sản phẩm, không phải mô tả marketing.", "fitFinderCustomerInputs"),
+              h("textarea", { id: "fitFinderCustomerInputs", rows: "12", value: linesOf(c.bienKhach) })
+            ),
+            h(
+              "div",
+              { class: "config-form" },
+              h("h4", null, "Nguyên tắc"),
+              h(
+                "ul",
+                { class: "subtle-list" },
+                h("li", null, "Ưu tiên dữ liệu chọn sẵn để dễ chấm điểm, hạn chế AI."),
+                h("li", null, "Chỉ dùng AI để diễn giải hoặc hỗ trợ khi khách viết tự do."),
+                h("li", null, "Luôn ghi rõ lý do vì sao sản phẩm được đề xuất."),
+                h("li", null, "Nếu có dấu hiệu đau/chấn thương phức tạp, hệ thống chỉ gợi ý tham khảo và chuyển người thật tư vấn.")
+              )
+            )
+          )
+        ),
+        h(
+          "section",
+          { class: "panel omi-section-gap" },
+          panelHead("Trọng số chấm điểm", "Tổng mặc định 100 điểm. Đây là biến số để chỉnh sau khi test thực tế."),
+          h("div", { class: "panel-body grid five" }, ...WEIGHTS.map(([key, id, label, help]) => h("div", { class: "field" }, helpLabel(label, help, id), h("input", { id, type: "number", min: "0", max: "100", value: String(c.trongSo[key] ?? 0) }))))
+        ),
+        h(
+          "section",
+          { class: "panel omi-section-gap" },
+          panelHead("Profile cần có cho mỗi dòng sản phẩm", "ProductLine là nơi nên gắn dữ liệu chấm điểm. Một dòng nhập một lần, các mã/màu cùng dòng dùng chung."),
+          h(
+            "div",
+            { class: "panel-body" },
+            h(
+              "div",
+              { class: "field" },
+              helpLabel("Trường profile productLine", "Các trường này dùng ở màn dòng sản phẩm để chấm điểm Fit Finder.", "fitFinderProductLineFields"),
+              h("textarea", { id: "fitFinderProductLineFields", rows: "8", value: linesOf(c.truongDong) })
+            ),
+            h("div", { class: "table-wrap omi-section-gap" }, h(
+              "table",
+              null,
+              h("thead", null, h("tr", null, ...["Dòng sản phẩm", "Brand", "Intent", "Trạng thái Fit Finder", "Việc cần làm"].map((t) => h("th", null, t)))),
+              h("tbody", { id: "ff-bang-dong" }, ...lineRows)
+            ))
+          )
+        ),
+        h(
+          "section",
+          { class: "panel omi-section-gap" },
+          panelHead("Bảng đánh giá theo dòng", "Mỗi dòng nên có một sản phẩm mẫu. Sản phẩm mới cùng dòng sẽ inherit profile này để Fit Finder lọc/gợi ý."),
+          h("div", { class: "panel-body" }, h("div", { class: "table-wrap" }, h(
+            "table",
+            null,
+            h("thead", null, h("tr", null, ...["Dòng", "Sản phẩm mẫu", "Category", "Use case / filter", "Điểm chính", "Fit-size"].map((t) => h("th", null, t)))),
+            h("tbody", { id: "ff-bang-danh-gia" }, ...evalRows)
+          )))
+        ),
+        h(
+          "div",
+          { class: "grid two omi-section-gap" },
+          h(
+            "section",
+            { class: "panel" },
+            panelHead(
+              "Tính size nhanh",
+              "Bảng đo chân → size theo hãng (giày chạy +1,5cm, giày phố +0,5cm, giày sân +0,5→1,0cm). Số đọc trên tem tra thẳng, không cộng.",
+              h("button", { class: "secondary-button", type: "button", "data-action": "fit-calc-size" }, "Tính size")
+            ),
+            h(
+              "div",
+              { class: "panel-body config-form" },
+              h("div", { class: "grid three" }, inputField("fitCalcLength", "Dài chân (cm)", ""), inputField("fitCalcWidth", "Rộng chân (cm)", ""), inputField("fitCalcGirth", "Chu vi (mm)", "")),
+              h("div", { class: "grid three" }, h("div", { class: "field" }, h("label", { for: "fitCalcType" }, "Loại giày"), calcType), inputField("fitCalcBrand", "Hãng", "adidas"), inputField("fitCalcTem", "Hoặc số trên tem (cm/mm)", "")),
+              h("label", { class: "check-row" }, h("input", { id: "fitCalcLongRun", type: "checkbox" }), " Chạy dài ≥10km"),
+              h("div", { class: "inline-panel", id: "ff-ket-qua-size" }, h("p", { class: "subtle" }, "Nhập số đo rồi bấm Tính size."))
+            )
+          ),
+          h(
+            "section",
+            { class: "panel" },
+            panelHead(
+              "Gợi ý dòng theo pace × cự ly",
+              "Kiến thức dòng nằm trên Xeon (gói ngành của shop); chỉ gợi ý dòng đang CÒN HÀNG trong kho của shop.",
+              h("button", { class: "secondary-button", type: "button", "data-action": "fit-suggest-lines" }, "Gợi ý dòng")
+            ),
+            h(
+              "div",
+              { class: "panel-body config-form" },
+              h("div", { class: "grid three" }, inputField("fitSuggestPace", "Pace / cách chạy", "", "VD: 6:30, chạy nhẹ nhàng"), inputField("fitSuggestDistance", "Cự ly / mục tiêu", "", "VD: 10km, HM"), h("div", { class: "field" }, h("label", { for: "fitSuggestLevel" }, "Trình độ"), level)),
+              h("div", { class: "inline-panel", id: "ff-goi-y-dong" }, h("p", { class: "subtle" }, "Chưa có gợi ý."))
+            )
+          )
+        )
+      );
+    }
+    async save() {
+      const v = (id) => el(id).value;
+      const trongSo = {};
+      for (const [key, id] of WEIGHTS) trongSo[key] = Number(v(id)) || 0;
+      status(el("ff-trang-thai"), "Đang lưu…");
+      const r = await this.ctx.gateway.landing("tu-van-size.cau-hinh.ghi", {
+        maModule: v("fitFinderModuleCode"),
+        tenNoiBo: v("fitFinderModuleName"),
+        tenCongKhai: v("fitFinderPublicName"),
+        moTa: v("fitFinderDescription"),
+        trangThai: v("fitFinderStatus"),
+        trongSo,
+        bienKhach: splitLines2(v("fitFinderCustomerInputs")),
+        truongDong: splitLines2(v("fitFinderProductLineFields"))
+      });
+      if (!r.ok) {
+        status(el("ff-trang-thai"), r.viSao, "bad");
+        return;
+      }
+      await this.reload();
+      status(el("ff-trang-thai"), r.than?.message ?? "Đã lưu.", "good");
+    }
+    async calc() {
+      const v = (id) => el(id).value.trim();
+      const out = el("ff-ket-qua-size");
+      const body = { hang: v("fitCalcBrand") };
+      if (v("fitCalcTem")) body["tem"] = v("fitCalcTem");
+      else {
+        body["dai"] = v("fitCalcLength");
+        if (v("fitCalcWidth")) body["rong"] = v("fitCalcWidth");
+        if (v("fitCalcGirth")) body["chuVi"] = v("fitCalcGirth");
+        body["loaiGiay"] = v("fitCalcType");
+        body["chayDai"] = el("fitCalcLongRun").checked;
+      }
+      clear(out);
+      let r;
+      try {
+        r = await this.ctx.gateway.landing("tu-van-size.tinh", body);
+      } catch (e) {
+        out.append(h("p", { class: "status-line bad" }, e.message));
+        return;
+      }
+      if (!r.ok || !r.than?.ketQua) {
+        out.append(h("p", { class: "status-line bad" }, r.viSao || "Không tính được."));
+        return;
+      }
+      const k = r.than.ketQua;
+      out.append(
+        h("div", { class: "product-title" }, `Size ${str(k["size"])}${k["sizeLow"] && k["sizeLow"] !== k["size"] ? ` (khoảng ${str(k["sizeLow"])}–${str(k["size"])})` : ""}`),
+        h("p", null, str(k["label"])),
+        ...Array.isArray(k["reasons"]) ? [h("ul", { class: "subtle-list" }, ...k["reasons"].map((x) => h("li", null, str(x))))] : [],
+        ...k["note"] ? [h("p", { class: "subtle" }, str(k["note"]))] : []
+      );
+    }
+    async suggest() {
+      const v = (id) => el(id).value.trim();
+      const out = el("ff-goi-y-dong");
+      clear(out);
+      let r;
+      try {
+        r = await this.ctx.gateway.landing("tu-van-size.goi-y-dong", { pace: v("fitSuggestPace"), cuLy: v("fitSuggestDistance"), trinhDo: v("fitSuggestLevel"), soDong: 3 });
+      } catch (e) {
+        out.append(h("p", { class: "status-line bad" }, e.message));
+        return;
+      }
+      if (!r.ok || !r.than) {
+        out.append(h("p", { class: "status-line bad" }, r.viSao));
+        return;
+      }
+      const picks = r.than.picks ?? [];
+      out.append(h("p", { class: "subtle" }, `Dải pace: ${r.than.paceBand ?? "?"} · cự ly: ${r.than.distanceBand ?? "?"}${r.than.reason ? ` · ${r.than.reason}` : ""}`));
+      if (picks.length === 0) {
+        out.append(h("p", null, "Không có dòng còn hàng đủ điểm (≥ 3/5) cho nhu cầu này."));
+        return;
+      }
+      out.append(h("div", { class: "workflow", id: "ff-ds-goi-y" }, ...picks.map((p, i) => workflowStep(i + 1, `${p.name} (${p.brand})`, p.note, `${p.score}/5`))));
+    }
+  };
+
+  // ../omi/packages/omi-ui/src/views/sample-profiles.ts
+  var COMPLETENESS_LABEL = { empty: "Chưa nghiên cứu", pending_review: "Chờ duyệt", complete: "Đầy đủ" };
+  var CATEGORIES2 = [["running", "Giày chạy"], ["tennis", "Tennis / court"], ["walking", "Giày đi bộ"], ["lifestyle", "Thời trang"], ["pickleball", "Pickleball"], ["trail", "Trail"]];
+  var SPEC_ROWS = [["Trọng lượng", "weightMen"], ["Drop", "drop"], ["Stack gót", "heelStack"], ["Stack mũi", "forefootStack"], ["Foam", "midsole"], ["Plate", "plate"], ["Upper", "upper"], ["Outsole", "outsole"]];
+  var SECTIONS2 = [
+    ["classification", "Phần 2: Phân loại giày", true],
+    ["weight", "Phần 3: Theo cân nặng người chạy", false],
+    ["pace", "Phần 4: Theo pace", false],
+    ["distance", "Phần 5: Theo cự ly", false],
+    ["level", "Phần 6: Theo trình độ", false],
+    ["footType", "Phần 7: Theo kiểu chân", false],
+    ["purpose", "Phần 8: Theo mục đích", true]
+  ];
+  var ROW_SCORE = { "Độ êm": "comfort", "Độ nảy": "bounce", "Độ ổn định": "stability", "Độ linh hoạt": "flexibility", "Độ thoáng khí": "breathability", "Độ bền": "durability", "Độ bám đường": "grip", "Hoàn trả năng lượng": "energyReturn" };
+  var MEASURE_FIELDS = ["size", "insideLength", "forefootWidth", "midfootWidth", "heelWidth", "instepHeight", "note"];
+  var option3 = (value, label, current) => h("option", { value, selected: value === current }, label);
+  var SampleProfilesView = class extends View {
+    id = "san-pham-mau";
+    label = "Sản phẩm mẫu";
+    title = "Sản phẩm mẫu";
+    workspace = "common";
+    glyph = "SP";
+    data = null;
+    page = "list";
+    selected = /* @__PURE__ */ new Set();
+    /** The profile last opened — the one "Gộp mẫu đã chọn" keeps (Desk `selectedSampleProfileId`). */
+    openedId = "";
+    detail = null;
+    lastJson = "";
+    query = "";
+    filter = "all";
+    actions = {
+      "select-sample-profile": (b) => this.open(str(b.dataset["id"])),
+      "back-to-sample-profile-list": () => {
+        this.page = "list";
+        this.paint();
+      },
+      "merge-catalog-to-sample-profiles": () => this.run("kien-thuc.mau.gop-kho", {}, (t) => `Đã quét ${t["soDong"] ?? 0} dòng, tạo ${t["taoMoi"] ?? 0} mẫu mới và gộp ${t["daGop"] ?? 0} mẫu trùng theo model + phiên bản.`),
+      "consolidate-duplicate-sample-profiles": (b) => {
+        const dup = this.data?.dem.trung;
+        if (!dup?.duplicateProfiles) {
+          this.say("Không có mẫu trùng theo model + phiên bản.");
+          return;
+        }
+        if (!armed2(b, `Bấm lần nữa: gộp ${dup.duplicateProfiles} mẫu trùng`)) return;
+        return this.run("kien-thuc.mau.gop-trung", {}, (t) => `Đã gộp ${t["daGop"] ?? 0} mẫu trùng theo model + phiên bản.`);
+      },
+      "reset-sample-profiles": (b) => {
+        if (armed2(b, "Bấm lần nữa: nạp lại mẫu mặc định")) return this.run("kien-thuc.mau.mac-dinh", {}, () => "Đã nạp lại bộ sản phẩm mẫu mặc định.");
+      },
+      "publish-sample-profiles": () => this.run("kien-thuc.mau.xuat-ban", {}, (t) => str(t["message"]) || "Đã áp vào Fit Finder/Catalog."),
+      "select-filtered-sample-profiles": () => {
+        for (const m of this.data?.mau ?? []) this.selected.add(m.id);
+        this.paint();
+      },
+      "clear-selected-sample-profiles": () => {
+        this.selected.clear();
+        this.paint();
+      },
+      "merge-selected-sample-profiles": (b) => {
+        if (this.selected.size < 2) {
+          this.say("Chọn ít nhất hai sản phẩm mẫu để gộp.", true);
+          return;
+        }
+        if (!this.openedId || !this.selected.has(this.openedId)) {
+          this.say("Mở mẫu muốn giữ lại trước, rồi chọn các mẫu cần gộp cùng.", true);
+          return;
+        }
+        const target = this.data?.mau.find((m) => m.id === this.openedId)?.name ?? this.openedId;
+        if (!armed2(b, `Bấm lần nữa: gộp ${this.selected.size} mẫu vào "${target}"`)) return;
+        return this.run("kien-thuc.mau.gop", { ids: [...this.selected], giu: this.openedId }, (t) => `Đã gộp ${t["daGop"] ?? 0} mẫu vào ${target}.`, () => {
+          this.selected = /* @__PURE__ */ new Set([this.openedId]);
+        });
+      },
+      "delete-selected-sample-profiles": (b) => {
+        if (this.selected.size === 0) {
+          this.say("Chưa chọn sản phẩm mẫu để xóa.", true);
+          return;
+        }
+        if (!armed2(b, `Bấm lần nữa: xóa ${this.selected.size} mẫu`)) return;
+        return this.run("kien-thuc.mau.xoa", { ids: [...this.selected] }, (t) => `Đã xóa ${t["daXoa"] ?? 0} sản phẩm mẫu.`, () => this.selected.clear());
+      },
+      "delete-sample-profile": (b) => {
+        const id = str(b.dataset["id"]);
+        if (!armed2(b, "Xóa?")) return;
+        return this.run("kien-thuc.mau.xoa", { ids: [id] }, (t) => `Đã xóa ${t["daXoa"] ?? 0} sản phẩm mẫu.`, () => this.selected.delete(id));
+      },
+      "create-sample-research-jobs": () => {
+        if (this.selected.size === 0) {
+          this.say("Chọn ít nhất một sản phẩm mẫu để tạo job nghiên cứu.", true);
+          return;
+        }
+        return this.run("kien-thuc.nghien-cuu.tao", { ids: [...this.selected], prompt: el("sampleResearchPromptTemplate").value }, (t) => `Đã tạo ${t["viec"]?.length ?? 0} job nghiên cứu.`, () => this.selected.clear());
+      },
+      "refresh-sample-research-jobs": () => this.reload(),
+      "run-sample-research-jobs": () => this.run("kien-thuc.nghien-cuu.chay", { toiDa: 3 }, (t) => `Xeon đã nghiên cứu ${t["daChay"] ?? 0} mẫu: ${t["xong"] ?? 0} xong, ${t["loi"] ?? 0} lỗi, còn ${t["conCho"] ?? 0} chờ. Mẫu xong ở trạng thái Chờ duyệt.`),
+      "sync-sample-form-to-json": () => {
+        const profile = this.readForm();
+        if (!profile) {
+          this.say("Chưa có form sản phẩm mẫu để đọc.", true);
+          return;
+        }
+        this.lastJson = JSON.stringify(profile, null, 2);
+        el("sampleProfileJSON").value = this.lastJson;
+        this.say("Đã cập nhật JSON từ form.");
+      },
+      "save-selected-sample-profile": () => this.saveDetail(),
+      "parse-sample-research": () => this.parseResearch()
+    };
+    build(root) {
+      root.append(h("span", { class: "status-line", id: "spm-trang-thai" }), h("div", { id: "spm-khung" }));
+      root.addEventListener("change", (event) => {
+        const target = event.target;
+        if (target instanceof HTMLInputElement && target.dataset["sampleProfileSelect"]) {
+          const id = target.dataset["sampleProfileSelect"];
+          if (target.checked) this.selected.add(id);
+          else this.selected.delete(id);
+          const note = document.getElementById("spm-dem-chon");
+          if (note) note.textContent = this.selectionNote();
+        }
+        if (target instanceof HTMLSelectElement && target.dataset["sampleResearchFamily"]) void this.setFamily(target.dataset["sampleResearchFamily"], target.value);
+        if (target instanceof HTMLInputElement && target.id === "sampleResearchFile") void this.readResearchFile(target);
+      });
+    }
+    load() {
+      void this.reload();
+    }
+    say(text2, bad = false) {
+      status(el("spm-trang-thai"), text2, bad ? "bad" : text2 ? "good" : "");
+    }
+    selectionNote() {
+      const running = (this.data?.demNghienCuu["pending"] ?? 0) + (this.data?.demNghienCuu["running"] ?? 0);
+      return `${this.selected.size} mẫu đang chọn · ${running} job đang chờ/chạy`;
+    }
+    async reload() {
+      const r = await this.ctx.gateway.landing("kien-thuc.mau", { q: this.query, doDay: this.filter });
+      if (!r.ok || !r.than) {
+        this.say(r.viSao || "Không đọc được sản phẩm mẫu.", true);
+        return;
+      }
+      this.data = r.than;
+      this.paint();
+    }
+    async run(job, args, message, after) {
+      this.say("Đang làm…");
+      let r;
+      try {
+        r = await this.ctx.gateway.landing(job, args);
+      } catch (e) {
+        this.say(e.message, true);
+        return;
+      }
+      if (!r.ok) {
+        this.say(r.viSao, true);
+        return;
+      }
+      after?.();
+      await this.reload();
+      this.say(message(r.than ?? {}));
+    }
+    paint() {
+      const box = el("spm-khung");
+      clear(box);
+      if (this.page === "detail") {
+        box.append(this.detailPage());
+        return;
+      }
+      const d = this.data;
+      if (!d) return;
+      const jobs = d.nghienCuu ?? [];
+      const searchInput = h("input", { id: "sampleProfileQuery", value: this.query, placeholder: "Tên, brand hoặc keyword", onkeydown: (e) => {
+        if (e.key === "Enter") {
+          this.query = e.target.value.trim();
+          void this.reload();
+        }
+      } });
+      const filterSelect = h(
+        "select",
+        { id: "sampleProfileCompletenessFilter", onchange: (e) => {
+          this.filter = e.target.value;
+          void this.reload();
+        } },
+        option3("all", "Tất cả", this.filter),
+        option3("missing", "Còn thiếu thông tin", this.filter),
+        option3("empty", "Chưa có nghiên cứu", this.filter),
+        option3("pending_review", "Chờ duyệt", this.filter),
+        option3("complete", "Đầy đủ", this.filter)
+      );
+      const rows = d.mau.map((p) => this.row(p, d));
+      box.append(
+        h(
+          "div",
+          { class: "grid three" },
+          metricCard("Mẫu dòng", String(d.dem.tong), "Profile tham khảo có thể chỉnh"),
+          metricCard("Đã có trong productLine", String(d.dem.daXuatBan), "Dòng đã được đưa vào Fit Finder"),
+          metricCard("Cần nghiên cứu", String(d.dem.canNghienCuu), `${d.dem.trung.duplicateProfiles} mẫu đang trùng model + phiên bản`)
+        ),
+        h(
+          "section",
+          { class: "panel omi-section-gap" },
+          panelHead(
+            "Tiến độ nghiên cứu tự động",
+            `Hàng nghiên cứu chạy trên Xeon (gói ngành ${d.goi.ten}). Mẫu xong chờ duyệt, không tự áp.`,
+            h("span", { class: "badge blue" }, `${d.demNghienCuu["pending"] ?? 0} chờ`),
+            h("span", { class: "badge amber" }, `${d.demNghienCuu["running"] ?? 0} đang chạy`),
+            h("span", { class: "badge green" }, `${d.demNghienCuu["done"] ?? 0} hoàn tất`),
+            h("button", { class: "secondary-button compact-button", type: "button", "data-action": "run-sample-research-jobs", disabled: !d.moHinhSanSang || !(d.demNghienCuu["pending"] ?? 0) }, "Chạy hàng nghiên cứu"),
+            h("button", { class: "secondary-button compact-button", type: "button", "data-action": "refresh-sample-research-jobs" }, "Tải lại")
+          ),
+          h(
+            "div",
+            { class: "panel-body" },
+            d.moHinhSanSang ? null : h("p", { class: "subtle" }, "Xeon chưa cấu hình mô hình AI — tạo job được, chạy chưa được."),
+            h("div", { class: "table-wrap" }, h(
+              "table",
+              null,
+              h("thead", null, h("tr", null, ...["Sản phẩm mẫu", "Thiếu", "Trạng thái", "Cập nhật"].map((t) => h("th", null, t)))),
+              h("tbody", { id: "spm-bang-nghien-cuu" }, ...jobs.length ? jobs.map((j) => h(
+                "tr",
+                null,
+                h("td", null, h("strong", null, j.targetProfileName || j.targetProfileId)),
+                h("td", null, (j.missingFields ?? []).slice(0, 5).join(", ")),
+                h("td", null, h("span", { class: `badge ${j.status === "done" ? "green" : j.status === "error" ? "red" : j.status === "running" ? "amber" : "blue"}` }, j.status || "pending"), h("div", { class: "subtle" }, j.error || "")),
+                h("td", null, day(j.updatedAt || j.createdAt))
+              )) : [h("tr", null, h("td", { colspan: "4", class: "subtle" }, "Chưa có job nghiên cứu."))])
+            ))
+          )
+        ),
+        h(
+          "section",
+          { class: "panel omi-section-gap" },
+          panelHead(
+            "Sản phẩm mẫu",
+            "Đây là bảng profile mẫu theo từng dòng. Chỉnh ở đây trước, sau đó bấm áp vào productLine để sản phẩm mới tự nhận tiêu chí gợi ý.",
+            h("button", { class: "secondary-button", type: "button", "data-action": "merge-catalog-to-sample-profiles" }, "Gộp dòng kho thành mẫu"),
+            h("button", { class: "secondary-button", type: "button", "data-action": "consolidate-duplicate-sample-profiles" }, "Gộp trùng theo model + phiên bản"),
+            h("button", { class: "secondary-button", type: "button", "data-action": "reset-sample-profiles" }, "Nạp lại mẫu mặc định"),
+            h("button", { class: "primary-button", type: "button", "data-action": "publish-sample-profiles" }, "Áp vào Fit Finder/Catalog")
+          ),
+          h(
+            "div",
+            { class: "panel-body" },
+            h(
+              "div",
+              { class: "grid three" },
+              h("div", { class: "field" }, h("label", { for: "sampleProfileQuery" }, "Tìm sản phẩm mẫu"), searchInput),
+              h("div", { class: "field" }, h("label", { for: "sampleProfileCompletenessFilter" }, "Lọc độ đầy đủ"), filterSelect),
+              h(
+                "div",
+                { class: "field" },
+                h("label", null, "Chọn hàng loạt"),
+                h(
+                  "div",
+                  { class: "split-actions" },
+                  h("button", { class: "secondary-button compact-button", type: "button", "data-action": "select-filtered-sample-profiles" }, "Chọn danh sách lọc"),
+                  h("button", { class: "secondary-button compact-button", type: "button", "data-action": "merge-selected-sample-profiles" }, "Gộp mẫu đã chọn"),
+                  h("button", { class: "danger-button compact-button", type: "button", "data-action": "delete-selected-sample-profiles" }, "Xóa mẫu đã chọn"),
+                  h("button", { class: "ghost-button compact-button", type: "button", "data-action": "clear-selected-sample-profiles" }, "Bỏ chọn")
+                )
+              )
+            ),
+            h(
+              "section",
+              { class: "inline-panel omi-section-gap" },
+              h(
+                "div",
+                { class: "section-title-row" },
+                h("div", null, h("h3", null, "Tạo hàng đợi nghiên cứu"), h("p", { class: "subtle" }, "Mẫu được gán nhóm có prompt chuyên ngành sẽ tự dùng prompt đó. Prompt dưới đây chỉ dùng cho nhóm chưa có prompt chuyên ngành.")),
+                h("button", { class: "primary-button", type: "button", "data-action": "create-sample-research-jobs" }, "Tạo job cho mẫu đã chọn")
+              ),
+              h("p", { class: "subtle" }, `Prompt chuyên ngành đã nạp: ${d.goi.promptChuyenNganh.join(", ") || "chưa có"}.`),
+              h("div", { class: "field" }, h("textarea", { id: "sampleResearchPromptTemplate", rows: "8", value: d.promptChung })),
+              h("p", { class: "subtle", id: "spm-dem-chon" }, this.selectionNote())
+            ),
+            h("div", { class: "table-wrap" }, h(
+              "table",
+              null,
+              h("thead", null, h("tr", null, ...["Chọn", "Dòng mẫu", "Phân loại nhanh", "Độ đầy đủ", "Category", "Use case", "Điểm", "Fit-size", "Nguồn", "Thao tác"].map((t) => h("th", null, t)))),
+              h("tbody", { id: "spm-bang-mau" }, ...rows.length ? rows : [h("tr", null, h("td", { colspan: "10", class: "subtle" }, "Không có sản phẩm mẫu phù hợp bộ lọc."))])
+            ))
+          )
+        )
+      );
+    }
+    row(p, d) {
+      const c = p.completeness;
+      const label = COMPLETENESS_LABEL[c.status] ?? `Thiếu ${c.missing.length} phần`;
+      const s = p.scores;
+      return h(
+        "tr",
+        { class: this.openedId === p.id ? "selected-row" : "", "data-mau": p.id },
+        h("td", null, h("input", { type: "checkbox", "data-sample-profile-select": p.id, checked: this.selected.has(p.id) })),
+        h(
+          "td",
+          null,
+          h("button", { class: "link-button", type: "button", "data-action": "select-sample-profile", "data-id": p.id }, p.name || p.id),
+          h("div", { class: "subtle" }, p.needsVersion ? h("span", { class: "badge red" }, "Thiếu phiên bản") : null, ` ${p.brand} · prompt ${p.family} · ${(p.keywords ?? []).slice(0, 3).join(", ")}`)
+        ),
+        h("td", null, h("select", { "data-sample-research-family": p.id }, ...(d.goi.nhom.length ? d.goi.nhom : [{ id: "other", label: "Loại khác" }]).map((f) => option3(f.id, f.label, p.family)))),
+        h("td", null, h("span", { class: `badge ${c.status === "complete" ? "green" : c.status === "pending_review" ? "amber" : "blue"}` }, label), h("div", { class: "subtle" }, c.missing.slice(0, 3).join(", "))),
+        h("td", null, h("span", { class: "badge blue" }, p.category)),
+        h("td", null, (p.useCases ?? []).slice(0, 4).join(", ")),
+        h("td", null, `daily ${s["daily"] ?? 0}/10 · speed ${s["speed"] ?? 0}/10 · stability ${s["stability"] ?? 0}/10 · comfort ${s["comfort"] ?? 0}/10`),
+        h("td", null, p.measurementStatus || "pending", h("div", { class: "subtle" }, p.widthProfile)),
+        h("td", null, p.runrepeatUrl ? h("span", { class: "subtle", title: p.runrepeatUrl }, "RunRepeat") : h("span", { class: "subtle" }, "Chưa có link")),
+        h("td", null, h(
+          "div",
+          { class: "split-actions" },
+          h("button", { class: "secondary-button compact-button", type: "button", "data-action": "select-sample-profile", "data-id": p.id }, "Sửa"),
+          h("button", { class: "danger-button compact-button", type: "button", "data-action": "delete-sample-profile", "data-id": p.id }, "Xóa")
+        ))
+      );
+    }
+    // ------------------------------------------------------------ detail
+    async open(id) {
+      this.openedId = id;
+      this.say("Đang mở mẫu…");
+      const r = await this.ctx.gateway.landing("kien-thuc.mau.doc", { id });
+      this.detail = r.ok ? r.than?.mau ?? null : null;
+      this.page = "detail";
+      this.paint();
+      this.say(r.ok ? "" : r.viSao, !r.ok);
+      if (this.detail) void this.loadLinkedContent(this.detail);
+    }
+    async setFamily(id, family) {
+      const r = await this.ctx.gateway.landing("kien-thuc.mau.doc", { id });
+      if (!r.ok || !r.than?.mau) {
+        this.say(r.viSao, true);
+        return;
+      }
+      const w = await this.ctx.gateway.landing("kien-thuc.mau.ghi", { mau: { ...r.than.mau, researchFamily: family } });
+      this.say(w.ok ? `Đã đổi nhóm prompt của ${str(r.than.mau["name"])} thành ${family}.` : w.viSao, !w.ok);
+    }
+    detailPage() {
+      const p = this.detail;
+      if (!p) {
+        return h("section", { class: "panel" }, panelHead(
+          "Không tìm thấy sản phẩm mẫu",
+          "Sản phẩm có thể đã bị xóa hoặc danh sách vừa được cập nhật.",
+          h("button", { class: "secondary-button", type: "button", "data-action": "back-to-sample-profile-list" }, "Quay lại danh sách")
+        ));
+      }
+      this.lastJson = JSON.stringify(p, null, 2);
+      const web = p["webContent"] ?? {};
+      const fit = p["fitSizing"] ?? {};
+      const defaults = p["productDefaults"] ?? {};
+      const seo = p["seo"] ?? {};
+      const policy = p["policy"] ?? {};
+      const category = str(p["category"]);
+      const categorySelect = h(
+        "select",
+        { id: "sampleCategory" },
+        ...CATEGORIES2.some(([k]) => k === category) || !category ? [] : [option3(category, category, category)],
+        ...CATEGORIES2.map(([k, l]) => option3(k, l, category))
+      );
+      const families = this.data?.goi.nhom ?? [{ id: "running", label: "Running" }, { id: "other", label: "Loại khác" }];
+      const familySelect = h("select", { id: "sampleResearchFamily" }, option3("", "Tự nhận diện", str(p["researchFamily"])), ...families.map((f) => option3(f.id, f.label, str(p["researchFamily"]))));
+      const tables = p["evaluationTables"] ?? {};
+      const scoreTable = (key) => h(
+        "table",
+        { class: "sample-score-table", "data-sample-score-table": key },
+        h("thead", null, h("tr", null, h("th", null, "Tiêu chí"), h("th", null, "Điểm"), h("th", null, "Giải thích"))),
+        h("tbody", null, ...(tables[key] ?? []).map((row) => h(
+          "tr",
+          null,
+          h("td", null, h("input", { "data-score-label": "1", value: str(row["label"]) })),
+          h("td", null, h("input", { "data-score-value": "1", type: "number", min: "0", max: "10", step: "0.5", value: String(Number(row["score"] ?? 0)) })),
+          h("td", null, h("textarea", { "data-score-note": "1", rows: "2", value: str(row["note"]) }))
+        )))
+      );
+      const comparison = h(
+        "table",
+        { class: "sample-score-table", "data-sample-comparison-table": "comparison" },
+        h("thead", null, h("tr", null, h("th", null, "Mẫu so sánh"), h("th", null, "Nhóm"), h("th", null, "Nhận xét nhanh"))),
+        h("tbody", null, ...(tables["comparison"] ?? []).map((row) => h(
+          "tr",
+          null,
+          h("td", null, h("input", { "data-compare-label": "1", value: str(row["label"] ?? row["name"]) })),
+          h("td", null, h("input", { "data-compare-group": "1", value: str(row["group"]) })),
+          h("td", null, h("textarea", { "data-compare-note": "1", rows: "2", value: str(row["note"]) }))
+        )))
+      );
+      const specs = p["technicalSpecs"] ?? {};
+      const specTable = h("table", { class: "sample-score-table sample-spec-table" }, h(
+        "tbody",
+        null,
+        ...SPEC_ROWS.map(([label, key]) => h("tr", null, h("th", null, label), h("td", null, h("input", { id: `sampleTech_${key}`, value: str(specs[key] ?? (key === "weightMen" ? specs["weight"] : "")) }))))
+      ));
+      const measured = Array.isArray(fit["sizeMeasurements"]) ? fit["sizeMeasurements"] : [];
+      const bySize = new Map(measured.map((m) => [str(m["size"]), m]));
+      const sizes = [.../* @__PURE__ */ new Set([...measured.map((m) => str(m["size"])).filter(Boolean), "36", "37", "38", "39", "40", "41", "42", "43", "44", "45", "46"])];
+      const measureTable = h("div", { class: "sample-measurement-table-wrap" }, h(
+        "table",
+        { class: "sample-score-table sample-measurement-table", id: "sampleSizeMeasurementTable" },
+        h("thead", null, h("tr", null, ...["Size", "Dài lòng", "Rộng mũi", "Midfoot", "Gót", "Mu", "Ghi chú"].map((t) => h("th", null, t)))),
+        h("tbody", null, ...sizes.map((size2) => {
+          const m = bySize.get(size2) ?? {};
+          return h("tr", null, ...MEASURE_FIELDS.map((f) => h("td", null, h("input", { "data-size-measure-field": f, value: f === "size" ? size2 : str(m[f]), ...f !== "size" && f !== "note" ? { placeholder: "mm" } : {} }))));
+        }))
+      ));
+      const card = (title, body, wide = false) => h("section", { class: `sample-eval-card${wide ? " wide" : ""}` }, h("h4", null, title), body);
+      const form = h(
+        "div",
+        { class: "sample-profile-form" },
+        h(
+          "section",
+          { class: "inline-panel" },
+          h("h3", null, "Thông tin nhận diện mẫu"),
+          h(
+            "div",
+            { class: "grid four" },
+            inputField("sampleName", "Tên sản phẩm mẫu", p["name"]),
+            inputField("sampleBrand", "Tên hãng", p["brand"]),
+            h("div", { class: "field" }, h("label", { for: "sampleCategory" }, "Phân loại hiển thị"), categorySelect),
+            h("div", { class: "field" }, h("label", { for: "sampleResearchFamily" }, "Nhóm prompt nghiên cứu"), familySelect),
+            inputField("sampleDefaultProductLine", "Dòng gán khi tạo sản phẩm", defaults["productLine"] ?? p["name"])
+          ),
+          h("div", { class: "grid two" }, areaField("sampleKeywords", "Keywords nhận diện cùng dòng", linesOf(p["keywords"]), 2), areaField("sampleUseCases", "Use cases / mục đích nhanh", linesOf(p["useCases"]), 2))
+        ),
+        h(
+          "section",
+          { class: "inline-panel" },
+          h("h3", null, "Mô tả ngắn"),
+          h("div", { class: "field" }, h("textarea", { id: "sampleShortDescription", rows: "3", placeholder: "Một đoạn ngắn để hiện nhanh trên website và trong tư vấn.", value: str(web["shortDescription"]) }))
+        ),
+        h(
+          "section",
+          { class: "inline-panel" },
+          h("h3", null, "Thông tin sản phẩm"),
+          h(
+            "div",
+            { class: "grid two" },
+            h("div", { class: "config-form" }, inputField("sampleWebTitle", "Tiêu đề web", web["title"] ?? p["name"]), areaField("sampleIntro", "Bài/đoạn thông tin sản phẩm", web["intro"], 7), areaField("sampleProductInfo", "Thông tin sản phẩm chi tiết", web["productInfo"], 7, "Chất liệu, cảm giác sử dụng, nhóm khách, lưu ý bán hàng...")),
+            h("div", { class: "config-form" }, areaField("sampleTechnologies", "Công nghệ / cấu trúc", linesOf(web["technologies"]), 4, "Mỗi dòng một ý"), areaField("sampleBestFor", "Phù hợp với", linesOf(web["bestFor"] ?? p["bestFor"]), 4), areaField("sampleNotFor", "Không nên ưu tiên nếu", linesOf(web["notFor"] ?? p["avoidFor"]), 4))
+          )
+        ),
+        h(
+          "section",
+          { class: "inline-panel" },
+          h("h3", null, "Bảng thông số đo chân theo size"),
+          h(
+            "div",
+            { class: "grid two" },
+            h(
+              "div",
+              { class: "config-form" },
+              h("div", { class: "grid two" }, inputField("sampleMeasurementStatus", "Trạng thái đo", fit["measurementStatus"] ?? "pending_measurement"), inputField("sampleWidthProfile", "Độ rộng form", fit["widthProfile"]), inputField("sampleToeBox", "Mũi giày", fit["toeBox"]), inputField("sampleInstep", "Mu bàn chân", fit["instep"])),
+              areaField("sampleFitGuide", "Ghi chú fit", web["fitGuide"], 3),
+              areaField("sampleSizeNote", "Ghi chú size", fit["sizingNote"] ?? web["sizeNote"], 3)
+            ),
+            h("div", { class: "field" }, h("label", null, "Bảng đo lòng giày theo size"), measureTable)
+          )
+        ),
+        h(
+          "section",
+          { class: "inline-panel" },
+          h("h3", null, "9 bảng thông số so sánh chấm điểm"),
+          h(
+            "div",
+            { class: "sample-eval-grid" },
+            card("Phần 1: Thông tin kỹ thuật", specTable),
+            ...SECTIONS2.map(([key, title, wide]) => card(title, scoreTable(key), wide)),
+            card("Phần 9: So sánh đối thủ", comparison, true)
+          )
+        ),
+        h(
+          "section",
+          { class: "inline-panel" },
+          h("h3", null, "Thông tin xuất bản / nguồn tham khảo"),
+          h(
+            "div",
+            { class: "grid two" },
+            h(
+              "div",
+              { class: "config-form" },
+              h("div", { class: "grid two" }, inputField("sampleDefaultCategory", "Web category", defaults["category"] ?? "running_shoes"), inputField("sampleDefaultGender", "Gender", defaults["gender"] ?? "unisex"), inputField("sampleDefaultPriority", "Priority", defaults["priority"] ?? 2), inputField("sampleRunRepeatUrl", "RunRepeat URL", p["runrepeatUrl"])),
+              areaField("sampleSourceSummary", "Source summary", p["sourceSummary"], 3)
+            ),
+            h("div", { class: "config-form" }, inputField("sampleSeoTitle", "SEO title", seo["title"]), areaField("sampleSeoDescription", "SEO description", seo["description"], 3), areaField("samplePolicyDisclosure", "Policy / disclosure", policy["sourceDisclosure"], 3))
+          )
+        )
+      );
+      return h(
+        "section",
+        { class: "panel" },
+        h(
+          "div",
+          { class: "panel-header" },
+          h(
+            "div",
+            null,
+            h("button", { class: "ghost-button compact-button", type: "button", "data-action": "back-to-sample-profile-list" }, "← Danh sách sản phẩm mẫu"),
+            h("h3", { class: "omi-section-gap" }, str(p["name"]) || str(p["id"])),
+            h("p", null, `${str(p["brand"])} · Chỉnh thông tin sản phẩm mẫu và tiêu chí Fit Finder.`)
+          ),
+          h(
+            "div",
+            { class: "split-actions" },
+            h("button", { class: "secondary-button", type: "button", "data-action": "sync-sample-form-to-json" }, "Cập nhật JSON từ form"),
+            h("button", { class: "primary-button", type: "button", "data-action": "save-selected-sample-profile" }, "Lưu sản phẩm mẫu")
+          )
+        ),
+        h(
+          "div",
+          { class: "panel-body" },
+          form,
+          h(
+            "section",
+            { class: "inline-panel omi-section-gap" },
+            h(
+              "div",
+              { class: "section-title-row" },
+              h("div", null, h("h3", null, "Bài review/content đã gắn"), h("p", { class: "subtle" }, "Khách sẽ thấy tiêu đề và quote trước; bấm xem thêm nếu muốn đọc kỹ toàn bài.")),
+              h("span", { class: "badge blue", id: "spm-dem-bai" }, "…")
+            ),
+            h("div", { class: "content-library-list", id: "spm-bai-gan" }, h("p", { class: "subtle" }, "Đang tải…"))
+          ),
+          h(
+            "section",
+            { class: "inline-panel omi-section-gap" },
+            h("h3", null, "Import / copy nội dung nghiên cứu"),
+            h("p", { class: "subtle" }, "Dán bài nghiên cứu vào đây. Hệ thống sẽ tách thành bài mô tả, thông số, công nghệ, điểm, review chuyên sâu và FAQ cho profile đang chọn."),
+            h("div", { class: "field" }, h("label", { for: "sampleResearchFile" }, "Import file nghiên cứu (.txt, .md)"), h("input", { id: "sampleResearchFile", type: "file", accept: ".txt,.md,text/plain" })),
+            h("div", { class: "field" }, h("textarea", { id: "sampleResearchText", rows: "10", placeholder: "Dán toàn bộ bài nghiên cứu sản phẩm vào đây...", value: str(p["researchSourceText"]) })),
+            h("div", { class: "split-actions" }, h("button", { class: "secondary-button", type: "button", "data-action": "parse-sample-research" }, "Phân tích & điền vào mẫu"))
+          ),
+          h("div", { class: "field omi-section-gap" }, h("label", { for: "sampleProfileJSON" }, "JSON profile nâng cao"), h("textarea", { id: "sampleProfileJSON", rows: "18", value: this.lastJson }))
+        )
+      );
+    }
+    async loadLinkedContent(p) {
+      const r = await this.ctx.gateway.landing("noi-dung.kho-bai", { q: str(p["name"]).slice(0, 100) });
+      const list = document.getElementById("spm-bai-gan");
+      const count = document.getElementById("spm-dem-bai");
+      if (!list || !count) return;
+      clear(list);
+      const items = r.ok ? r.than?.muc ?? [] : [];
+      count.textContent = `${items.length} bài`;
+      if (items.length === 0) {
+        list.append(h("p", { class: "subtle" }, r.ok ? "Chưa có bài content nào gắn với mẫu này." : r.viSao));
+        return;
+      }
+      for (const item of items) {
+        list.append(h(
+          "article",
+          { class: "content-review-preview" },
+          h(
+            "div",
+            { class: "knowledge-card-header" },
+            h("div", null, h("div", { class: "product-title" }, str(item["tieuDe"])), h("p", { class: "content-review-quote" }, str(item["quote"]) || str(item["noiDung"]).slice(0, 160))),
+            h("span", { class: `badge ${item["kenh"] === "seo" ? "green" : "blue"}` }, item["kenh"] === "seo" ? "SEO" : "Facebook")
+          ),
+          h("details", { class: "content-review-more" }, h("summary", null, "Xem thêm"), h("div", { class: "content-review-body" }, str(item["noiDung"])))
+        ));
+      }
+    }
+    async readResearchFile(input2) {
+      const file = input2.files?.[0];
+      if (!file) return;
+      if (file.size > 2 * 1024 * 1024) {
+        this.say("Tệp nghiên cứu quá lớn (trần 2 MB).", true);
+        return;
+      }
+      el("sampleResearchText").value = await file.text();
+      this.say(`Đã đọc ${file.name}. Bấm Phân tích & điền vào mẫu.`);
+    }
+    /** Desk `readSampleProfileEditorForm`: the form over the opened profile. */
+    readForm() {
+      const base = this.detail;
+      if (!base || !document.getElementById("sampleName")) return null;
+      const v = (id) => el(id).value.trim();
+      const bestFor = splitLines2(v("sampleBestFor"));
+      const avoidFor = splitLines2(v("sampleNotFor"));
+      const keywords = splitLines2(v("sampleKeywords"));
+      const scores = { ...base["scores"] ?? {} };
+      const evaluationTables = {};
+      for (const table2 of document.querySelectorAll("[data-sample-score-table]")) {
+        const key = table2.dataset["sampleScoreTable"] ?? "";
+        evaluationTables[key] = [...table2.querySelectorAll("tbody tr")].map((tr) => {
+          const label = tr.querySelector("[data-score-label]").value.trim();
+          const score = Math.max(0, Math.min(10, Number(tr.querySelector("[data-score-value]").value) || 0));
+          if (key === "classification" && ROW_SCORE[label]) scores[ROW_SCORE[label]] = score;
+          return { label, score, note: tr.querySelector("[data-score-note]").value.trim() };
+        }).filter((row) => row.label !== "");
+      }
+      const compare = document.querySelector("[data-sample-comparison-table]");
+      evaluationTables["comparison"] = compare ? [...compare.querySelectorAll("tbody tr")].map((tr) => ({
+        label: tr.querySelector("[data-compare-label]").value.trim(),
+        group: tr.querySelector("[data-compare-group]").value.trim(),
+        note: tr.querySelector("[data-compare-note]").value.trim()
+      })).filter((row) => row.label !== "") : [];
+      const technicalSpecs = { ...base["technicalSpecs"] ?? {} };
+      for (const [, key] of SPEC_ROWS) technicalSpecs[key] = v(`sampleTech_${key}`);
+      const sizeMeasurements = [...document.querySelectorAll("#sampleSizeMeasurementTable tbody tr")].map((tr) => {
+        const row = {};
+        for (const input2 of tr.querySelectorAll("[data-size-measure-field]")) row[input2.dataset["sizeMeasureField"] ?? ""] = input2.value.trim();
+        return row;
+      }).filter((row) => MEASURE_FIELDS.some((f) => f !== "size" && row[f]));
+      const runrepeatUrl = v("sampleRunRepeatUrl");
+      const sourceSummary = v("sampleSourceSummary");
+      const name = v("sampleName");
+      return {
+        ...base,
+        name,
+        brand: v("sampleBrand"),
+        category: v("sampleCategory"),
+        researchFamily: v("sampleResearchFamily"),
+        useCases: splitLines2(v("sampleUseCases")),
+        keywords,
+        scores,
+        technicalSpecs,
+        evaluationTables,
+        bestFor,
+        avoidFor,
+        fitSizing: { ...base["fitSizing"] ?? {}, measurementStatus: v("sampleMeasurementStatus") || "pending_measurement", widthProfile: v("sampleWidthProfile"), toeBox: v("sampleToeBox"), instep: v("sampleInstep"), sizingNote: v("sampleSizeNote"), sizeMeasurements },
+        productDefaults: { ...base["productDefaults"] ?? {}, productLine: v("sampleDefaultProductLine") || name, brand: v("sampleBrand"), category: v("sampleDefaultCategory") || "running_shoes", gender: v("sampleDefaultGender") || "unisex", priority: Number(v("sampleDefaultPriority")) || 2 },
+        webContent: {
+          ...base["webContent"] ?? {},
+          title: v("sampleWebTitle") || name,
+          shortDescription: v("sampleShortDescription"),
+          intro: v("sampleIntro"),
+          productInfo: v("sampleProductInfo"),
+          technologies: splitLines2(v("sampleTechnologies")),
+          bestFor,
+          notFor: avoidFor,
+          fitGuide: v("sampleFitGuide"),
+          sizeNote: v("sampleSizeNote")
+        },
+        seo: { ...base["seo"] ?? {}, title: v("sampleSeoTitle"), description: v("sampleSeoDescription"), keywords },
+        policy: { ...base["policy"] ?? {}, sourceDisclosure: v("samplePolicyDisclosure") },
+        runrepeatUrl,
+        sourceSummary,
+        sourceReferences: [{ sourceName: "RunRepeat", url: runrepeatUrl, usedFor: "classification_reference", summary: sourceSummary }]
+      };
+    }
+    async saveDetail() {
+      const json = el("sampleProfileJSON").value.trim();
+      let profile;
+      if (json !== "" && json !== this.lastJson.trim()) {
+        try {
+          profile = JSON.parse(json);
+        } catch (e) {
+          this.say(`JSON không hợp lệ: ${e.message}`, true);
+          return;
+        }
+      } else profile = this.readForm();
+      if (!profile || !str(profile["id"]) || !str(profile["name"])) {
+        this.say("Profile cần có id và name.", true);
+        return;
+      }
+      this.say("Đang lưu…");
+      let r;
+      try {
+        r = await this.ctx.gateway.landing("kien-thuc.mau.ghi", { mau: profile });
+      } catch (e) {
+        this.say(e.message, true);
+        return;
+      }
+      if (!r.ok) {
+        this.say(r.viSao, true);
+        return;
+      }
+      this.detail = r.than?.mau ?? profile;
+      this.paint();
+      void this.loadLinkedContent(this.detail);
+      this.say("Đã lưu sản phẩm mẫu.");
+    }
+    async parseResearch() {
+      const current = this.readForm();
+      const text2 = el("sampleResearchText").value;
+      if (!current || text2.trim() === "") {
+        this.say("Cần chọn sản phẩm mẫu và dán nội dung nghiên cứu.", true);
+        return;
+      }
+      this.say("Đang phân tích…");
+      let r;
+      try {
+        r = await this.ctx.gateway.landing("kien-thuc.mau.phan-tich", { id: str(current["id"]), noiDung: text2, mau: current });
+      } catch (e) {
+        this.say(e.message, true);
+        return;
+      }
+      if (!r.ok || !r.than?.mau) {
+        this.say(r.viSao, true);
+        return;
+      }
+      this.detail = r.than.mau;
+      this.paint();
+      void this.loadLinkedContent(this.detail);
+      this.say("Đã phân tích nội dung nghiên cứu và điền vào sản phẩm mẫu.");
+    }
+  };
+
+  // ../omi/packages/omi-ui/src/views/websites.ts
+  var WebsitesView = class extends View {
+    id = "kenh-web";
+    label = "Website Channels";
+    title = "Website Channels";
+    workspace = "common";
+    glyph = "WEB";
+    data = null;
+    editing = "";
+    actions = {
+      "edit-website-channel": (b) => {
+        this.editing = str(b.dataset["channelId"]);
+        this.paint();
+      },
+      "cancel-website-channel-edit": () => {
+        this.editing = "";
+        this.paint();
+      },
+      "save-website-channel": () => this.save()
+    };
+    build(root) {
+      root.append(h("span", { class: "status-line", id: "web-trang-thai" }), h("div", { id: "web-khung" }));
+    }
+    load() {
+      void this.reload();
+    }
+    async reload() {
+      const r = await this.ctx.gateway.landing("kenh-web");
+      if (!r.ok || !r.than) {
+        status(el("web-trang-thai"), r.viSao || "Không đọc được Website Channels.", "bad");
+        return;
+      }
+      this.data = r.than;
+      this.paint();
+    }
+    card(item) {
+      return h(
+        "div",
+        { class: "knowledge-card", "data-kenh": item.id },
+        h(
+          "div",
+          { class: "knowledge-card-header" },
+          h("div", null, h("div", { class: "product-title" }, item.name), h("div", { class: "subtle" }, `${item.id} · ${item.siteUrl || "chưa gắn domain"}`)),
+          h("span", { class: `badge ${item.status === "active" ? "green" : "amber"}` }, item.status === "active" ? "Đang chạy" : "Chuẩn bị")
+        ),
+        h(
+          "div",
+          { class: "profile-grid" },
+          profileFact("Ngành hàng", (item.industries ?? []).join(", ")),
+          profileFact("GA4", item.tracking?.ga4MeasurementId || "chưa gắn"),
+          profileFact("Meta Pixel", item.tracking?.metaPixelId || "chưa gắn"),
+          profileFact("TikTok Pixel", item.tracking?.tiktokPixelId || "chưa gắn")
+        ),
+        h(
+          "div",
+          { class: "split-actions" },
+          h("button", { class: "secondary-button", type: "button", "data-action": "edit-website-channel", "data-channel-id": item.id }, "Sửa website")
+        )
+      );
+    }
+    paint() {
+      const box = el("web-khung");
+      clear(box);
+      const d = this.data;
+      if (!d) return;
+      const editing = this.editing ? d.kenh.find((c) => c.id === this.editing) ?? null : null;
+      const seo = d.seo;
+      const statusSelect = h(
+        "select",
+        { id: "websiteChannelStatus" },
+        h("option", { value: "active", selected: editing?.status !== "planned" }, "Đang hoạt động"),
+        h("option", { value: "planned", selected: editing?.status === "planned" }, "Đang chuẩn bị")
+      );
+      const sample = (key) => (seo.mau[key] ?? []).slice(0, 5).map((x) => x.ma).join(", ");
+      box.append(
+        h(
+          "div",
+          { class: "grid three" },
+          metricCard("Website đang hoạt động", String(d.kenh.filter((c) => c.status === "active").length), `${d.kenh.length} channel đã cấu hình`),
+          metricCard("Sản phẩm public", String(seo.congKhai), "Đọc từ danh mục landing"),
+          metricCard("Điểm sẵn sàng SEO", `${seo.diem}/100`, `${seo.duNen} món có brand, ảnh và giá · ${seo.duSeo} món có đủ SEO`)
+        ),
+        h(
+          "div",
+          { class: "grid two omi-section-gap" },
+          h(
+            "section",
+            { class: "panel" },
+            panelHead("Danh sách website", "Mỗi channel có thể dùng domain, ngành hàng và bộ tracking quảng cáo riêng.", h("span", { class: "badge blue" }, `${d.kenh.length} channel`)),
+            h("div", { class: "panel-body qa-list", id: "web-ds-kenh" }, ...d.kenh.map((c) => this.card(c)))
+          ),
+          h(
+            "section",
+            { class: "panel" },
+            panelHead(editing ? `Sửa ${editing.name}` : "Tạo website channel", "Cấu hình nền cho storefront theo ngành hàng. Channel đang hoạt động đầu tiên là nơi web nạp pixel."),
+            h(
+              "div",
+              { class: "panel-body config-form" },
+              inputField("websiteChannelName", "Tên website", editing?.name ?? ""),
+              inputField("websiteChannelId", "Mã channel", editing?.id ?? ""),
+              inputField("websiteChannelDomain", "Domain public", editing?.siteUrl ?? ""),
+              inputField("websiteChannelIndustries", "Ngành hàng", (editing?.industries ?? []).join(", ")),
+              h("div", { class: "field" }, h("label", { for: "websiteChannelStatus" }, "Trạng thái"), statusSelect),
+              inputField("websiteGa4Id", "GA4 Measurement ID", editing?.tracking?.ga4MeasurementId ?? ""),
+              inputField("websiteMetaPixelId", "Meta Pixel ID", editing?.tracking?.metaPixelId ?? ""),
+              inputField("websiteTiktokPixelId", "TikTok Pixel ID", editing?.tracking?.tiktokPixelId ?? ""),
+              h(
+                "div",
+                { class: "split-actions" },
+                h("button", { class: "primary-button", type: "button", "data-action": "save-website-channel" }, editing ? "Cập nhật website" : "Tạo website"),
+                editing ? h("button", { class: "ghost-button", type: "button", "data-action": "cancel-website-channel-edit" }, "Hủy sửa") : null
+              )
+            )
+          )
+        ),
+        h(
+          "div",
+          { class: "grid two omi-section-gap" },
+          h(
+            "section",
+            { class: "panel" },
+            panelHead("Tình trạng dữ liệu SEO", "Danh sách ưu tiên làm sạch trước khi đẩy website lên domain thật.", h("span", { class: `badge ${seo.canhBao ? "amber" : "green"}` }, `${seo.canhBao} cảnh báo`)),
+            h(
+              "div",
+              { class: "panel-body workflow", id: "web-seo" },
+              workflowStep(1, "Sản phẩm public", `${seo.congKhai} sản phẩm đang hiện trên web.`, "Catalog"),
+              workflowStep(2, "Thiếu thương hiệu", `${seo.thieuHang} sản phẩm cần bổ sung brand chuẩn.${sample("thieuHang") ? ` VD: ${sample("thieuHang")}` : ""}`, seo.thieuHang ? "Cần xử lý" : "Đạt"),
+              workflowStep(3, "Thiếu ảnh", `${seo.thieuAnh} sản phẩm cần bổ sung ảnh đại diện.${sample("thieuAnh") ? ` VD: ${sample("thieuAnh")}` : ""}`, seo.thieuAnh ? "Cần xử lý" : "Đạt"),
+              workflowStep(4, "Thiếu giá", `${seo.thieuGia} sản phẩm chưa có giá bán.`, seo.thieuGia ? "Cần xử lý" : "Đạt"),
+              workflowStep(5, "Tiêu đề / mô tả SEO", `${seo.thieuTieuDeSeo} thiếu tiêu đề SEO, ${seo.thieuMoTaSeo} thiếu mô tả SEO.${sample("thieuSeo") ? ` VD: ${sample("thieuSeo")}` : ""}`, seo.thieuTieuDeSeo + seo.thieuMoTaSeo ? "Nên bổ sung" : "Đạt")
+            )
+          ),
+          h(
+            "section",
+            { class: "panel" },
+            panelHead("Lộ trình đa website", "Giữ chung catalog và đơn hàng, tách cấu hình theo domain và ngành hàng.", h("span", { class: "badge blue" }, "Bước tiếp theo")),
+            h(
+              "div",
+              { class: "panel-body workflow" },
+              workflowStep(1, "Website theo ngành", "Tách landing, danh mục và nội dung tư vấn chuyên cho từng ngành hàng.", "Ưu tiên"),
+              workflowStep(2, "Ads connectors", "Gắn GA4, Meta Pixel và TikTok Pixel theo từng website — web nạp mã của channel đang hoạt động.", "Đã bật"),
+              workflowStep(3, "Báo cáo ROAS", "Đọc nguồn đơn và conversion theo website, campaign và nền tảng.", "Chuẩn bị")
+            )
+          )
+        )
+      );
+    }
+    async save() {
+      const v = (id) => el(id).value.trim();
+      const line = el("web-trang-thai");
+      if (v("websiteChannelName") === "") {
+        status(line, "Cần nhập tên và mã website channel.", "bad");
+        return;
+      }
+      let r;
+      try {
+        r = await this.ctx.gateway.landing("kenh-web.ghi", {
+          sua: this.editing,
+          ten: v("websiteChannelName"),
+          ma: v("websiteChannelId"),
+          diaChi: v("websiteChannelDomain"),
+          nganh: v("websiteChannelIndustries"),
+          trangThai: v("websiteChannelStatus"),
+          ga4: v("websiteGa4Id"),
+          metaPixel: v("websiteMetaPixelId"),
+          tiktokPixel: v("websiteTiktokPixelId")
+        });
+      } catch (e) {
+        status(line, e.message, "bad");
+        return;
+      }
+      if (!r.ok) {
+        status(line, r.viSao, "bad");
+        return;
+      }
+      this.editing = "";
+      await this.reload();
+      status(line, r.than?.message ?? "Đã lưu website channel.", "good");
+    }
+  };
+
+  // ../omi/packages/omi-ui/src/views/video-studio.ts
+  var VideoStudioView = class extends View {
+    id = "video-studio";
+    label = "Video Studio";
+    title = "Video Studio";
+    workspace = "common";
+    glyph = "▶";
+    actions = {
+      "open-video-studio": () => this.openStudio()
+    };
+    build(root) {
+      root.append(h(
+        "section",
+        { class: "panel" },
+        panelHead(
+          "Video Studio",
+          "Biến bài Content thành video ngắn 9:16 có giọng đọc, nhạc bám nhịp và chuyển cảnh. Công cụ chạy trên máy Xeon.",
+          h("button", { class: "primary-button", type: "button", id: "nut-mo-video", "data-action": "open-video-studio" }, "Mở Video Studio")
+        ),
+        h(
+          "div",
+          { class: "panel-body" },
+          h("span", { class: "status-line", id: "video-trang-thai" }, "Bấm Mở Video Studio — OMI mở công cụ trong cửa sổ riêng."),
+          h(
+            "div",
+            { class: "workflow omi-section-gap" },
+            workflowStep(1, "Xin vé", "Landing xin Xeon một vé ngắn hạn (5 phút, dùng một lần) ký bằng khoá license của Xeon.", "Xeon"),
+            workflowStep(2, "Mở cửa sổ riêng", "OMI mở Video Studio trong cửa sổ riêng, phiên riêng — trang công cụ không chạm được vào OMI.", "OMI"),
+            workflowStep(3, "Dựng video", "Chọn bài Content, giọng đọc, nhạc; công cụ dựng video 9:16 ngay trên Xeon.", "Video"),
+            workflowStep(4, "Token AI", "Lượt AI của Video Studio tính vào nhóm Video Studio trên màn Token AI.", "Token")
+          )
+        )
+      ));
+    }
+    async openStudio() {
+      const line = el("video-trang-thai");
+      status(line, "Đang xin vé Video Studio từ Xeon…");
+      const r = await this.ctx.gateway.landing("video.ve");
+      if (!r.ok || !r.than?.diaChi) {
+        status(line, r.viSao || "Không xin được vé Video Studio.", "bad");
+        return;
+      }
+      const opened = await this.ctx.gateway.openVideoStudio(r.than.diaChi);
+      status(line, opened.ok ? "Đã mở Video Studio trong cửa sổ riêng." : opened.viSao, opened.ok ? "good" : "bad");
+    }
   };
 
   // ../omi/packages/omi-ui/src/main.ts
@@ -12744,17 +23661,24 @@ Quy tắc điền:
     const ctx = { gateway, shell };
     const common = [
       new DashboardView(ctx),
+      new DemoAiView(ctx),
       new FanpageView(ctx),
       new InboxView(ctx),
       new ChannelsView(ctx),
       new ContentView(ctx),
+      new VideoStudioView(ctx),
       new PartnerStockView(ctx),
       new ProductsView(ctx),
+      new FitFinderView(ctx),
+      new SampleProfilesView(ctx),
       new StockSyncView(ctx),
       new OrdersView(ctx),
       new CustomersView(ctx),
       new AffiliatesView(ctx),
+      new WebsitesView(ctx),
       new IntegrationsView(ctx),
+      new TrainingView(ctx),
+      new TokenAiView(ctx),
       new HelpView(ctx),
       new SettingsView(ctx)
     ];
