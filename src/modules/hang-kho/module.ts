@@ -24,7 +24,7 @@
  * the brain read. The translation happens here, at the boundary, and nowhere deeper.
  */
 
-import { ACCESS, ERROR_CODES, EVENTS, defineModule, reply, type KernelRequest, type ModuleContext, type ReplyDraft } from "../../contract";
+import { ACCESS, ERROR_CODES, EVENTS, defineModule, reply, type KernelRequest, type ModuleContext, type ReplyDraft, type Row } from "../../contract";
 import { bytesFromDataUrl } from "../../shared/data-url";
 import { callXeon, relayXeon } from "../../shared/xeon-call";
 import {
@@ -34,10 +34,14 @@ import {
 import { CatalogHistory } from "./catalog-history";
 import { DEFAULT_READY_WAREHOUSES, convertCampaignPayload, convertReadyStockPayload } from "./desk-payloads";
 import { SIZE_SYSTEMS, SheetInputError, googleSheetCsvUrl, itemsFromRows, looksLikeHtml, parseCsv, type SizeSystem } from "./import-sheet";
-import { asRecord, publicView, type PublicItem } from "./normalise";
+import { asRecord, itemSlug, publicView, variantId as variantIdOf, type PublicItem } from "./normalise";
 import { MOVEMENT_KINDS, StockLedger, type AdjustOutcome } from "./stock-ledger";
 import { SCHEMA, TABLES } from "./schema";
-import { priceImportedItems, type WarehousePricingRule } from "./warehouse-pricing";
+import { priceImportedItems, warehouseWebPrice, type WarehousePricingRule } from "./warehouse-pricing";
+import { StockDocuments, documentInputOf, type DocumentRefusal } from "./stock-documents";
+import { findIssues, type IssueImport, type IssueWarehouse } from "./issues";
+import { dateWindow } from "../../shared/date-range";
+import { isoFromMysql } from "../../shared/mysql-time";
 
 const RESERVATION_TTL_MS = 30 * 60 * 1000;   // hold 30 minutes, then give back if the order was not placed
 const TEN_MINUTES_MS = 10 * 60 * 1000;
@@ -49,15 +53,28 @@ const IMPORT_CAP = 20000;
 const IMPORT_LOG_DOCUMENT = "hang-kho-lich-su-nap";
 const IMPORT_LOG_CAP = 50;
 const WAREHOUSE_BOOK_DOCUMENT = "hang-kho-danh-muc-kho-v2";
+/** Size rows the table's "Xoá size" took away (newest last), kept so "Hoàn tác" can put one back. */
+const REMOVED_SIZES_DOCUMENT = "hang-kho-size-da-xoa-v1";
+const REMOVED_SIZES_KEEP = 200;
+interface RemovedSize { token: string; row: Record<string, unknown>; at: string; actor: string; restoredAt?: string }
 const WAREHOUSE_POLICY_DOCUMENT = "hang-kho-chinh-sach-theo-kho-v2";
 const WAREHOUSE_MIGRATION_DOCUMENT = "hang-kho-migration-nguon-v2";
 const STOCK_IMPORT_SESSION_DOCUMENT = "hang-kho-phien-nhap-file-v2";
 
 interface WarehousePartnerLink { partnerId: string; role: "supplier" | "buyer"; priority: number; isDefault: boolean; enabled: boolean; purchasingPolicy: string }
-interface WarehouseRecord { id: string; name: string; type: "ready" | "order"; status: "active" | "inactive"; priority: number; description: string; pricing: WarehousePricingRule; partners: WarehousePartnerLink[]; updatedAt: string }
+/** `address` (18/09/2026): the warehouse's street address; records written before it have none. */
+/** `addressParts` (18/09/2026): the units the address was picked from (Tỉnh / Huyện / Xã), so the screen can show them again. */
+interface WarehouseAddressParts { scheme: "ba-cap" | "hai-cap"; province: string; district: string; ward: string; detail: string }
+interface WarehouseRecord { id: string; name: string; type: "ready" | "order"; status: "active" | "inactive"; priority: number; description: string; address?: string; addressParts?: WarehouseAddressParts; pricing: WarehousePricingRule; partners: WarehousePartnerLink[]; updatedAt: string }
 interface WarehouseBook { version: 2; warehouses: WarehouseRecord[]; legacyMap: Record<string, string>; updatedAt: string }
-interface WarehousePolicy { warehouseId: string; version: number; effectiveAt: string; summary: string; enabled: boolean; cod: boolean; depositPercent: number; leadTimeDays: number; orderLimit: number; surcharge: number; returns: string; channels: string }
-interface WarehousePolicyBook { version: 2; policies: WarehousePolicy[]; updatedAt: string }
+/**
+ * `prepTime` / `showPrepTime` / `swapSizeOnArrival` (18/09/2026, wire `thoiGianChuanBi`, `hienThoiGian`,
+ * `doiSizeKhiVe`) are optional: policies saved before them have none.
+ */
+interface WarehousePolicy { warehouseId: string; version: number; effectiveAt: string; summary: string; enabled: boolean; cod: boolean; depositPercent: number; leadTimeDays: number; orderLimit: number; surcharge: number; returns: string; channels: string; prepTime?: string; showPrepTime?: boolean; swapSizeOnArrival?: boolean }
+/** `history`: the versions a save REPLACED, newest first, at most `POLICY_HISTORY_CAP` per warehouse. */
+interface WarehousePolicyBook { version: 2; policies: WarehousePolicy[]; history?: WarehousePolicy[]; updatedAt: string }
+const POLICY_HISTORY_CAP = 50;
 
 const emptyWarehouseBook = (): WarehouseBook => ({ version: 2, warehouses: [], legacyMap: {}, updatedAt: "" });
 const emptyPolicyBook = (): WarehousePolicyBook => ({ version: 2, policies: [], updatedAt: "" });
@@ -157,6 +174,11 @@ export interface InventoryServices {
   addPhoto(input: { code: string; bytes: Buffer; primary?: boolean; actor?: string }): Promise<AddPhotoOutcome>;
   /** The selling price of one size line (manual partner stock read from a photo). Returns the rows changed. */
   setPrice(input: { code: string; size: string; warehouseId: string; source?: string; price: number }): Promise<number>;
+  /**
+   * The warehouses the shop DECLARED in the warehouse book, id -> `ready` / `order` (18/09/2026). Purchasing
+   * reads it to know a line sold from an order warehouse must be bought even before a partner is chosen.
+   */
+  warehouseTypes(): Promise<Record<string, "ready" | "order">>;
 }
 
 export interface SetStockInput { code: string; size: string; warehouseId: string; source?: string; quantity: number; note?: string; actor?: string }
@@ -299,6 +321,11 @@ interface ReadyStockRevision {
 
 /** Product photos uploaded from the warehouse page (upload port zone), served at `/api/hang-kho/anh/<name>`. */
 const PHOTO_ZONE = "hang-kho/anh";
+/**
+ * Stock-document attachments (invoices, goods-check photos) — NOT product photos: their own zone, read
+ * only by the admin door `/api/hang-kho/phieu/:ma/dinh-kem/:tep`, never by the public photo door.
+ */
+const DOCUMENT_FILE_ZONE = "hang-kho/phieu";
 
 /** The warehouse page is the shop's own tool: signed-in people and admin machines only. */
 async function signedIn(ctx: Ctx, request: KernelRequest): Promise<boolean> {
@@ -445,6 +472,17 @@ async function writeWarehouse(ctx: Ctx, input: { source: string; warehouseId: st
     raw.push({ ...item, sizes: [...mine, ...kept] });
   }
   const r = await repo.writeItems(source, raw);
+  if (replaceMissing && missingCodes.length) {
+    // "Thay thế" removes old warehouse data completely. The shared product row is removed too
+    // only when no other warehouse/source still owns a variant, so replacing one warehouse can
+    // never erase a product that another warehouse is selling.
+    await ctx.ports.store.transaction(async (tx) => {
+      for (const code of missingCodes) {
+        const left = await tx.rows(`SELECT COUNT(*) AS n FROM ${TABLES.variants} WHERE ma_mon = ?`, [code]);
+        if (Number(left[0]?.["n"] ?? 0) === 0) await tx.table(TABLES.items).delete({ ma: code });
+      }
+    });
+  }
   return { itemCount: r.itemCount, variantCount: r.variantCount, written: r.written, yielded: r.yielded, dropped: r.dropped, missingCodes };
 }
 
@@ -507,6 +545,316 @@ async function readyWarehouses(ctx: Ctx): Promise<readonly string[]> {
   return Array.isArray(configured) && configured.length ? configured : DEFAULT_READY_WAREHOUSES;
 }
 
+// ---- OMI "Hàng hóa & Kho" v1 (18/09/2026) — see omi/docs/HOP-DONG-API-HANG-KHO-V1.md ----------
+
+const NO_STORE = { "Cache-Control": "no-store" };
+
+async function warehouseBook(ctx: Ctx): Promise<WarehouseBook> {
+  return (await ctx.ports.store.document<WarehouseBook>(WAREHOUSE_BOOK_DOCUMENT).read(null)) ?? emptyWarehouseBook();
+}
+
+/** Stock documents, knowing which warehouses the shop declared ready / order (where incoming pairs land). */
+async function documents(ctx: Ctx): Promise<StockDocuments> {
+  const kinds = new Map((await warehouseBook(ctx)).warehouses.map((w) => [w.id, w.type]));
+  return new StockDocuments(ctx.ports.store, () => ctx.ports.clock.now(), (id) => kinds.get(id));
+}
+
+function documentRefused(r: DocumentRefusal): ReplyDraft {
+  return reply.json({ ok: false, error: r.error, message: r.message, ...(r.dong ? { dong: r.dong } : {}) }, r.status, NO_STORE);
+}
+
+/** One document in full, or a 404 — the answer of every document door that changes something. */
+async function documentReply(ctx: Ctx, code: string): Promise<ReplyDraft> {
+  const phieu = await (await documents(ctx)).read(code);
+  if (!phieu) return reply.json({ ok: false, error: CATALOG_ERRORS.notFound, message: "Không tìm thấy phiếu này." }, 404, NO_STORE);
+  return reply.json({ ok: true, phieu }, 200, NO_STORE);
+}
+
+/** Keys of `thuoc_tinh_json` the detail page may write; everything but the two flags is text. */
+const ATTRIBUTE_TEXT_KEYS = ["skuNoiBo", "maVach", "mua", "xuatXu", "chatLieu", "donViTinh", "mau", "doiTacCungCap", "chinhSachKho"] as const;
+const ATTRIBUTE_FLAG_KEYS = ["choPhepDat", "khoaTrungTam"] as const;
+
+const parseObject = (raw: unknown): Record<string, unknown> => {
+  try { return asRecord(JSON.parse(String(raw || "{}"))); } catch { return {}; }
+};
+
+/**
+ * Fill only blank catalogue fields from the shared Product Library (the server-side Image Tool
+ * worker). Seller-entered values and products locked from central updates are never overwritten.
+ * Missing library records are queued by Xeon's `tra-nhieu` door and reported to the caller.
+ */
+async function enrichBlankProductFields(ctx: Ctx, codes: string[], actor: string): Promise<{ daXuLy: number; daBoSung: number; dangCho: string[]; khongDoi: string[] }> {
+  const unique = new Map<string, string>();
+  for (const value of codes) { const original = String(value ?? "").trim(); if (original) unique.set(original.toUpperCase(), original); }
+  const wanted = [...unique.entries()].slice(0, 1000).map(([key, original]) => ({ key, original }));
+  if (wanted.length === 0) return { daXuLy: 0, daBoSung: 0, dangCho: [], khongDoi: [] };
+  const library = await callXeon(ctx, "POST", "/thu-vien-san-pham/tra-nhieu", { ma: wanted.map((entry) => entry.original) }, { timeoutMs: 30_000, unregistered: "Landing chưa đăng ký Xeon; chưa thể gọi Image Tool để bổ sung dữ liệu." });
+  if (!library.ok) throw new Error(String(library.body["message"] ?? library.body["error"] ?? "Image Tool chưa trả dữ liệu."));
+  const found = new Map((Array.isArray(library.body["ketQua"]) ? library.body["ketQua"] as Record<string, unknown>[] : [])
+    .map((entry) => [String(entry["code"] ?? "").trim().toUpperCase(), asRecord(entry["product"])]));
+  const pending: string[] = [];
+  const unchanged: string[] = [];
+  const plans: { code: string; columns: Record<string, unknown> }[] = [];
+  const blank = (value: unknown) => String(value ?? "").trim() === "";
+  for (const { key, original: code } of wanted) {
+    const product = found.get(key);
+    if (!product || Object.keys(product).length === 0 || product["status"] === "not_found") { pending.push(code); continue; }
+    const row = await ctx.ports.store.table(TABLES.items).one({ ma: code });
+    if (!row) { unchanged.push(code); continue; }
+    const attributes = parseObject(row["thuoc_tinh_json"]);
+    if (attributes["khoaTrungTam"] === true) { unchanged.push(code); continue; }
+    const columns: Record<string, unknown> = {};
+    const fill = (column: string, value: unknown, max: number) => { const text = String(value ?? "").trim(); if (blank(row[column]) && text) columns[column] = text.slice(0, max); };
+    fill("ten", product["name"], 255);
+    fill("hang", product["brand"], 190);
+    fill("nhom", product["category"], 190);
+    fill("gioi_tinh", product["gender"], 64);
+    fill("mo_ta", product["description"], TEXT_COLUMN_BYTES);
+    const seo = asRecord(product["seo"]);
+    fill("seo_tieu_de", seo["title"], 255);
+    fill("seo_mo_ta", seo["description"], 500);
+    if (blank(row["seo_tu_khoa"]) && Array.isArray(seo["keywords"])) columns["seo_tu_khoa"] = seo["keywords"].map(String).filter(Boolean).join(", ").slice(0, 500);
+    const media = (Array.isArray(product["media"]) ? product["media"] as Record<string, unknown>[] : [])
+      .map((item) => String(item["storageUrl"] ?? "").trim()).filter(Boolean);
+    if (blank(row["anh_dai_dien"]) && media.length) { columns["anh_dai_dien"] = media[0]; columns["anh_lon"] = media[0]; }
+    let gallery: unknown[] = [];
+    try { const parsed = JSON.parse(String(row["anh_khac_json"] || "[]")); gallery = Array.isArray(parsed) ? parsed : []; } catch { gallery = []; }
+    if (gallery.length === 0 && media.length > 1) columns["anh_khac_json"] = JSON.stringify(media.slice(1));
+    const content = parseObject(row["noi_dung_web_json"]);
+    if (blank(content["dongSanPham"]) && !blank(product["line"])) { content["dongSanPham"] = String(product["line"]).trim().slice(0, 20000); columns["noi_dung_web_json"] = JSON.stringify(content); }
+    if (blank(attributes["mau"]) && !blank(product["color"])) { attributes["mau"] = String(product["color"]).trim().slice(0, 500); columns["thuoc_tinh_json"] = JSON.stringify(attributes); }
+    if (Object.keys(columns).length === 0) unchanged.push(code); else plans.push({ code, columns });
+  }
+  if (plans.length) {
+    await history(ctx).capture("Trước khi Image Tool bổ sung trường thiếu", plans.map((plan) => plan.code), actor);
+    const at = mysqlTime(ctx.ports.clock.now());
+    await ctx.ports.store.transaction(async (tx) => {
+      for (const plan of plans) await tx.table(TABLES.items).update({ ma: plan.code }, { ...plan.columns, sua_luc: at });
+    });
+  }
+  return { daXuLy: wanted.length, daBoSung: plans.length, dangCho: pending, khongDoi: unchanged };
+}
+
+/** A MySQL TEXT column holds 65,535 BYTES — Vietnamese letters take up to 3 each, so characters are not the measure. */
+const TEXT_COLUMN_BYTES = 65_535;
+/** The largest amount DECIMAL(14,2) holds. */
+const MAX_MONEY = 99_999_999_999;
+
+/** "Lưu thay đổi" of the product page (§2): the item, its attributes, and per-size price + description. Never stock. */
+async function saveDetail(ctx: Ctx, code: string, body: Record<string, unknown>, actor: string): Promise<ReplyDraft> {
+  const store = ctx.ports.store;
+  const refuse = (error: string, message: string, status = 400) => reply.json({ ok: false, error, message }, status, NO_STORE);
+  if (!(await store.table(TABLES.items).one({ ma: code }))) return refuse(CATALOG_ERRORS.notFound, "Không tìm thấy sản phẩm này.", 404);
+
+  // EVERY check before the undo snapshot: a refused save must not leave an "undo" of nothing behind.
+  if (body["bienThe"] !== undefined && !Array.isArray(body["bienThe"])) return refuse("bien_the_sai", "bienThe phải là một danh sách.");
+  const sizes = Array.isArray(body["bienThe"]) ? (body["bienThe"] as unknown[]).map(asRecord) : [];
+  // A size of ANOTHER item is refused before anything is written: one careless id must not reprice a stranger.
+  const own = new Set((await store.table(TABLES.variants).find({ where: { ma_mon: code }, columns: ["ma_bien_the"] })).map((r) => String(r["ma_bien_the"])));
+  const stranger = sizes.map((v) => String(v["maBienThe"] ?? "").trim()).find((id) => !own.has(id));
+  if (stranger !== undefined) return refuse("bien_the_sai", `Biến thể "${stranger}" không thuộc sản phẩm ${code}.`);
+  const outOfRange = (v: unknown) => v !== undefined && v !== null && v !== "" && !(Number.isFinite(Number(v)) && Number(v) >= 0 && Number(v) <= MAX_MONEY);
+  const badPrice = sizes.findIndex((v) => outOfRange(v["gia"]) || outOfRange(v["giaVon"]));
+  if (badPrice >= 0) return refuse("gia_khong_hop_le", `Biến thể thứ ${badPrice + 1}: giá bán / giá vốn không hợp lệ hoặc quá lớn.`);
+  for (const [wire, label] of [["moTa", "Mô tả"], ["moTaNgan", "Mô tả ngắn"]] as const) {
+    if (body[wire] !== undefined && Buffer.byteLength(String(body[wire] ?? "").trim(), "utf8") > TEXT_COLUMN_BYTES) {
+      return refuse("noi_dung_qua_dai", `${label} quá dài (tối đa ${TEXT_COLUMN_BYTES.toLocaleString("vi-VN")} byte — khoảng 20.000 chữ có dấu).`);
+    }
+  }
+
+  const at = mysqlTime(ctx.ports.clock.now());
+  const columns: Record<string, unknown> = {};
+  const textField = (wire: string, column: string, max: number, keepEmpty = true) => {
+    if (body[wire] === undefined) return;
+    const value = String(body[wire] ?? "").trim().slice(0, max);
+    if (value !== "" || keepEmpty) columns[column] = value;
+  };
+  textField("ten", "ten", 255, false);
+  textField("hang", "hang", 190);
+  textField("danhMuc", "nhom", 190);
+  textField("gioiTinh", "gioi_tinh", 64);
+  textField("moTaNgan", "mo_ta_ngan", TEXT_COLUMN_BYTES);
+  textField("moTa", "mo_ta", TEXT_COLUMN_BYTES);
+  textField("seoTieuDe", "seo_tieu_de", 255);
+  textField("seoMoTa", "seo_mo_ta", 500);
+  textField("seoTuKhoa", "seo_tu_khoa", 500);
+  if (body["duongDan"] !== undefined && String(body["duongDan"] ?? "").trim() !== "") columns["duong_dan"] = itemSlug(String(body["duongDan"])).slice(0, 255);
+  if (body["hienWeb"] !== undefined) columns["trang_thai"] = body["hienWeb"] === false ? "hidden" : "orderable";
+
+  await history(ctx).capture(`Trước khi sửa chi tiết ${code}`, [code], actor);
+  await store.transaction(async (tx) => {
+    // The two JSON columns are MERGED into what is stored, so they are read again under a row lock:
+    // two saves at once must not each merge into the same old copy and lose the other's keys.
+    const locked = (await tx.rows(`SELECT noi_dung_web_json, thuoc_tinh_json FROM ${TABLES.items} WHERE ma = ? FOR UPDATE`, [code]))[0] ?? {};
+    if (body["dongSanPham"] !== undefined || body["diemNoiBat"] !== undefined) {
+      // The other keys of the page text (SEO article, line intro...) stay.
+      const content = parseObject(locked["noi_dung_web_json"]);
+      if (body["dongSanPham"] !== undefined) content["dongSanPham"] = String(body["dongSanPham"] ?? "").trim().slice(0, 20000);
+      if (body["diemNoiBat"] !== undefined) content["tinhNang"] = (Array.isArray(body["diemNoiBat"]) ? (body["diemNoiBat"] as unknown[]) : []).map((x) => String(x ?? "").trim()).filter(Boolean).slice(0, 50);
+      columns["noi_dung_web_json"] = JSON.stringify(content);
+    }
+    if (body["thuocTinh"] !== undefined) {
+      const sent = asRecord(body["thuocTinh"]);
+      const attributes = parseObject(locked["thuoc_tinh_json"]);
+      for (const key of ATTRIBUTE_TEXT_KEYS) if (sent[key] !== undefined) attributes[key] = String(sent[key] ?? "").trim().slice(0, 500);
+      for (const key of ATTRIBUTE_FLAG_KEYS) if (sent[key] !== undefined) attributes[key] = sent[key] === true;
+      if (attributes["choPhepDat"] === undefined) attributes["choPhepDat"] = true;
+      columns["thuoc_tinh_json"] = JSON.stringify(attributes);
+    }
+    if (Object.keys(columns).length) await tx.table(TABLES.items).update({ ma: code }, { ...columns, sua_luc: at });
+    let repriced = false;
+    for (const v of sizes) {
+      const id = String(v["maBienThe"] ?? "").trim();
+      const change: Record<string, unknown> = {};
+      if (v["sku"] !== undefined) change["ma_sku"] = String(v["sku"] ?? "").trim().slice(0, 128);
+      if (v["maVach"] !== undefined) change["ma_vach"] = String(v["maVach"] ?? "").trim().slice(0, 128);
+      if (v["khoiLuong"] !== undefined) change["khoi_luong"] = String(v["khoiLuong"] ?? "").trim().slice(0, 32);
+      const cost = Number(v["giaVon"]);
+      if (v["giaVon"] !== undefined && Number.isFinite(cost) && cost >= 0) change["gia_von"] = Math.round(cost);
+      const price = Math.round(Number(v["gia"]));
+      // Same rule as `setVariantPrice`: a size's price is a SOURCE price; the item's manual price rule runs after.
+      if (price > 0) { change["gia"] = price; change["gia_nguon"] = price; repriced = true; }
+      if (Object.keys(change).length) await tx.table(TABLES.variants).update({ ma_bien_the: id, ma_mon: code }, { ...change, sua_luc: at });
+    }
+    if (repriced) await repository(ctx).reprice(tx, [code]);
+  });
+  ctx.ports.logger.info(`[hang-kho] OMI sửa chi tiết ${code}: ${Object.keys(columns).length} trường, ${sizes.length} biến thể`);
+  return reply.json({ ok: true, mon: await repository(ctx).readItem(code) }, 200, NO_STORE);
+}
+
+/**
+ * "Nhân bản" (§2): the item under a new code, name + " (bản sao)", one line per warehouse + size at
+ * stock 0. The copy is the SHOP'S OWN item (`nguon = own`, item and lines): a later ready-stock or
+ * campaign push never deletes it, and undo (which removes a created item's own lines) removes it whole.
+ * What belongs to the original only — campaign id, partner line id, SKU, barcode — is not copied.
+ */
+async function duplicateItem(ctx: Ctx, code: string, newCode: string, actor: string): Promise<ReplyDraft> {
+  const store = ctx.ports.store;
+  if (!newCode) return reply.json({ ok: false, error: "thieu_ma_moi", message: "Nhập mã mới cho bản sao." }, 400, NO_STORE);
+  const item = await store.table(TABLES.items).one({ ma: code });
+  if (!item) return reply.json({ ok: false, error: CATALOG_ERRORS.notFound, message: "Không tìm thấy sản phẩm gốc." }, 404, NO_STORE);
+  if (await store.table(TABLES.items).one({ ma: newCode })) return reply.json({ ok: false, error: "trung_ma", message: `Mã ${newCode} đã có trong danh mục.` }, 409, NO_STORE);
+  const at = mysqlTime(ctx.ports.clock.now());
+  const name = `${String(item["ten"] ?? "")} (bản sao)`.slice(0, 255);
+  const variants = await store.table(TABLES.variants).find({ where: { ma_mon: code }, orderBy: ["gia asc", "thu_tu_kho asc"] });
+  // Undo of a copy removes it again (the snapshot says "did not exist").
+  await history(ctx).capture(`Trước khi nhân bản ${code} thành ${newCode}`, [newCode], actor);
+  await store.transaction(async (tx) => {
+    await tx.table(TABLES.items).insert({ ...item, ma: newCode, ma_goc: newCode, ten: name, duong_dan: itemSlug("", newCode, name), nguon: SOURCE.own, sua_luc: at });
+    const seen = new Set<string>();
+    for (const v of variants) {
+      // One own line per warehouse + size (the cheapest of the original's buckets), with the id an own
+      // push of the same code would give it — so a later Image Tool push updates it instead of doubling it.
+      const id = variantIdOf({ code: newCode }, { warehouseId: String(v["ma_kho"] ?? ""), size: String(v["size"] ?? "") });
+      if (seen.has(id)) continue;
+      seen.add(id);
+      await tx.table(TABLES.variants).insert({
+        ...v, ma_bien_the: id, ma_mon: newCode, ton: 0, nguon: SOURCE.own,
+        ma_chien_dich: "", ma_dong_doi_tac: "", ma_sku: "", ma_vach: "", sua_luc: at
+      });
+    }
+  });
+  ctx.ports.logger.info(`[hang-kho] OMI nhân bản ${code} -> ${newCode}: ${variants.length} dòng`);
+  return reply.json({ ok: true, mon: await repository(ctx).readItem(newCode) }, 200, NO_STORE);
+}
+
+/** "40–42": the size range when every size is a number, else the sizes listed. */
+function sizeRange(sizes: string[]): string {
+  const unique = [...new Set(sizes.map((x) => x.trim()).filter(Boolean))];
+  const numbers = unique.map(Number);
+  if (unique.length && numbers.every((n) => Number.isFinite(n))) {
+    const low = Math.min(...numbers), high = Math.max(...numbers);
+    return low === high ? String(low) : `${low}–${high}`;
+  }
+  return unique.join(", ");
+}
+
+/** Import-log entries of file sessions carry these (§4); older entries do not. */
+interface ImportEntry { luc?: string; maPhien?: string; maKho?: string; cheDo?: string; them?: number; capNhat?: number; biBo?: number; [key: string]: unknown }
+
+/**
+ * The ONE file session "hoàn tác" would still undo, or "" (same checks as the undo door, minus the shelf
+ * fingerprint). Read once per request: only the latest session is kept, so at most one entry can say yes.
+ */
+async function undoableSession(ctx: Ctx): Promise<string> {
+  const session = await ctx.ports.store.document<Record<string, unknown>>(STOCK_IMPORT_SESSION_DOCUMENT).read(null);
+  if (!session || !session["appliedAt"] || session["undoneAt"]) return "";
+  const head = await history(ctx).head();
+  return head !== null && head.lan === session["historyGroup"] ? String(session["id"] ?? "") : "";
+}
+
+/** "Cần xử lý" (§7): reads the rows the rules need and hands them to `findIssues`. */
+async function issues(ctx: Ctx, filter: { kind: string; warehouseId: string; severity: string }) {
+  const store = ctx.ports.store;
+  const [variants, items, held, discovered, book, log] = await Promise.all([
+    store.rows(`SELECT ma_mon, size, ma_kho, ton, gia, gia_von, ma_bien_the, sua_luc FROM ${TABLES.variants} WHERE ma_kho <> ''`),
+    store.rows(`SELECT ma, ten, hang, nhom, gioi_tinh, mo_ta, anh_dai_dien, sua_luc, thuoc_tinh_json, noi_dung_web_json FROM ${TABLES.items}`),
+    store.rows(`SELECT ma_bien_the, SUM(so_luong) AS n FROM ${TABLES.reservations} WHERE het_han_luc > ? GROUP BY ma_bien_the`, [mysqlTime(ctx.ports.clock.now())]),
+    ledger(ctx).warehouses(),
+    warehouseBook(ctx),
+    ctx.ports.store.document<ImportLog>(IMPORT_LOG_DOCUMENT).read(null)
+  ]);
+  const reserved = new Map(held.map((r) => [String(r["ma_bien_the"]), Number(r["n"] || 0)]));
+  const declared = new Map(book.warehouses.map((w) => [w.id, w]));
+  const warehouses = new Map<string, IssueWarehouse>();
+  for (const w of discovered) {
+    const d = declared.get(w.id);
+    warehouses.set(w.id, { name: d?.name ?? w.id, type: d?.type ?? (w.sources.includes(SOURCE.campaign) ? "order" : "ready"), hasDefaultPartner: (d?.partners ?? []).some((p) => p.isDefault && p.enabled) });
+  }
+  for (const d of book.warehouses) if (!warehouses.has(d.id)) warehouses.set(d.id, { name: d.name, type: d.type, hasDefaultPartner: (d.partners ?? []).some((p) => p.isDefault && p.enabled) });
+  // The LATEST file session of each warehouse only: an old failed import that was redone is not a problem any more.
+  const latest = new Map<string, IssueImport>();
+  for (const entry of ((log?.lan ?? []) as ImportEntry[])) {
+    const warehouseId = String(entry.maKho ?? "");
+    if (!warehouseId || !entry.maPhien || latest.has(warehouseId)) continue;
+    latest.set(warehouseId, { warehouseId, sessionId: String(entry.maPhien), at: String(entry.luc ?? ""), problems: Number(entry.biBo ?? 0) + Number(entry["dongLoi"] ?? 0) });
+  }
+  return findIssues({
+    items: items.map((r) => ({ code: String(r["ma"]), name: String(r["ten"] ?? ""), brand: String(r["hang"] ?? ""), category: String(r["nhom"] ?? ""), gender: String(r["gioi_tinh"] ?? ""), description: String(r["mo_ta"] ?? ""), image: String(r["anh_dai_dien"] ?? ""), updatedAt: isoFromMysql(r["sua_luc"]), attributes: parseObject(r["thuoc_tinh_json"]), webContent: parseObject(r["noi_dung_web_json"]) })),
+    variants: variants.map((r) => ({
+      code: String(r["ma_mon"]), size: String(r["size"] ?? ""), warehouseId: String(r["ma_kho"] ?? ""), stock: Number(r["ton"] || 0),
+      reserved: reserved.get(String(r["ma_bien_the"])) ?? 0, price: Number(r["gia"] || 0), cost: Number(r["gia_von"] || 0), updatedAt: isoFromMysql(r["sua_luc"])
+    })),
+    warehouses, imports: [...latest.values()]
+  }, { kind: filter.kind, warehouseId: filter.warehouseId, severity: filter.severity });
+}
+
+/** "Giá web theo kho" (§5): per item in the warehouse, the cost, the price today and the formula's price. */
+async function webPrices(ctx: Ctx, warehouseId: string, query: string) {
+  const store = ctx.ports.store;
+  const warehouse = (await warehouseBook(ctx)).warehouses.find((w) => w.id === warehouseId);
+  const rule = warehouse?.pricing ?? defaultPricing();
+  const policies = (await store.document<WarehousePolicyBook>(WAREHOUSE_POLICY_DOCUMENT).read(null)) ?? emptyPolicyBook();
+  const q = query.trim().toLowerCase();
+  const rows = await store.rows(
+    `SELECT b.ma_mon, b.size, b.gia, b.gia_von, b.gia_nguon, b.gia_niem_yet, m.ten, m.loai, m.nhom, m.nhom_hang, m.gia_niem_yet AS mon_niem_yet
+       FROM ${TABLES.variants} b JOIN ${TABLES.items} m ON m.ma = b.ma_mon
+      WHERE b.ma_kho = ? AND (? = '' OR LOWER(m.ma) LIKE CONCAT('%', ?, '%') OR LOWER(m.ten) LIKE CONCAT('%', ?, '%'))
+      ORDER BY m.ten, b.ma_mon LIMIT 20000`,
+    [warehouseId, q, q, q]
+  );
+  const byItem = new Map<string, Row[]>();
+  for (const r of rows) {
+    const list = byItem.get(String(r["ma_mon"]));
+    if (list) list.push(r); else byItem.set(String(r["ma_mon"]), [r]);
+  }
+  const smallest = (list: Row[], column: string) => { const v = list.map((r) => Number(r[column] || 0)).filter((n) => n > 0); return v.length ? Math.min(...v) : 0; };
+  const dong = [...byItem.entries()].map(([code, list]) => {
+    const first = list[0]!;
+    const item = { name: String(first["ten"] ?? ""), productKind: String(first["loai"] ?? ""), category: String(first["nhom"] ?? ""), division: String(first["nhom_hang"] ?? "") };
+    // The SOURCE price is the formula's base; a line that never had one falls back to what it sells for.
+    const base = smallest(list, "gia_nguon") || smallest(list, "gia");
+    const listPrice = smallest(list, "gia_niem_yet") || Number(first["mon_niem_yet"] || 0);
+    return {
+      ma: code, ten: item.name, sizes: sizeRange(list.map((r) => String(r["size"] ?? ""))),
+      giaVon: smallest(list, "gia_von"), giaHienTai: smallest(list, "gia"), giaDeXuat: warehouseWebPrice(item, base, listPrice, rule)
+    };
+  });
+  const policy = policies.policies.find((p) => p.warehouseId === warehouseId);
+  return { phuPhi: Number(policy?.surcharge ?? 0), dong };
+}
+
+
 export const manifest = defineModule<Config>({
   id: "hang-kho",
   name: "Hàng hoá & kho",
@@ -543,6 +891,7 @@ export const manifest = defineModule<Config>({
     "hang-kho.setStock": (ctx, input: SetStockInput) => setStock(ctx, input),
     "hang-kho.stockRows": (ctx, input: { code: string; size?: string }) => stockRows(ctx, input),
     "hang-kho.addPhoto": (ctx, input: { code: string; bytes: Buffer; primary?: boolean; actor?: string }) => addPhoto(ctx, input),
+    "hang-kho.warehouseTypes": async (ctx) => Object.fromEntries((await warehouseBook(ctx)).warehouses.map((w) => [w.id, w.type])),
     "hang-kho.setPrice": async (ctx, input: { code: string; size: string; warehouseId: string; source?: string; price: number }) => {
       const price = Math.round(Number(input?.price));
       if (!(price > 0)) return 0;
@@ -566,6 +915,19 @@ export const manifest = defineModule<Config>({
       handle: async (ctx, request) => {
         const body = asRecord(await request.json()); const codes = (Array.isArray(body["ma"]) ? body["ma"] : []).map((x) => String(x).trim()).filter(Boolean).slice(0, 1000);
         return relayXeon(await callXeon(ctx, "POST", "/thu-vien-san-pham/tra-nhieu", { ma: codes }, { timeoutMs: 30_000, unregistered: "Landing chưa đăng ký Xeon; file vẫn có thể nhập nhưng chưa tự bổ sung thông tin chuẩn." }));
+      }
+    },
+    {
+      method: "POST", path: "/api/hang-kho/thu-vien/bo-sung", access: ACCESS.admin,
+      rateLimit: { calls: 60, windowMs: TEN_MINUTES_MS }, bodyLimit: 256 * 1024,
+      handle: async (ctx, request) => {
+        const body = asRecord(await request.json());
+        const codes = (Array.isArray(body["ma"]) ? body["ma"] : [body["ma"]]).map(String).filter(Boolean);
+        try {
+          return reply.json({ ok: true, ...(await enrichBlankProductFields(ctx, codes, actorOf(request))) }, 200, NO_STORE);
+        } catch (error) {
+          return reply.json({ ok: false, error: "image_tool_khong_san_sang", message: error instanceof Error ? error.message : String(error) }, 502, NO_STORE);
+        }
       }
     },
     {
@@ -736,13 +1098,30 @@ export const manifest = defineModule<Config>({
         for (const item of items) for (const size of (Array.isArray(item["sizes"]) ? item["sizes"] as Record<string, unknown>[] : [])) incoming.set(`${String(item["code"])}\u0000${String(size["size"])}`, Number(size["qty"] ?? 0));
         const existing = new Map(current.map((r) => [`${String(r["ma_mon"])}\u0000${String(r["size"])}`, Number(r["ton"] ?? 0)]));
         let them = 0, thayDoi = 0, giuNguyen = 0; for (const [key, qty] of incoming) { if (!existing.has(key)) them += 1; else if (existing.get(key) === qty) giuNguyen += 1; else thayDoi += 1; }
+        // "Bổ sung" is append-only: existing code+size rows and their product information stay
+        // byte-for-byte as the seller last saved them. Only a genuinely missing size is staged.
+        // If the product already exists in another warehouse, reuse its house metadata instead of
+        // allowing sparse spreadsheet columns to overwrite it while the new size is appended.
+        let stagedItems = items;
+        if (mode === "merge") {
+          const appendOnly: Record<string, unknown>[] = [];
+          for (const item of items) {
+            const code = String(item["code"] ?? "").trim();
+            const sizes = (Array.isArray(item["sizes"]) ? item["sizes"] as Record<string, unknown>[] : [])
+              .filter((size) => !existing.has(`${code}\u0000${String(size["size"] ?? "")}`));
+            if (sizes.length === 0) continue;
+            const stored = code ? await repository(ctx).readItem(code) : null;
+            appendOnly.push(stored ? { ...item, ...stored, sizes } : { ...item, sizes });
+          }
+          stagedItems = appendOnly;
+        }
         const missingKeys = new Set([...existing.keys()].filter((key) => !incoming.has(key))); const vangFile = missingKeys.size;
         const reserved = mode === "replace" ? await ctx.ports.store.rows(`SELECT g.ma_bien_the FROM ${TABLES.reservations} g WHERE g.het_han_luc > ?`, [mysqlTime(ctx.ports.clock.now())]) : [];
         const reservedIds = new Set(reserved.map((r) => String(r["ma_bien_the"])));
         const dangGiuCho = current.filter((r) => missingKeys.has(`${String(r["ma_mon"])}\u0000${String(r["size"])}`) && reservedIds.has(String(r["ma_bien_the"]))).length;
         const fingerprint = `${current.length}:${current.reduce((n, r) => n + Number(r["ton"] ?? 0), 0)}:${current.map((r) => String(r["sua_luc"] ?? "")).sort().at(-1) ?? ""}`;
         const id = `imp_${ctx.ports.clock.now().getTime()}`; const expiresAt = new Date(ctx.ports.clock.now().getTime() + 2 * 60 * 60 * 1000).toISOString();
-        await ctx.ports.store.document<Record<string, unknown>>(STOCK_IMPORT_SESSION_DOCUMENT).write({ id, warehouseId, warehouseType: warehouse.type, source, mode, items, beforeRows: current, fingerprint, expiresAt, dangGiuCho, actor: actorOf(request) });
+        await ctx.ports.store.document<Record<string, unknown>>(STOCK_IMPORT_SESSION_DOCUMENT).write({ id, warehouseId, warehouseType: warehouse.type, source, mode, items: stagedItems, beforeRows: current, fingerprint, expiresAt, dangGiuCho, them, thayDoi, actor: actorOf(request) });
         const mauGia = items.slice(0, 5).flatMap((i) => (Array.isArray(i["sizes"]) ? i["sizes"] as Record<string, unknown>[] : []).slice(0, 2).map((s) => ({ ma: String(i["code"] ?? ""), size: String(s["size"] ?? ""), giaFile: Number(s["saleFilePrice"] ?? 0), giaWeb: Number(s["suggestedPrice"] ?? 0) })));
         return reply.json({ ok: true, phien: { id, maKho: warehouseId, loaiKho: warehouse.type, cheDo: mode, congThucGia: warehouse.pricing ?? defaultPricing(), mauGia, hetHanLuc: expiresAt, them, thayDoi, giuNguyen, vangFile, seNgungBan: mode === "replace" ? vangFile : 0, dangGiuCho } }, 200, { "Cache-Control": "no-store" });
       }
@@ -762,7 +1141,11 @@ export const manifest = defineModule<Config>({
         if (session["mode"] === "replace") { const old = await ctx.ports.store.rows(`SELECT DISTINCT ma_mon FROM ${TABLES.variants} WHERE nguon = ? AND ma_kho = ?`, [source, warehouseId]); for (const r of old) codes.push(String(r["ma_mon"])); }
         const historyGroup = await history(ctx).capture(`Trước phiên nhập file ${String(session["id"])}`, codes, actorOf(request));
         const result = await writeWarehouse(ctx, { source, warehouseId, items }, session["mode"] === "replace");
-        await noteImport(ctx, { nguon: source, viec: session["mode"] === "replace" ? `thay mới kho ${warehouseId}` : `bổ sung kho ${warehouseId}`, ...syncWire(result) });
+        // §4 (18/09/2026): the entry names its session and warehouse, so "Nhập & thay file" lists a warehouse's sessions.
+        await noteImport(ctx, {
+          nguon: source, viec: session["mode"] === "replace" ? `thay mới kho ${warehouseId}` : `bổ sung kho ${warehouseId}`, ...syncWire(result),
+          maPhien: session["id"], maKho: warehouseId, cheDo: session["mode"], them: Number(session["them"] ?? 0), capNhat: Number(session["thayDoi"] ?? 0)
+        });
         const after = await ctx.ports.store.rows(`SELECT ton, sua_luc FROM ${TABLES.variants} WHERE nguon = ? AND ma_kho = ? ORDER BY ma_mon, size`, [source, warehouseId]);
         const fingerprintAfter = `${after.length}:${after.reduce((n, r) => n + Number(r["ton"] ?? 0), 0)}:${after.map((r) => String(r["sua_luc"] ?? "")).sort().at(-1) ?? ""}`;
         await ctx.ports.store.document<Record<string, unknown>>(STOCK_IMPORT_SESSION_DOCUMENT).write({ ...session, appliedAt: ctx.ports.clock.now().toISOString(), fingerprintAfter, historyGroup, result });
@@ -790,12 +1173,17 @@ export const manifest = defineModule<Config>({
     },
     {
       // "Đồng bộ kho" in OMI: what the last imports did, newest first.
+      // §4 (18/09/2026): `?kho=` keeps a warehouse's file sessions; a file session says whether undo still works.
       method: "GET", path: "/api/hang-kho/lich-su-nap", access: ACCESS.admin,
       rateLimit: { calls: 120, windowMs: TEN_MINUTES_MS },
-      handle: async (ctx) => reply.json(
-        { ok: true, lan: (await ctx.ports.store.document<ImportLog>(IMPORT_LOG_DOCUMENT).read(null))?.lan ?? [] },
-        200, { "Cache-Control": "no-store" }
-      )
+      handle: async (ctx, request) => {
+        const warehouseId = String(request.query["kho"] ?? "").trim();
+        const all = ((await ctx.ports.store.document<ImportLog>(IMPORT_LOG_DOCUMENT).read(null))?.lan ?? []) as ImportEntry[];
+        const kept = warehouseId ? all.filter((e) => e.maKho === warehouseId) : all;
+        const undoable = kept.some((e) => e.maPhien) ? await undoableSession(ctx) : "";
+        const lan = kept.map((e) => (e.maPhien ? { ...e, coTheHoanTac: undoable !== "" && e.maPhien === undoable } : e));
+        return reply.json({ ok: true, lan }, 200, NO_STORE);
+      }
     },
     {
       // "Kho hàng sẵn" and "Kho đối tác" in OMI: everything stocked from ONE source. One door for
@@ -1072,6 +1460,43 @@ export const manifest = defineModule<Config>({
       }
     },
     {
+      // "Xoá size" in the warehouse table (18/09/2026): one size row out of ONE warehouse, pairs booked out first.
+      method: "POST", path: "/api/hang-kho/kho/:ma/xoa-size", access: ACCESS.admin,
+      rateLimit: { calls: 240, windowMs: TEN_MINUTES_MS },
+      handle: async (ctx, request) => {
+        const body = asRecord(await request.json());
+        const warehouseId = String(request.params["ma"] ?? "").trim();
+        const variant = String(body["maBienThe"] ?? "").trim();
+        if (!warehouseId || !variant) return reply.json({ ok: false, error: "thieu_thong_tin", message: "Thiếu kho hoặc mã biến thể của size." }, 400);
+        const outcome = await ledger(ctx).removeRow({ variantId: variant, warehouseId, actor: actorOf(request), note: String(body["ghiChu"] ?? "") });
+        if (!outcome.ok) return reply.json({ ok: false, error: outcome.reason, message: outcome.message }, outcome.reason === "khong_thay" ? 404 : 409);
+        const now = ctx.ports.clock.now();
+        const token = `xs_${now.getTime()}_${Math.random().toString(36).slice(2, 8)}`;
+        const row = JSON.parse(JSON.stringify(outcome.row)) as Record<string, unknown>;
+        await ctx.ports.store.document<{ entries: RemovedSize[] }>(REMOVED_SIZES_DOCUMENT).update((current) => ({ entries: [...(current?.entries ?? []), { token, row, at: now.toISOString(), actor: actorOf(request) }].slice(-REMOVED_SIZES_KEEP) }), { entries: [] });
+        ctx.ports.logger.info(`[hang-kho] xoá size ${String(row["ma_mon"])} ${String(row["size"])} khỏi kho ${warehouseId} (tồn ${Number(row["ton"] || 0)})`);
+        return reply.json({ ok: true, maHoanTac: token, ma: row["ma_mon"], size: row["size"], ton: Number(row["ton"] || 0) }, 200, { "Cache-Control": "no-store" });
+      }
+    },
+    {
+      // "Hoàn tác" of a "Xoá size": the row comes back with its prices; its pairs come back through the book.
+      method: "POST", path: "/api/hang-kho/khoi-phuc-size", access: ACCESS.admin,
+      rateLimit: { calls: 240, windowMs: TEN_MINUTES_MS },
+      handle: async (ctx, request) => {
+        const body = asRecord(await request.json());
+        const token = String(body["maHoanTac"] ?? "").trim();
+        const book = ctx.ports.store.document<{ entries: RemovedSize[] }>(REMOVED_SIZES_DOCUMENT);
+        const entry = ((await book.read({ entries: [] }))?.entries ?? []).find((e) => e.token === token);
+        if (!entry) return reply.json({ ok: false, error: "khong_thay", message: "Không còn bản ghi để hoàn tác lần xoá size này." }, 404);
+        if (entry.restoredAt) return reply.json({ ok: false, error: "da_hoan_tac", message: "Lần xoá size này đã được hoàn tác rồi." }, 409);
+        const outcome = await ledger(ctx).restoreRow({ row: entry.row, actor: actorOf(request) });
+        if (!outcome.ok) return reply.json({ ok: false, error: outcome.reason, message: outcome.message }, 409);
+        const at = ctx.ports.clock.now().toISOString();
+        await book.update((current) => ({ entries: (current?.entries ?? []).map((e) => (e.token === token ? { ...e, restoredAt: at } : e)) }), { entries: [] });
+        return reply.json({ ok: true, ma: entry.row["ma_mon"], size: entry.row["size"], ton: Number(entry.row["ton"] || 0) }, 200, { "Cache-Control": "no-store" });
+      }
+    },
+    {
       method: "POST", path: "/api/hang-kho/chuyen-kho", access: ACCESS.admin,
       rateLimit: { calls: 240, windowMs: TEN_MINUTES_MS },
       handle: async (ctx, request) => {
@@ -1106,11 +1531,17 @@ export const manifest = defineModule<Config>({
       handle: async (ctx, request) => reply.json({ ok: true, phieu: await ledger(ctx).receipts(Number(request.query["limit"] || 50)) }, 200, { "Cache-Control": "no-store" })
     },
     {
+      // §3 (18/09/2026): also by warehouse, book kind, who and a window of local days; each line names its item and document.
       method: "GET", path: "/api/hang-kho/bien-dong", access: ACCESS.admin,
-      handle: async (ctx, request) => reply.json(
-        { ok: true, bienDong: await ledger(ctx).movements({ code: String(request.query["ma"] || ""), limit: Number(request.query["limit"] || 200) }) },
-        200, { "Cache-Control": "no-store" }
-      )
+      handle: async (ctx, request) => {
+        const q = request.query;
+        const window = dateWindow(q["tuNgay"], q["denNgay"]);
+        const movements = await ledger(ctx).movementsWhere({
+          code: String(q["ma"] || ""), warehouseId: String(q["kho"] || ""), kind: String(q["loai"] || ""), actor: String(q["boi"] || ""),
+          from: window.from, to: window.to, limit: Number(q["limit"] || 200)
+        });
+        return reply.json({ ok: true, bienDong: await (await documents(ctx)).annotate(movements) }, 200, NO_STORE);
+      }
     },
     {
       // Every warehouse the shelf knows — the page's warehouse pickers.
@@ -1119,8 +1550,9 @@ export const manifest = defineModule<Config>({
         const discovered = await ledger(ctx).warehouses();
         const book = (await ctx.ports.store.document<WarehouseBook>(WAREHOUSE_BOOK_DOCUMENT).read(null)) ?? emptyWarehouseBook();
         const configured = new Map(book.warehouses.map((w) => [w.id, w]));
-        const kho = discovered.map((w) => ({ ...w, name: configured.get(w.id)?.name ?? w.id, type: configured.get(w.id)?.type ?? (w.sources.includes(SOURCE.campaign) ? "order" : "ready"), status: configured.get(w.id)?.status ?? "active", priority: configured.get(w.id)?.priority ?? 0, description: configured.get(w.id)?.description ?? "", pricing: configured.get(w.id)?.pricing ?? defaultPricing(), partners: configured.get(w.id)?.partners ?? [] }));
-        for (const w of book.warehouses) if (!kho.some((x) => x.id === w.id)) kho.push({ id: w.id, pairs: 0, sizes: 0, sources: [], name: w.name, type: w.type, status: w.status, priority: w.priority, description: w.description, pricing: w.pricing ?? defaultPricing(), partners: w.partners ?? [] });
+        // §1 (18/09/2026): `address`, `products` (distinct codes, stock 0 included), `stock` (= pairs), `updatedAt`.
+        const kho = discovered.map(({ lastChange, ...w }) => ({ ...w, name: configured.get(w.id)?.name ?? w.id, type: configured.get(w.id)?.type ?? (w.sources.includes(SOURCE.campaign) ? "order" : "ready"), status: configured.get(w.id)?.status ?? "active", priority: configured.get(w.id)?.priority ?? 0, description: configured.get(w.id)?.description ?? "", pricing: configured.get(w.id)?.pricing ?? defaultPricing(), partners: configured.get(w.id)?.partners ?? [], address: configured.get(w.id)?.address ?? "", addressParts: configured.get(w.id)?.addressParts ?? null, stock: w.pairs, updatedAt: configured.get(w.id)?.updatedAt || lastChange }));
+        for (const w of book.warehouses) if (!kho.some((x) => x.id === w.id)) kho.push({ id: w.id, pairs: 0, sizes: 0, sources: [], products: 0, name: w.name, type: w.type, status: w.status, priority: w.priority, description: w.description, pricing: w.pricing ?? defaultPricing(), partners: w.partners ?? [], address: w.address ?? "", addressParts: w.addressParts ?? null, stock: 0, updatedAt: w.updatedAt || "" });
         return reply.json({ ok: true, kho, legacyMap: book.legacyMap }, 200, { "Cache-Control": "no-store" });
       }
     },
@@ -1132,6 +1564,7 @@ export const manifest = defineModule<Config>({
         const name = String(body["ten"] ?? "").trim();
         const type = String(body["loai"] ?? ""); const status = String(body["trangThai"] ?? "active");
         if (!id || !name || !["ready", "order"].includes(type) || !["active", "inactive"].includes(status)) return reply.json({ ok: false, error: "kho_khong_hop_le", message: "Kho cần mã, tên, loại ready/order và trạng thái hợp lệ." }, 400);
+        if (body["diaChi"] !== undefined && String(body["diaChi"] ?? "").trim().length > 500) return reply.json({ ok: false, error: "kho_khong_hop_le", message: "Địa chỉ kho tối đa 500 ký tự." }, 400);
         if (body["doiTac"] !== undefined) {
           if (!Array.isArray(body["doiTac"]) || body["doiTac"].length > 50) return reply.json({ ok: false, error: "lien_ket_doi_tac_khong_hop_le", message: "Danh sách partner của kho không hợp lệ." }, 400);
           const rawLinks = body["doiTac"].map((row) => asRecord(row)); const ids = rawLinks.map((row) => String(row["maDoiTac"] ?? "").trim()).filter(Boolean);
@@ -1150,7 +1583,11 @@ export const manifest = defineModule<Config>({
             const raw = asRecord(row); const role = String(raw["vaiTro"] ?? "supplier");
             return { partnerId: String(raw["maDoiTac"] ?? "").trim().slice(0, 64), role: (role === "buyer" ? "buyer" : "supplier") as WarehousePartnerLink["role"], priority: Math.max(0, Math.round(Number(raw["uuTien"] ?? 0))), isDefault: raw["macDinh"] === true, enabled: raw["dangDung"] !== false, purchasingPolicy: String(raw["chinhSachMua"] ?? "").slice(0, 2000) };
           }).filter((link) => link.partnerId !== "");
-          saved = { id, name: name.slice(0, 190), type: type as WarehouseRecord["type"], status: status as WarehouseRecord["status"], priority: Math.max(0, Math.round(Number(body["uuTien"] ?? 0))), description: String(body["moTa"] ?? "").slice(0, 2000), pricing: { mode, upliftPercent: Math.min(100, Math.max(0, Number(pricingRaw["phanTramTang"] ?? old?.pricing?.upliftPercent ?? 0))), fixedMarkup: Math.max(0, Number(pricingRaw["congThem"] ?? old?.pricing?.fixedMarkup ?? 0)), rounding, groups: { shoe: groupRule("shoe"), apparel: groupRule("apparel"), accessory: groupRule("accessory") } }, partners, updatedAt: now };
+          // `diaChi` not sent = the address stays (an older screen does not know the field).
+          const address = body["diaChi"] === undefined ? old?.address ?? "" : String(body["diaChi"] ?? "").trim();
+          const partsRaw = body["diaChiPhan"] === undefined ? null : asRecord(body["diaChiPhan"]); const cut = (v: unknown, max: number) => String(v ?? "").trim().slice(0, max);
+          const addressParts: WarehouseAddressParts | undefined = partsRaw === null ? (body["diaChi"] === undefined ? old?.addressParts : undefined) : { scheme: partsRaw["he"] === "hai-cap" ? "hai-cap" : "ba-cap", province: cut(partsRaw["tinh"], 120), district: cut(partsRaw["huyen"], 120), ward: cut(partsRaw["xa"], 120), detail: cut(partsRaw["chiTiet"], 255) };
+          saved = { id, name: name.slice(0, 190), type: type as WarehouseRecord["type"], status: status as WarehouseRecord["status"], priority: Math.max(0, Math.round(Number(body["uuTien"] ?? 0))), description: String(body["moTa"] ?? "").slice(0, 2000), address, ...(addressParts ? { addressParts } : {}), pricing: { mode, upliftPercent: Math.min(100, Math.max(0, Number(pricingRaw["phanTramTang"] ?? old?.pricing?.upliftPercent ?? 0))), fixedMarkup: Math.max(0, Number(pricingRaw["congThem"] ?? old?.pricing?.fixedMarkup ?? 0)), rounding, groups: { shoe: groupRule("shoe"), apparel: groupRule("apparel"), accessory: groupRule("accessory") } }, partners, updatedAt: now };
           return { ...book, version: 2, warehouses: [...book.warehouses.filter((w) => w.id !== id), saved], updatedAt: now };
         }, emptyWarehouseBook());
         return reply.json({ ok: true, kho: saved }, 200, { "Cache-Control": "no-store" });
@@ -1161,7 +1598,9 @@ export const manifest = defineModule<Config>({
       handle: async (ctx, request) => {
         const id = String(request.params["ma"] ?? "");
         const book = (await ctx.ports.store.document<WarehousePolicyBook>(WAREHOUSE_POLICY_DOCUMENT).read(null)) ?? emptyPolicyBook();
-        return reply.json({ ok: true, chinhSach: book.policies.find((p) => p.warehouseId === id) ?? null }, 200, { "Cache-Control": "no-store" });
+        // §6: the versions a save replaced, newest first.
+        const lichSu = (book.history ?? []).filter((p) => p.warehouseId === id);
+        return reply.json({ ok: true, chinhSach: book.policies.find((p) => p.warehouseId === id) ?? null, lichSu }, 200, { "Cache-Control": "no-store" });
       }
     },
     {
@@ -1171,8 +1610,17 @@ export const manifest = defineModule<Config>({
         const now = ctx.ports.clock.now().toISOString(); let saved!: WarehousePolicy;
         await ctx.ports.store.document<WarehousePolicyBook>(WAREHOUSE_POLICY_DOCUMENT).update((current) => {
           const book = current ?? emptyPolicyBook(); const old = book.policies.find((p) => p.warehouseId === warehouseId);
-          saved = { warehouseId, version: (old?.version ?? 0) + 1, effectiveAt: now, summary: String(body["tomTat"] ?? "").slice(0, 2000), enabled: body["choPhepBan"] !== false, cod: body["choCod"] !== false, depositPercent: Number(body["phanTramCoc"] ?? 0), leadTimeDays: Number(body["soNgayHangVe"] ?? 0), orderLimit: Number(body["hanMucDat"] ?? 0), surcharge: Number(body["phiPhuThu"] ?? 0), returns: String(body["doiTra"] ?? "").slice(0, 2000), channels: String(body["kenh"] ?? "").slice(0, 1000) };
-          return { version: 2, policies: [...book.policies.filter((p) => p.warehouseId !== warehouseId), saved], updatedAt: now };
+          saved = {
+            warehouseId, version: (old?.version ?? 0) + 1, effectiveAt: now, summary: String(body["tomTat"] ?? "").slice(0, 2000), enabled: body["choPhepBan"] !== false, cod: body["choCod"] !== false, depositPercent: Number(body["phanTramCoc"] ?? 0), leadTimeDays: Number(body["soNgayHangVe"] ?? 0), orderLimit: Number(body["hanMucDat"] ?? 0), surcharge: Number(body["phiPhuThu"] ?? 0), returns: String(body["doiTra"] ?? "").slice(0, 2000), channels: String(body["kenh"] ?? "").slice(0, 1000),
+            // §6 (18/09/2026): not sent = kept, so an older screen does not wipe them.
+            prepTime: body["thoiGianChuanBi"] === undefined ? old?.prepTime ?? "" : String(body["thoiGianChuanBi"] ?? "").trim().slice(0, 100),
+            showPrepTime: body["hienThoiGian"] === undefined ? old?.showPrepTime ?? false : body["hienThoiGian"] === true,
+            swapSizeOnArrival: body["doiSizeKhiVe"] === undefined ? old?.swapSizeOnArrival ?? false : body["doiSizeKhiVe"] === true
+          };
+          // The version replaced is KEPT, newest first, at most POLICY_HISTORY_CAP per warehouse.
+          const mine = [...(old ? [old] : []), ...(book.history ?? []).filter((p) => p.warehouseId === warehouseId)].slice(0, POLICY_HISTORY_CAP);
+          const history = [...mine, ...(book.history ?? []).filter((p) => p.warehouseId !== warehouseId)];
+          return { version: 2, policies: [...book.policies.filter((p) => p.warehouseId !== warehouseId), saved], history, updatedAt: now };
         }, emptyPolicyBook());
         return reply.json({ ok: true, chinhSach: saved }, 200, { "Cache-Control": "no-store" });
       }
@@ -1199,12 +1647,170 @@ export const manifest = defineModule<Config>({
         return reply.json({ ok: true, daApDung: true, doiChieu: counts }, 200, { "Cache-Control": "no-store" });
       }
     },
+    // ---------------- OMI "Hàng hóa & Kho" v1 (18/09/2026) — omi/docs/HOP-DONG-API-HANG-KHO-V1.md ----------------
+    {
+      // §2 "Lưu thay đổi" of the product page. Prices and descriptions of its sizes, never stock.
+      method: "PUT", path: "/api/hang-kho/mon/:ma/chi-tiet", access: ACCESS.admin,
+      rateLimit: { calls: 300, windowMs: TEN_MINUTES_MS }, bodyLimit: 1024 * 1024,
+      handle: async (ctx, request) => saveDetail(ctx, String(request.params["ma"] ?? "").trim(), asRecord(await request.json()), actorOf(request))
+    },
+    {
+      // §2 "Nhân bản".
+      method: "POST", path: "/api/hang-kho/mon/:ma/nhan-ban", access: ACCESS.admin,
+      rateLimit: { calls: 120, windowMs: TEN_MINUTES_MS },
+      handle: async (ctx, request) => duplicateItem(ctx, String(request.params["ma"] ?? "").trim(), String(asRecord(await request.json())["maMoi"] ?? "").trim().slice(0, 128), actorOf(request))
+    },
+    {
+      // §2 "Xem lịch sử thay đổi": the undo snapshots that name this item, and its last 50 book lines.
+      method: "GET", path: "/api/hang-kho/mon/:ma/lich-su", access: ACCESS.admin,
+      handle: async (ctx, request) => {
+        const code = String(request.params["ma"] ?? "").trim();
+        const rows = await ctx.ports.store.rows(
+          `SELECT lan, MAX(nhan) AS nhan, MAX(boi) AS boi, MIN(luc) AS luc, MAX(hoan_tac_luc) AS hoan_tac_luc, MIN(ma) AS thu_tu
+             FROM ${TABLES.snapshots} WHERE ma_mon = ? GROUP BY lan ORDER BY thu_tu DESC LIMIT 200`, [code]
+        );
+        const banChup = rows.map((r) => ({ lan: String(r["lan"]), nhan: String(r["nhan"] ?? ""), boi: String(r["boi"] ?? ""), luc: isoFromMysql(r["luc"]), daHoanTac: Boolean(r["hoan_tac_luc"]) }));
+        return reply.json({ ok: true, banChup, bienDong: await ledger(ctx).movements({ code, limit: 50 }) }, 200, NO_STORE);
+      }
+    },
+    // ---- §3 stock documents (see stock-documents.ts) ----
+    {
+      method: "GET", path: "/api/hang-kho/phieu", access: ACCESS.admin,
+      handle: async (ctx, request) => {
+        const q = request.query;
+        const answer = await (await documents(ctx)).list({
+          warehouseId: String(q["kho"] || ""), kind: String(q["loai"] || ""), state: String(q["trangThai"] || ""), actor: String(q["boi"] || ""),
+          fromDay: String(q["tuNgay"] || ""), toDay: String(q["denNgay"] || ""), limit: Number(q["limit"] || 200)
+        });
+        return reply.json({ ok: true, ...answer }, 200, NO_STORE);
+      }
+    },
+    {
+      method: "GET", path: "/api/hang-kho/phieu/:ma", access: ACCESS.admin,
+      handle: (ctx, request) => documentReply(ctx, String(request.params["ma"] ?? "").trim())
+    },
+    {
+      method: "POST", path: "/api/hang-kho/phieu", access: ACCESS.admin,
+      rateLimit: { calls: 240, windowMs: TEN_MINUTES_MS }, bodyLimit: 1024 * 1024,
+      handle: async (ctx, request) => {
+        const made = await (await documents(ctx)).create(documentInputOf(asRecord(await request.json())), actorOf(request));
+        if (!made.ok) return documentRefused(made);
+        ctx.ports.logger.info(`[hang-kho] tạo phiếu kho ${made.code}`);
+        return documentReply(ctx, made.code);
+      }
+    },
+    {
+      method: "PUT", path: "/api/hang-kho/phieu/:ma", access: ACCESS.admin,
+      rateLimit: { calls: 240, windowMs: TEN_MINUTES_MS }, bodyLimit: 1024 * 1024,
+      handle: async (ctx, request) => {
+        const done = await (await documents(ctx)).update(String(request.params["ma"] ?? "").trim(), documentInputOf(asRecord(await request.json())), actorOf(request));
+        if (!done.ok) return documentRefused(done);
+        return documentReply(ctx, done.code);
+      }
+    },
+    {
+      // Reverse a posted document: a new adjustment, posted at once; the answer is the NEW document.
+      method: "POST", path: "/api/hang-kho/phieu/:ma/dao", access: ACCESS.admin,
+      rateLimit: { calls: 60, windowMs: TEN_MINUTES_MS },
+      handle: async (ctx, request) => {
+        const done = await (await documents(ctx)).reverse(String(request.params["ma"] ?? "").trim(), actorOf(request));
+        if (!done.ok) return documentRefused(done);
+        ctx.ports.logger.info(`[hang-kho] đảo phiếu ${String(request.params["ma"])} bằng ${done.code}`);
+        return documentReply(ctx, done.code);
+      }
+    },
+    {
+      method: "POST", path: "/api/hang-kho/phieu/:ma/nhan-ban", access: ACCESS.admin,
+      rateLimit: { calls: 120, windowMs: TEN_MINUTES_MS },
+      handle: async (ctx, request) => {
+        const done = await (await documents(ctx)).duplicate(String(request.params["ma"] ?? "").trim(), actorOf(request));
+        if (!done.ok) return documentRefused(done);
+        return documentReply(ctx, done.code);
+      }
+    },
+    {
+      // A photo of the invoice / the goods check, kept in the warehouse photo zone under a server-made name.
+      method: "POST", path: "/api/hang-kho/phieu/:ma/dinh-kem", access: ACCESS.admin,
+      rateLimit: { calls: 120, windowMs: TEN_MINUTES_MS }, bodyLimit: 12 * 1024 * 1024,
+      handle: async (ctx, request) => {
+        const code = String(request.params["ma"] ?? "").trim();
+        const body = asRecord(await request.json());
+        const bytes = bytesFromDataUrl(body["anh"]);
+        if (!bytes) return reply.json({ ok: false, error: "thieu_anh", message: "Thiếu ảnh (dataURL base64)." }, 400, NO_STORE);
+        const book = await documents(ctx);
+        if (!(await book.exists(code))) return reply.json({ ok: false, error: CATALOG_ERRORS.notFound, message: "Không tìm thấy phiếu này." }, 404, NO_STORE);
+        let saved;
+        try {
+          saved = await ctx.ports.uploads.saveImage(DOCUMENT_FILE_ZONE, bytes, code);
+        } catch (e) {
+          const refusal = (e as { code?: string })?.code;
+          if (refusal) return reply.json({ ok: false, error: refusal, message: e instanceof Error ? e.message : String(e) }, 400, NO_STORE);
+          throw e;
+        }
+        const url = `/api/hang-kho/phieu/${encodeURIComponent(code)}/dinh-kem/${saved.name}`;
+        await book.attach(code, { url, name: String(body["ten"] ?? "").trim() || saved.name }, actorOf(request));
+        return reply.json({ ok: true, url }, 200, NO_STORE);
+      }
+    },
+    {
+      // An attachment, for signed-in admins only, and only a file the document itself lists.
+      method: "GET", path: "/api/hang-kho/phieu/:ma/dinh-kem/:tep", access: ACCESS.admin,
+      handle: async (ctx, request) => {
+        const code = String(request.params["ma"] ?? "").trim();
+        const name = String(request.params["tep"] ?? "").trim();
+        const phieu = await (await documents(ctx)).read(code);
+        const entry = ((phieu?.["dinhKem"] ?? []) as { url: string; ten: string }[]).find((f) => f.url.endsWith(`/dinh-kem/${name}`));
+        const file = entry ? await ctx.ports.uploads.open(DOCUMENT_FILE_ZONE).read(name) : null;
+        if (!file) return reply.json({ ok: false, error: ERROR_CODES.notFound }, 404, NO_STORE);
+        // `?dang=json`: OMI reaches the landing only through its JSON gateway with the bearer ticket, which
+        // an <img src> cannot carry — so the same file comes back as a data URL inside JSON.
+        if (String(request.query["dang"] ?? "") === "json") {
+          return reply.json({ ok: true, ten: entry?.ten ?? name, loai: file.type, anh: `data:${file.type};base64,${Buffer.from(file.data).toString("base64")}` }, 200, { "Cache-Control": "private, no-store" });
+        }
+        return reply.file(file.data, file.type, 200, { "Cache-Control": "private, no-store", "X-Robots-Tag": "noindex, nofollow" });
+      }
+    },
+    // ---- §5 web price per warehouse ----
+    {
+      method: "GET", path: "/api/hang-kho/kho/:ma/gia-web", access: ACCESS.admin,
+      handle: async (ctx, request) => reply.json({ ok: true, ...(await webPrices(ctx, String(request.params["ma"] ?? "").trim(), String(request.query["q"] ?? ""))) }, 200, NO_STORE)
+    },
+    {
+      // "Đồng bộ giá lên web": one price on EVERY line of the item in this warehouse; undoable.
+      method: "POST", path: "/api/hang-kho/kho/:ma/gia-web", access: ACCESS.admin,
+      rateLimit: { calls: 60, windowMs: TEN_MINUTES_MS }, bodyLimit: 2 * 1024 * 1024,
+      handle: async (ctx, request) => {
+        const warehouseId = String(request.params["ma"] ?? "").trim();
+        const body = asRecord(await request.json());
+        const lines = (Array.isArray(body["dong"]) ? (body["dong"] as unknown[]) : []).map(asRecord);
+        if (lines.length === 0) return reply.json({ ok: false, error: "thieu_dong", message: "Chưa có dòng giá nào để đồng bộ." }, 400, NO_STORE);
+        if (lines.length > IMPORT_CAP) return reply.json({ ok: false, error: CATALOG_ERRORS.tooManyItems, tran: IMPORT_CAP }, 400, NO_STORE);
+        const prices = lines.map((l) => ({ code: String(l["ma"] ?? "").trim(), price: Math.round(Number(l["gia"])) }));
+        const bad = prices.findIndex((p) => !p.code || !(p.price > 0) || p.price > MAX_MONEY);
+        if (bad >= 0) return reply.json({ ok: false, error: "gia_khong_hop_le", message: `Dòng ${bad + 1}: cần mã sản phẩm và giá bán lớn hơn 0.`, dong: bad + 1 }, 400, NO_STORE);
+        await history(ctx).capture(`Trước khi đồng bộ giá web kho ${warehouseId}`, prices.map((p) => p.code), actorOf(request));
+        const repo = repository(ctx);
+        let changed = 0;
+        for (const p of prices) changed += await repo.setWarehousePrice({ code: p.code, warehouseId, price: p.price }, ctx.ports.clock.now());
+        ctx.ports.logger.info(`[hang-kho] đồng bộ giá web kho ${warehouseId}: ${prices.length} món, ${changed} dòng`);
+        return reply.json({ ok: true, daDoi: changed }, 200, NO_STORE);
+      }
+    },
+    // ---- §7 "Cần xử lý" ----
+    {
+      method: "GET", path: "/api/hang-kho/van-de", access: ACCESS.admin,
+      handle: async (ctx, request) => reply.json({
+        ok: true, ...(await issues(ctx, { kind: String(request.query["loai"] ?? ""), warehouseId: String(request.query["kho"] ?? ""), severity: String(request.query["mucDo"] ?? "") }))
+      }, 200, NO_STORE)
+    },
     {
       // The house view for the admin screen — WITH real stock.
       method: "GET", path: "/api/admin/products", access: ACCESS.admin,
       handle: async (ctx, request) => reply.json(
         await repository(ctx).searchItems(String(request.query["q"] || ""), Number(request.query["limit"] || 0), {
-          size: String(request.query["size"] || ""), source: String(request.query["nguon"] || "")
+          size: String(request.query["size"] || ""), source: String(request.query["nguon"] || ""),
+          // `kho` (18/09/2026): items with a line in that warehouse (stock 0 too), all sizes, up to 5000.
+          warehouseId: String(request.query["kho"] || "")
         }),
         200,
         { "Cache-Control": "no-store" }

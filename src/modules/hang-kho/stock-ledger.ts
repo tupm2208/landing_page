@@ -34,7 +34,9 @@ export const MOVEMENT_KINDS = {
   receipt: "nhap",
   transferOut: "chuyen-di",
   transferIn: "chuyen-den",
-  returned: "hoan-hang"
+  returned: "hoan-hang",
+  /** Goods out on a stock document (`xuat`), 18/09/2026. */
+  issue: "xuat"
 } as const;
 
 export interface Movement {
@@ -51,6 +53,11 @@ export interface Movement {
   reference: string;
   actor: string;
   at: string;
+  /**
+   * The bucket (`nguon`) of the row the line touched — read from the row today, so "" when the row is
+   * gone. OMI passes it to `doi-gia` to price exactly that row (18/09/2026).
+   */
+  source: string;
 }
 
 export type LedgerRefusal = "thieu_thong_tin" | "khong_co_mon" | "khong_du_ton" | "cung_kho" | "so_luong_sai";
@@ -74,6 +81,32 @@ export interface AdjustInput {
   source?: Source;
   kind?: string;
   reference?: string;
+  /**
+   * Stock documents (18/09/2026): a take-away may not dig into pairs HELD for a customer. Off for the
+   * older doors (a person setting the shelf to what they counted must still be able to).
+   */
+  respectReservations?: boolean;
+}
+
+/** One book line to undo, by the exact row it touched (a document reversal). */
+export interface RowAdjustInput {
+  variantId: string;
+  /** Used only when the row is gone and pairs come BACK: the row is recreated by code / size / warehouse. */
+  code: string;
+  size: string;
+  warehouseId: string;
+  quantity: number;
+  note?: string | undefined;
+  actor: string;
+  kind?: string;
+  reference?: string;
+  respectReservations?: boolean;
+}
+
+/** A `LIMIT` from a query string: an integer in [1, max], `fallback` when unreadable. */
+export function clampLimit(value: unknown, fallback: number, max: number): number {
+  const n = Math.trunc(Number(value));
+  return Math.min(Math.max(1, Number.isFinite(n) && n > 0 ? n : fallback), max);
 }
 
 export interface ReceiptLine {
@@ -96,7 +129,8 @@ const REFUSAL_TEXT: Record<LedgerRefusal, string> = {
 
 const refuse = (reason: LedgerRefusal): { ok: false; reason: LedgerRefusal; message: string } => ({ ok: false, reason, message: REFUSAL_TEXT[reason] });
 
-type Tx = Pick<DataStore, "rows" | "execute" | "table">;
+/** What a transaction hands the ledger: statements and tables on the transaction's connection. */
+export type Tx = Pick<DataStore, "rows" | "execute" | "table">;
 
 export class StockLedger {
   constructor(private readonly store: DataStore, private readonly now: () => Date) {}
@@ -168,10 +202,30 @@ export class StockLedger {
 
   /** The book, newest first — all of it, or one item's. */
   async movements(filter: { code?: string; limit?: number } = {}): Promise<Movement[]> {
-    const rows = await this.store.table(TABLES.movements).find({
-      ...(filter.code ? { where: { ma_mon: text(filter.code) } } : {}),
-      orderBy: "ma desc", limit: Math.min(Math.max(1, Number(filter.limit) || 200), 2000)
-    });
+    return this.movementsWhere({ ...(filter.code ? { code: filter.code } : {}), limit: clampLimit(filter.limit, 200, 2000) });
+  }
+
+  /**
+   * The book narrowed the way the warehouse screen asks (OMI v1, 18/09/2026): warehouse, kind, who,
+   * a window of `luc` (UTC moments, the caller turns local days into them), one code, one reference.
+   */
+  async movementsWhere(filter: { code?: string; warehouseId?: string; kind?: string; actor?: string; reference?: string; from?: Date | null; to?: Date | null; limit?: number }): Promise<Movement[]> {
+    const clauses: string[] = [];
+    const params: unknown[] = [];
+    const add = (sql: string, value: unknown) => { clauses.push(sql); params.push(value); };
+    if (text(filter.code)) add("bd.ma_mon = ?", text(filter.code));
+    if (text(filter.warehouseId)) add("bd.ma_kho = ?", text(filter.warehouseId));
+    if (text(filter.kind)) add("bd.loai = ?", text(filter.kind));
+    if (text(filter.actor)) add("bd.boi = ?", text(filter.actor));
+    if (filter.reference !== undefined) add("bd.ma_tham_chieu = ?", text(filter.reference));
+    if (filter.from) add("bd.luc >= ?", toMysqlDateTime(filter.from, { ms: true }));
+    if (filter.to) add("bd.luc < ?", toMysqlDateTime(filter.to, { ms: true }));
+    const limit = clampLimit(filter.limit, 200, 2000);
+    const rows = await this.store.rows(
+      `SELECT bd.*, bt.nguon AS nguon FROM ${TABLES.movements} bd LEFT JOIN ${TABLES.variants} bt ON bt.ma_bien_the = bd.ma_bien_the
+        ${clauses.length ? ` WHERE ${clauses.join(" AND ")}` : ""} ORDER BY bd.ma DESC LIMIT ?`,
+      [...params, limit]
+    );
     return rows.map(movementOf);
   }
 
@@ -189,17 +243,29 @@ export class StockLedger {
     })));
   }
 
-  /** Every warehouse id the shelf knows, with how many pairs and which buckets. */
-  async warehouses(): Promise<{ id: string; pairs: number; sizes: number; sources: string[] }[]> {
+  /**
+   * Every warehouse id the shelf knows, with how many pairs and which buckets. `products` counts
+   * distinct item codes with a line there (stock 0 included); `lastChange` is the newest line edit.
+   */
+  async warehouses(): Promise<{ id: string; pairs: number; sizes: number; sources: string[]; products: number; lastChange: string }[]> {
     const rows = await this.store.rows(
-      `SELECT ma_kho, SUM(ton) AS doi, COUNT(*) AS dong, GROUP_CONCAT(DISTINCT nguon) AS nguon FROM ${TABLES.variants} WHERE ma_kho <> '' GROUP BY ma_kho ORDER BY ma_kho`
+      `SELECT ma_kho, SUM(ton) AS doi, COUNT(*) AS dong, GROUP_CONCAT(DISTINCT nguon) AS nguon, COUNT(DISTINCT ma_mon) AS mon, MAX(sua_luc) AS sua
+         FROM ${TABLES.variants} WHERE ma_kho <> '' GROUP BY ma_kho ORDER BY ma_kho`
     );
-    return rows.map((r) => ({ id: text(r["ma_kho"]), pairs: Number(r["doi"] || 0), sizes: Number(r["dong"] || 0), sources: text(r["nguon"]).split(",").filter(Boolean) }));
+    return rows.map((r) => ({
+      id: text(r["ma_kho"]), pairs: Number(r["doi"] || 0), sizes: Number(r["dong"] || 0), sources: text(r["nguon"]).split(",").filter(Boolean),
+      products: Number(r["mon"] || 0), lastChange: isoFromMysql(r["sua"])
+    }));
   }
 
   // ---- inside a transaction ------------------------------------------------------------------
 
-  private async adjustIn(tx: Tx, input: AdjustInput): Promise<AdjustOutcome> {
+  /**
+   * ADJUST inside a transaction the CALLER owns. Public since 18/09/2026: a stock document posts all
+   * its lines through here in one transaction and rolls the whole document back on the first refusal
+   * (throw `LedgerRefused`). A refusal is returned, never thrown, so the caller decides.
+   */
+  async adjustIn(tx: Tx, input: AdjustInput): Promise<AdjustOutcome> {
     const code = text(input.code), size = text(input.size);
     const warehouseId = text(input.warehouseId);
     if (!code || !size || !warehouseId) return refuse("thieu_thong_tin");
@@ -213,17 +279,21 @@ export class StockLedger {
     const before = Number(locked[0]?.["ton"] || 0);
     const after = before + input.quantity;
     if (after < 0) return refuse("khong_du_ton");
+    if (id && input.quantity < 0 && input.respectReservations && before - (await this.heldOn(tx, id)) + input.quantity < 0) return refuse("khong_du_ton");
 
+    let storedCode = code;
     if (!id) {
       if (input.quantity < 0) return refuse("khong_du_ton");
       const item = await tx.rows(`SELECT ma, gia_niem_yet FROM ${TABLES.items} WHERE ma = ? LIMIT 1`, [code]);
       if (!item[0]) return refuse("khong_co_mon");
+      // The catalogue's own spelling of the code: MySQL matched "kv1" to "KV1", the new row must say "KV1".
+      storedCode = text(item[0]["ma"]) || code;
       // The price of a size the warehouse never held: the item's own sizes elsewhere say what it sells for.
       const sibling = await tx.rows(`SELECT gia, gia_niem_yet FROM ${TABLES.variants} WHERE ma_mon = ? AND gia > 0 ORDER BY gia ASC LIMIT 1`, [code]);
       // The variant id folds the bucket in, so a ready row and an order row of one size and warehouse never collide.
-      id = variantId({ code }, { warehouseId: input.source && input.source !== SOURCE.ready ? warehouseId : `${warehouseId}|ready`, size });
+      id = variantId({ code: storedCode }, { warehouseId: input.source && input.source !== SOURCE.ready ? warehouseId : `${warehouseId}|ready`, size });
       await tx.table(TABLES.variants).insert({
-        ma_bien_the: id, ma_mon: code, size, ma_kho: warehouseId, ton: after,
+        ma_bien_the: id, ma_mon: storedCode, size, ma_kho: warehouseId, ton: after,
         gia: Number(sibling[0]?.["gia"] || 0), gia_niem_yet: Number(sibling[0]?.["gia_niem_yet"] || item[0]["gia_niem_yet"] || 0),
         thu_tu_kho: 2147483647, nguon: input.source ?? SOURCE.ready, ma_chien_dich: "", ma_dong_doi_tac: "", sua_luc: at
       });
@@ -232,22 +302,112 @@ export class StockLedger {
     }
 
     await tx.table(TABLES.movements).insert({
-      ma_mon: code, size, ma_kho: warehouseId, ma_bien_the: id, loai: input.kind ?? MOVEMENT_KINDS.adjust,
+      ma_mon: storedCode, size, ma_kho: warehouseId, ma_bien_the: id, loai: input.kind ?? MOVEMENT_KINDS.adjust,
       so_luong: input.quantity, ton_truoc: before, ton_sau: after,
       ghi_chu: text(input.note).slice(0, 255), ma_tham_chieu: text(input.reference).slice(0, 128), boi: text(input.actor).slice(0, 190), luc: at
     });
     return { ok: true, variantId: id, before, after };
   }
+
+  /**
+   * ADJUST EXACTLY ONE ROW, by variant id, inside the caller's transaction — how a document reversal
+   * undoes a book line. Reversing by code / size / warehouse picks "the row with most stock", which in
+   * a warehouse holding a ready AND a campaign row of one size is the wrong bucket (review 18/09/2026).
+   * The row gone (a full push replaced its source) and pairs coming back: recreated like `adjustIn`.
+   */
+  async adjustRowIn(tx: Tx, input: RowAdjustInput): Promise<AdjustOutcome> {
+    const quantity = Math.trunc(Number(input.quantity));
+    if (!Number.isFinite(quantity) || quantity === 0) return refuse("so_luong_sai");
+    const locked = await tx.rows(`SELECT ma_bien_the, ma_mon, size, ma_kho, ton FROM ${TABLES.variants} WHERE ma_bien_the = ? FOR UPDATE`, [text(input.variantId)]);
+    const row = locked[0];
+    if (!row) {
+      if (quantity < 0) return refuse("khong_du_ton");
+      return this.adjustIn(tx, { code: input.code, size: input.size, warehouseId: input.warehouseId, quantity, note: input.note, actor: input.actor, ...(input.kind ? { kind: input.kind } : {}), ...(input.reference ? { reference: input.reference } : {}) });
+    }
+    const id = text(row["ma_bien_the"]);
+    const before = Number(row["ton"] || 0);
+    const after = before + quantity;
+    if (after < 0) return refuse("khong_du_ton");
+    if (quantity < 0 && input.respectReservations && before - (await this.heldOn(tx, id)) + quantity < 0) return refuse("khong_du_ton");
+    const at = toMysqlDateTime(this.now(), { ms: true });
+    await tx.execute(`UPDATE ${TABLES.variants} SET ton = ?, sua_luc = ? WHERE ma_bien_the = ?`, [after, at, id]);
+    await tx.table(TABLES.movements).insert({
+      ma_mon: text(row["ma_mon"]), size: text(row["size"]), ma_kho: text(row["ma_kho"]), ma_bien_the: id, loai: input.kind ?? MOVEMENT_KINDS.adjust,
+      so_luong: quantity, ton_truoc: before, ton_sau: after,
+      ghi_chu: text(input.note).slice(0, 255), ma_tham_chieu: text(input.reference).slice(0, 128), boi: text(input.actor).slice(0, 190), luc: at
+    });
+    return { ok: true, variantId: id, before, after };
+  }
+
+  /**
+   * REMOVES one size row from a warehouse (the table's "Xoá size", 18/09/2026). Pairs still on it go
+   * out through the book first (one adjust line to 0), so the history says where they went. A row with
+   * pairs HELD for a customer is refused — deleting it would strand the order. Returns the row as it
+   * was, for "Hoàn tác".
+   */
+  async removeRow(input: { variantId: string; warehouseId: string; actor: string; note?: string }): Promise<{ ok: true; row: Row } | { ok: false; reason: "khong_thay" | "dang_giu"; message: string }> {
+    return this.store.transaction(async (tx) => {
+      const locked = await tx.rows(`SELECT * FROM ${TABLES.variants} WHERE ma_bien_the = ? AND ma_kho = ? FOR UPDATE`, [text(input.variantId), text(input.warehouseId)]);
+      const row = locked[0];
+      if (!row) return { ok: false as const, reason: "khong_thay" as const, message: "Size này không còn trong kho (có thể vừa bị xoá)." };
+      const id = text(row["ma_bien_the"]);
+      const held = await this.heldOn(tx, id);
+      if (held > 0) return { ok: false as const, reason: "dang_giu" as const, message: `Size ${text(row["size"])} đang giữ ${held} đôi cho đơn — xử lý đơn trước rồi mới xoá.` };
+      const before = Number(row["ton"] || 0);
+      const at = toMysqlDateTime(this.now(), { ms: true });
+      if (before !== 0) {
+        await tx.table(TABLES.movements).insert({
+          ma_mon: text(row["ma_mon"]), size: text(row["size"]), ma_kho: text(row["ma_kho"]), ma_bien_the: id, loai: MOVEMENT_KINDS.adjust,
+          so_luong: -before, ton_truoc: before, ton_sau: 0,
+          ghi_chu: (text(input.note) || "Xoá size khỏi kho").slice(0, 255), ma_tham_chieu: "", boi: text(input.actor).slice(0, 190), luc: at
+        });
+      }
+      await tx.table(TABLES.variants).delete({ ma_bien_the: id });
+      return { ok: true as const, row };
+    });
+  }
+
+  /** Puts back a row `removeRow` took away: the row with its prices, then its pairs through the book. */
+  async restoreRow(input: { row: Row; actor: string; note?: string }): Promise<{ ok: true } | { ok: false; reason: "da_co"; message: string }> {
+    return this.store.transaction(async (tx) => {
+      const id = text(input.row["ma_bien_the"]);
+      const live = await tx.rows(`SELECT ma_bien_the FROM ${TABLES.variants} WHERE ma_bien_the = ? FOR UPDATE`, [id]);
+      if (live[0]) return { ok: false as const, reason: "da_co" as const, message: `Size ${text(input.row["size"])} đã có lại trong kho — không khôi phục chồng lên.` };
+      const pairs = Number(input.row["ton"] || 0);
+      const at = toMysqlDateTime(this.now(), { ms: true });
+      await tx.table(TABLES.variants).insert({ ...input.row, ton: pairs, sua_luc: at });
+      if (pairs !== 0) {
+        await tx.table(TABLES.movements).insert({
+          ma_mon: text(input.row["ma_mon"]), size: text(input.row["size"]), ma_kho: text(input.row["ma_kho"]), ma_bien_the: id, loai: MOVEMENT_KINDS.adjust,
+          so_luong: pairs, ton_truoc: 0, ton_sau: pairs,
+          ghi_chu: (text(input.note) || "Hoàn tác xoá size").slice(0, 255), ma_tham_chieu: "", boi: text(input.actor).slice(0, 190), luc: at
+        });
+      }
+      return { ok: true as const };
+    });
+  }
+
+  /** Pairs of one row held by unexpired reservations. */
+  private async heldOn(tx: Tx, id: string): Promise<number> {
+    const rows = await tx.rows(`SELECT COALESCE(SUM(so_luong), 0) AS n FROM ${TABLES.reservations} WHERE ma_bien_the = ? AND het_han_luc > ?`, [id, toMysqlDateTime(this.now(), { ms: true })]);
+    return Number(rows[0]?.["n"] || 0);
+  }
 }
 
-class LedgerRefused extends Error {
-  constructor(public readonly reason: LedgerRefusal) { super(reason); }
+/** Thrown inside a transaction to roll it back on a refusal; carries the reason out. */
+export class LedgerRefused extends Error {
+  constructor(public readonly reason: LedgerRefusal, public readonly line = 0) { super(reason); }
 }
 
-function movementOf(r: Row): Movement {
+/** The Vietnamese sentence of a refusal, for callers that answer HTTP themselves. */
+export function refusalText(reason: LedgerRefusal): string {
+  return REFUSAL_TEXT[reason];
+}
+
+export function movementOf(r: Row): Movement {
   return {
     id: text(r["ma"]), code: text(r["ma_mon"]), size: text(r["size"]), warehouseId: text(r["ma_kho"]), variantId: text(r["ma_bien_the"]),
     kind: text(r["loai"]), quantity: Number(r["so_luong"] || 0), before: Number(r["ton_truoc"] || 0), after: Number(r["ton_sau"] || 0),
-    note: text(r["ghi_chu"]), reference: text(r["ma_tham_chieu"]), actor: text(r["boi"]), at: isoFromMysql(r["luc"])
+    note: text(r["ghi_chu"]), reference: text(r["ma_tham_chieu"]), actor: text(r["boi"]), at: isoFromMysql(r["luc"]), source: text(r["nguon"])
   };
 }

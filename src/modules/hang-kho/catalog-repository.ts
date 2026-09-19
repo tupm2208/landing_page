@@ -11,7 +11,7 @@
  */
 
 import type { Clock, DataStore, Logger, Row, Where } from "../../contract";
-import { toMysqlDateTime } from "../../shared/mysql-time";
+import { isoFromMysql, toMysqlDateTime } from "../../shared/mysql-time";
 import {
   asList, firstPositive, normaliseItem, stringList, variantId, warehouseKey, warehouseRank, type NormalisedItem
 } from "./normalise";
@@ -67,7 +67,15 @@ export interface QuickEditPatch {
 export interface SearchFilter {
   size?: string;
   source?: string;
+  /**
+   * Only items with at least one line in this warehouse — ANY stock, 0 included (OMI's warehouse
+   * screen lists a whole warehouse, 18/09/2026). The items still come back with ALL their sizes.
+   */
+  warehouseId?: string;
 }
+
+/** The most items one warehouse listing may return. */
+export const WAREHOUSE_LIST_CAP = 5000;
 
 export interface QuickEditResult {
   changed: string[];
@@ -174,6 +182,17 @@ export type StoredSize = {
   costPrice: number;
   /** The price the source wrote; `price` differs from it while a manual price sells. */
   sourcePrice: number;
+  // ---- OMI "Hàng hóa & Kho" v1 (18/09/2026) — house view only; `publicSize` copies none of them ----
+  /** Raw `ton` on the shelf (`qty` = this minus what is held). */
+  stock: number;
+  /** Pairs held by unexpired reservations. */
+  reserved: number;
+  barcode: string;
+  color: string;
+  /** Free text ("950g"). */
+  weight: string;
+  /** ISO time of the line's last change. */
+  updatedAt: string;
 };
 
 /** How the selling price was decided (Desk `priceMode`). Values are wire. */
@@ -219,6 +238,13 @@ export type StoredItem = {
   priceMode: PriceMode;
   priceManual: boolean;
   priceWarning: string;
+  /**
+   * Free attributes of the product page (`thuoc_tinh_json`): skuNoiBo, maVach, mua, xuatXu, chatLieu,
+   * donViTinh, mau, choPhepDat, khoaTrungTam, doiTacCungCap, chinhSachKho. House view only.
+   */
+  attributes: Record<string, unknown>;
+  /** ISO time of the item row's last change. */
+  updatedAt: string;
 };
 
 /** Table rows -> the item shape `publicView` and the services read. */
@@ -233,6 +259,7 @@ export function rowsToItem(itemRow: Row, variantRows: Row[], reserved: ReadonlyM
   const sourcePrice = Number(itemRow["gia_nguon"] || 0);
   const priceMode: PriceMode = manualPrice <= 0 ? "source" : sourcePrice > manualPrice ? "source_higher_than_manual" : "manual";
   const webContent = parseJson(itemRow["noi_dung_web_json"], {});
+  const attributes = parseJson(itemRow["thuoc_tinh_json"], {});
   return {
     code: String(itemRow["ma"]),
     originalCode: String(itemRow["ma_goc"] || itemRow["ma"]),
@@ -270,6 +297,8 @@ export function rowsToItem(itemRow: Row, variantRows: Row[], reserved: ReadonlyM
     priceMode,
     priceManual: manualPrice > 0,
     priceWarning: priceMode === "source_higher_than_manual" ? `Giá nguồn ${sourcePrice} cao hơn giá tay ${manualPrice}.` : "",
+    attributes: attributes && typeof attributes === "object" && !Array.isArray(attributes) ? (attributes as Record<string, unknown>) : {},
+    updatedAt: isoFromMysql(itemRow["sua_luc"]),
     sizes: variantRows.map((v): StoredSize => {
       const id = String(v["ma_bien_the"]);
       const lineSource = String(v["nguon"] || "");
@@ -287,7 +316,13 @@ export function rowsToItem(itemRow: Row, variantRows: Row[], reserved: ReadonlyM
         partnerCampaignLineId: String(v["ma_dong_doi_tac"] || ""),
         sku: String(v["ma_sku"] || ""),
         costPrice: Number(v["gia_von"] || 0),
-        sourcePrice: Number(v["gia_nguon"] || 0) || Number(v["gia"] || 0)
+        sourcePrice: Number(v["gia_nguon"] || 0) || Number(v["gia"] || 0),
+        stock: Number(v["ton"] || 0),
+        reserved: reserved.get(id) ?? 0,
+        barcode: String(v["ma_vach"] ?? ""),
+        color: String(v["mau"] ?? ""),
+        weight: String(v["khoi_luong"] ?? ""),
+        updatedAt: isoFromMysql(v["sua_luc"])
       };
     })
   };
@@ -394,6 +429,31 @@ function keepCheaper(byId: Map<string, VariantRow>, row: VariantRow): boolean {
   return true;
 }
 
+/**
+ * A push REPLACES a source's size rows (delete + insert). What a person typed on a size in OMI — SKU,
+ * barcode, weight, cost — is not in the pushed file, and was wiped by every push (review 18/09/2026).
+ * The new rows keep the old row's values (same `ma_bien_the`) wherever the push leaves them empty.
+ * Every row gets the same columns, as `insertMany` requires.
+ */
+async function keptDetails(tx: DataStore, rows: VariantRow[], source: Source, code?: string): Promise<Row[]> {
+  if (rows.length === 0) return [];
+  const old = await tx.rows(
+    `SELECT ma_bien_the, ma_sku, ma_vach, khoi_luong, gia_von FROM ${TABLES.variants} WHERE nguon = ?${code === undefined ? "" : " AND ma_mon = ?"}`,
+    code === undefined ? [source] : [source, code]
+  );
+  const byId = new Map(old.map((r) => [String(r["ma_bien_the"]), r]));
+  return rows.map((row) => {
+    const before = byId.get(row.ma_bien_the);
+    return {
+      ...row,
+      ma_sku: row.ma_sku || String(before?.["ma_sku"] ?? ""),
+      gia_von: Number(row.gia_von) > 0 ? row.gia_von : Number(before?.["gia_von"] || 0),
+      ma_vach: String(before?.["ma_vach"] ?? ""),
+      khoi_luong: String(before?.["khoi_luong"] ?? "")
+    };
+  });
+}
+
 export class CatalogRepository {
   private readonly store: DataStore;
   private readonly clock: Clock;
@@ -457,20 +517,22 @@ export class CatalogRepository {
     const text = String(query || "").trim();
     const size = String(filter.size || "").trim();
     const source = String(filter.source || "").trim();
+    const warehouseId = String(filter.warehouseId || "").trim();
+    if (warehouseId !== "") return this.searchInWarehouse(text, limit, size, source, warehouseId);
     if (size !== "" || source !== "") return this.searchFiltered(text, limit, size, source);
     // No query = the whole catalogue (the storefront needs it). Still capped — but the cap must
     // SAY when it is hit: on 12/09/2026 the real catalogue (house + ready + campaign) reached
     // 5,154 items, hit the old cap of 5,000 and 154 items quietly never reached the web. Exactly
     // the trap the old comment warned about.
     if (!text) {
-      const cap = Number(limit) || CATALOG_CAP;
+      const cap = Math.trunc(Number(limit)) || CATALOG_CAP;
       const all = await this.readAll(cap);
       if (all.length >= cap) {
         this.logger.warn(`[hang-kho] danh mục đụng trần ${cap} món — có món KHÔNG lên web. Nâng trần lên.`);
       }
       return all;
     }
-    const n = Math.min(Math.max(1, Number(limit) || 10), 50);
+    const n = Math.min(Math.max(1, Math.trunc(Number(limit)) || 10), 50);
     // TODO (known, do not fix silently): the name clause runs `LOWER(ten) LIKE %query%` on the WHOLE
     // query string, so a full customer sentence ("còn giày pegasus 42 không") never matches an item
     // named "Giày chạy Nike Pegasus 40". Behaviour kept identical to the old site on purpose.
@@ -503,7 +565,7 @@ export class CatalogRepository {
    * scoring as `searchItems`. A size is compared as written ("42", "M") — the catalogue stores EU sizes.
    */
   private async searchFiltered(text: string, limit: number, size: string, source: string): Promise<StoredItem[]> {
-    const n = Math.min(Math.max(1, Number(limit) || 50), 1000);
+    const n = Math.min(Math.max(1, Math.trunc(Number(limit)) || 50), 1000);
     const exists = `EXISTS (SELECT 1 FROM ${TABLES.variants} b WHERE b.ma_mon = m.ma AND b.ton > 0
       AND (? = '' OR LOWER(b.size) = LOWER(?)) AND (? = '' OR b.nguon = ?))`;
     const rows = await this.store.rows(
@@ -532,6 +594,56 @@ export class CatalogRepository {
       if (list) list.push(v); else byCode.set(String(v["ma_mon"]), [v]);
     }
     return kept.map((r) => rowsToItem(r, byCode.get(String(r["ma"])) ?? [], reserved));
+  }
+
+  /**
+   * Items with a line in ONE warehouse (any stock, 0 included), optionally narrowed by text, size and
+   * source ON THAT WAREHOUSE's lines — OMI's warehouse screen. Cap `WAREHOUSE_LIST_CAP`, default the cap:
+   * the screen lists the whole warehouse. Every item comes back with all its sizes, every warehouse.
+   */
+  private async searchInWarehouse(text: string, limit: number, size: string, source: string, warehouseId: string): Promise<StoredItem[]> {
+    const n = Math.min(Math.max(1, Math.trunc(Number(limit)) || WAREHOUSE_LIST_CAP), WAREHOUSE_LIST_CAP);
+    const rows = await this.store.rows(
+      `SELECT m.*,
+              CASE WHEN ? = '' THEN 1
+                   WHEN LOWER(m.ma) = LOWER(?) THEN 100
+                   WHEN LOWER(m.ma) LIKE CONCAT(LOWER(?), '%') THEN 80
+                   WHEN LOWER(m.ten) LIKE CONCAT('%', LOWER(?), '%') THEN 60
+                   WHEN LOWER(m.hang) LIKE CONCAT('%', LOWER(?), '%') THEN 40
+                   ELSE 0 END AS diem
+         FROM ${TABLES.items} m
+        WHERE EXISTS (SELECT 1 FROM ${TABLES.variants} b WHERE b.ma_mon = m.ma AND b.ma_kho = ?
+                        AND (? = '' OR LOWER(b.size) = LOWER(?)) AND (? = '' OR b.nguon = ?))
+       HAVING diem > 0
+        ORDER BY diem DESC, m.ten ASC
+        LIMIT ?`,
+      [text, text, text, text, text, warehouseId, size, size, source, source, n]
+    );
+    const blocked = await this.blockedCodes();
+    const kept = rows.filter((r) => !blocked.has(String(r["ma"]).toLowerCase()));
+    if (kept.length === 0) return [];
+    const reserved = await this.reservedByVariant();
+    const variants = await this.variantsOf(this.store, kept.map((r) => String(r["ma"])));
+    const byCode = new Map<string, Row[]>();
+    for (const v of variants) {
+      const list = byCode.get(String(v["ma_mon"]));
+      if (list) list.push(v); else byCode.set(String(v["ma_mon"]), [v]);
+    }
+    return kept.map((r) => rowsToItem(r, byCode.get(String(r["ma"])) ?? [], reserved));
+  }
+
+  /**
+   * "Đồng bộ giá lên web" of one warehouse: ONE price on every line of an item in that warehouse,
+   * every source — a source price, like `setVariantPrice`, so the price rule runs after it.
+   * Returns the lines changed.
+   */
+  async setWarehousePrice(input: { code: string; warehouseId: string; price: number }, at: Date): Promise<number> {
+    const done = await this.store.table(TABLES.variants).update(
+      { ma_mon: input.code, ma_kho: input.warehouseId },
+      { gia: input.price, gia_nguon: input.price, sua_luc: mysqlTime(at) }
+    );
+    if (done > 0) await this.reprice(this.store, [input.code]);
+    return done;
   }
 
   /**
@@ -597,7 +709,7 @@ export class CatalogRepository {
 
   /** The whole catalogue (blocked codes removed, reservations deducted). Capped so it is never unbounded. */
   async readAll(limit = 5000): Promise<StoredItem[]> {
-    const n = Math.min(Math.max(1, Number(limit) || 5000), CATALOG_CAP);
+    const n = Math.min(Math.max(1, Math.trunc(Number(limit)) || 5000), CATALOG_CAP);
     const itemRows = await this.store.table(TABLES.items).find({ orderBy: "ten asc", limit: n });
     if (itemRows.length === 0) return [];
 
@@ -689,8 +801,9 @@ export class CatalogRepository {
     let yielded = 0;
     await this.store.transaction(async (tx) => {
       // Variants: a source touches only its own rows.
+      const kept = await keptDetails(tx, variantRows, source);
       await tx.table(TABLES.variants).delete({ nguon: source });
-      if (variantRows.length) await tx.table(TABLES.variants).insertMany(variantRows);
+      if (kept.length) await tx.table(TABLES.variants).insertMany(kept);
 
       // Items: ONE row per code, shared by the three sources.
       const existing = await tx.rows(`SELECT ma, nguon FROM \`${TABLES.items}\``, []);
@@ -753,8 +866,8 @@ export class CatalogRepository {
         const { itemRow, variantRows } = itemToRows(item, source, at);
         const byId = new Map<string, VariantRow>();
         for (const row of variantRows) keepCheaper(byId, row);
+        const rows = await keptDetails(tx, [...byId.values()], source, item.code);
         await tx.table(TABLES.variants).delete({ ma_mon: item.code, nguon: source });
-        const rows = [...byId.values()];
         if (rows.length) await tx.table(TABLES.variants).insertMany(rows);
         variantCount += rows.length;
         if (this.yieldsTo(await this.sourceOf(tx, item.code), source)) { yielded += 1; continue; }
@@ -786,7 +899,7 @@ export class CatalogRepository {
    * mixed items a seller most wants to see.
    */
   async itemsBySource(source: Source, limit = 500): Promise<StoredItem[]> {
-    const cap = Math.min(Math.max(1, Number(limit) || 500), 2000);
+    const cap = Math.min(Math.max(1, Math.trunc(Number(limit)) || 500), 2000);
     const codes = await this.store.rows(
       `SELECT DISTINCT ma_mon FROM \`${TABLES.variants}\` WHERE nguon = ? ORDER BY ma_mon ASC LIMIT ?`,
       [source, cap]

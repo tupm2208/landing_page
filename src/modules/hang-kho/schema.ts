@@ -30,7 +30,10 @@ export const TABLES = {
   movements: "hang_kho_bien_dong",
   receipts: "hang_kho_phieu_nhap",
   receiptLines: "hang_kho_phieu_nhap_dong",
-  snapshots: "hang_kho_ban_chup"
+  snapshots: "hang_kho_ban_chup",
+  documents: "hang_kho_phieu",
+  documentLines: "hang_kho_phieu_dong",
+  documentLog: "hang_kho_phieu_nhat_ky"
 } as const;
 
 /** The schema steps, run once each by the store's schema history. */
@@ -223,6 +226,84 @@ export const SCHEMA: SchemaStep[] = [
         PRIMARY KEY (ma),
         KEY idx_hang_kho_bc_lan (lan),
         KEY idx_hang_kho_bc_con (hoan_tac_luc, ma)
+      ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+    `
+  },
+  {
+    // PRODUCT DETAIL PAGE (OMI "Hàng hóa & Kho" v1, 18/09/2026): the item's free attributes (internal
+    // SKU, barcode, season, origin, material, unit, colour, may-order, supplier partner...) as ONE JSON
+    // column — they are read and written together, never searched — and a weight per size ("950g").
+    name: "006-thuoc-tinh-va-khoi-luong",
+    tables: [TABLES.items, TABLES.variants],
+    sql: `
+      ALTER TABLE hang_kho_mon ADD COLUMN thuoc_tinh_json LONGTEXT NULL;
+      ALTER TABLE hang_kho_bien_the ADD COLUMN khoi_luong VARCHAR(32) NOT NULL DEFAULT '';
+    `
+  },
+  {
+    // STOCK DOCUMENTS (phiếu kho: nhập · xuất · chuyển · điều chỉnh), see `stock-documents.ts`.
+    // A document is written first (draft / waiting), and only POSTING it moves stock — through the
+    // stock book, with the document code as the movement reference. A posted document is never
+    // edited back: it is REVERSED by a new adjustment document (`ma_phieu_goc` / `ma_phieu_dao`).
+    // `ma_kho` on a line: an adjustment may touch several warehouses (the reversal of a transfer);
+    // empty = the document's own warehouse.
+    name: "007-phieu-kho",
+    tables: [TABLES.documents, TABLES.documentLines, TABLES.documentLog],
+    sql: `
+      CREATE TABLE IF NOT EXISTS hang_kho_phieu (
+        ma VARCHAR(64) NOT NULL,
+        -- 'nhap' | 'xuat' | 'chuyen' | 'dieu-chinh'
+        loai VARCHAR(16) NOT NULL,
+        -- 'nhap' | 'cho-duyet' | 'hoan-thanh' | 'da-huy' | 'da-hoan-tac'
+        trang_thai VARCHAR(16) NOT NULL DEFAULT 'nhap',
+        kho_nguon VARCHAR(128) NOT NULL DEFAULT '',
+        kho_dich VARCHAR(128) NOT NULL DEFAULT '',
+        ngay_chung_tu VARCHAR(10) NOT NULL DEFAULT '',
+        doi_tac VARCHAR(190) NOT NULL DEFAULT '',
+        ma_tham_chieu VARCHAR(128) NOT NULL DEFAULT '',
+        nguoi_phu_trach VARCHAR(190) NOT NULL DEFAULT '',
+        ghi_chu TEXT NULL,
+        phi_van_chuyen DECIMAL(14,2) NOT NULL DEFAULT 0,
+        chi_phi_khac DECIMAL(14,2) NOT NULL DEFAULT 0,
+        dinh_kem_json LONGTEXT NULL,
+        ma_phieu_goc VARCHAR(64) NOT NULL DEFAULT '',
+        ma_phieu_dao VARCHAR(64) NOT NULL DEFAULT '',
+        boi VARCHAR(190) NOT NULL DEFAULT '',
+        tao_luc DATETIME(3) NOT NULL,
+        sua_luc DATETIME(3) NOT NULL,
+        ghi_so_luc DATETIME(3) NULL,
+        PRIMARY KEY (ma),
+        KEY idx_hang_kho_phieu_tao (tao_luc),
+        KEY idx_hang_kho_phieu_loai (loai),
+        KEY idx_hang_kho_phieu_trang_thai (trang_thai)
+      ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+      CREATE TABLE IF NOT EXISTS hang_kho_phieu_dong (
+        ma_phieu VARCHAR(64) NOT NULL,
+        dong INT NOT NULL,
+        ma_mon VARCHAR(128) NOT NULL,
+        size VARCHAR(64) NOT NULL DEFAULT '',
+        ma_kho VARCHAR(128) NOT NULL DEFAULT '',
+        -- signed on an adjustment, positive on the other kinds
+        so_luong INT NOT NULL DEFAULT 0,
+        don_gia DECIMAL(14,2) NOT NULL DEFAULT 0,
+        -- filled when posted; for a transfer: the SOURCE warehouse
+        ton_truoc INT NULL,
+        ton_sau INT NULL,
+        tinh_trang VARCHAR(32) NOT NULL DEFAULT 'dat',
+        ghi_chu VARCHAR(255) NOT NULL DEFAULT '',
+        PRIMARY KEY (ma_phieu, dong)
+      ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+      CREATE TABLE IF NOT EXISTS hang_kho_phieu_nhat_ky (
+        ma BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
+        ma_phieu VARCHAR(64) NOT NULL,
+        viec VARCHAR(32) NOT NULL,
+        noi_dung VARCHAR(500) NOT NULL DEFAULT '',
+        boi VARCHAR(190) NOT NULL DEFAULT '',
+        luc DATETIME(3) NOT NULL,
+        PRIMARY KEY (ma),
+        KEY idx_hang_kho_pnk_phieu (ma_phieu, ma)
       ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
     `
   }
